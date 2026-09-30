@@ -3,7 +3,9 @@ import os
 import shutil
 import tempfile
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -372,3 +374,145 @@ class TestTempFileCleanupOnProcessingFailure:
             f"Task file should be cleaned up after processing failure. "
             f"Before: {len(files_before)}, After: {len(files_after)}"
         )
+
+
+class TestProcessingFailureReportedOnOwnSession:
+    """Tests for failure reporting when the worker owns the session (production path).
+
+    Production calls ``_process_csv_file_async`` with ``db_session=None``. The
+    failure must be written to ``processing_logs`` on a fresh session, after the
+    failed transaction has exited, so the FAILED row survives the rollback it is
+    reporting. These tests drive that production branch directly; every other
+    existing caller passes a non-None session and never reaches it.
+    """
+
+    async def _run_failure_with_patched_get_session(self, tmp_path, session_cm):
+        """Run a failing production-path job with ``get_session`` replaced.
+
+        The malformed CSV is left in ``tmp_path`` so cleanup can be asserted, but
+        ``CSVLoader.load_csv`` is patched to return a valid frame: the failure must
+        come from ``_store_aggregates`` (after the transaction has begun), not from
+        parsing.
+
+        Args:
+            tmp_path: pytest temporary directory used for the malformed CSV.
+            session_cm: An async context manager factory standing in for
+                ``mkobi.workers.data_worker.get_session``.
+
+        Returns:
+            tuple: (raised_exception, status_mock, store_mock)
+        """
+        import polars as pl
+
+        from mkobi.workers.data_worker import CSVLoader, _process_csv_file_async
+
+        task_id = uuid4()
+        task_file = tmp_path / f"{task_id}.csv"
+        task_file.write_bytes(b"category,sales\n1,\"unclosed quote\n")
+
+        valid_frame = pl.DataFrame({"category": ["a"], "sales": [1]})
+        status_mock = AsyncMock(return_value=None)
+        # Force a failure after the transaction has begun, not during parsing.
+        store_mock = AsyncMock(side_effect=RuntimeError("forced processing failure"))
+
+        raised: BaseException | None = None
+        with patch(
+            "mkobi.workers.data_worker._update_processing_log_status", new=status_mock
+        ), patch(
+            "mkobi.workers.data_worker._store_aggregates", new=store_mock
+        ), patch(
+            "mkobi.workers.data_worker.get_session", new=session_cm
+        ), patch.object(
+            CSVLoader, "load_csv", return_value=valid_frame
+        ):
+            try:
+                await _process_csv_file_async(
+                    file_path_str=str(task_file),
+                    task_id=str(task_id),
+                    dashboard_id_str="00000000-0000-0000-0000-000000000000",
+                    processing_config_dict=None,
+                    mode="overwrite",
+                    db_session=None,
+                )
+            except BaseException as exc:  # noqa: BLE001 - we assert on the type below
+                raised = exc
+
+        return raised, status_mock, store_mock
+
+    @staticmethod
+    def _failed_writes(status_mock: AsyncMock) -> list[Any]:
+        """Return the status writes that carried ``ProcessingStatus.FAILED``."""
+        from mkobi.models.enums import ProcessingStatus
+
+        return [
+            call.kwargs
+            for call in status_mock.await_args_list
+            if call.kwargs.get("status") == ProcessingStatus.FAILED
+        ]
+
+    @pytest.mark.asyncio
+    async def test_failure_is_reported_on_a_fresh_session_without_a_session_argument(
+        self, tmp_path
+    ):
+        """A post-transaction failure writes FAILED on a session the helper opens.
+
+        The absence of a ``session`` argument is what distinguishes a real fix
+        from a write performed on the session that is about to roll back.
+        """
+        session = AsyncMock()
+        session.begin = MagicMock()
+
+        @asynccontextmanager
+        async def fake_get_session():
+            yield session
+
+        raised, status_mock, store_mock = await self._run_failure_with_patched_get_session(
+            tmp_path, fake_get_session
+        )
+
+        # The forced failure really came from _store_aggregates.
+        assert store_mock.await_count == 1
+
+        # (1) The write escaped the transaction: exactly one FAILED write, with a
+        # populated message and crucially no session argument.
+        failed_writes = self._failed_writes(status_mock)
+        assert len(failed_writes) == 1
+        assert failed_writes[0]["message"]
+        assert "session" not in failed_writes[0]
+
+        # (2) The failure still propagates.
+        assert isinstance(raised, RuntimeError)
+        assert "forced processing failure" in str(raised)
+
+        # (4) The temp file is still cleaned up.
+        assert list(tmp_path.glob("*.csv*")) == []
+
+    @pytest.mark.asyncio
+    async def test_failure_before_transaction_begin_reports_failed_not_nameerror(
+        self, tmp_path
+    ):
+        """A failure in ``get_session()`` itself is reported, never a NameError.
+
+        This is the trap the naive fall-through fix introduces: the dead block
+        reads ``error_msg``/``error_code``, which are unbound for failures that
+        happen before the nested transaction body.
+        """
+        @asynccontextmanager
+        async def failing_get_session():
+            raise RuntimeError("session acquisition failed")
+            yield  # pragma: no cover - never reached
+
+        raised, status_mock, _store_mock = await self._run_failure_with_patched_get_session(
+            tmp_path, failing_get_session
+        )
+
+        assert not isinstance(raised, NameError)
+        assert isinstance(raised, RuntimeError)
+        assert "session acquisition failed" in str(raised)
+
+        failed_writes = self._failed_writes(status_mock)
+        assert len(failed_writes) == 1
+        assert failed_writes[0]["message"]
+        assert "session" not in failed_writes[0]
+
+        assert list(tmp_path.glob("*.csv*")) == []

@@ -580,44 +580,50 @@ async def _process_csv_file_async(
             )
             raise
     else:
-        # Production mode - create new session with single transaction
-        async with get_session() as session:
-            async with session.begin():
-                try:
-                    return await _run_with_transaction(session)
-                except Exception as e:
-                    error_msg = str(e)
-                    error_code = _map_processing_error_to_code(e)
-                    logger.exception("Processing failed: task_id=%s, error=%s, code=%s", task_id, error_msg, error_code)
-
-                    # Clean up temp file on error
-                    if file_path.exists():
-                        try:
-                            await asyncio.to_thread(file_path.unlink)
-                        except Exception:
-                            logger.warning(
-                                "Failed to clean up temp file: %s",
-                                file_path,
-                                exc_info=True,
-                            )
-                    raise  # Re-raise inside transaction block triggers rollback
-
-        # Use independent session for status update OUTSIDE the rolled-back transaction.
-        # This ensures the FAILED status persists even when main transaction rolls back.
+        # Production mode - create new session with single transaction.
+        # The failure-compensation handler wraps the whole session block so it also
+        # covers failures raised before the transaction body runs (get_session() or
+        # session.begin()), not just failures from _run_with_transaction.
         try:
-            await _update_processing_log_status(
-                task_id=task_id,
-                status=ProcessingStatus.FAILED,
-                message=f"Processing failed: {error_msg}",
-                finished_at=datetime.now(UTC),
-                error_code=error_code,
-            )
-        except Exception as status_err:
-            logger.exception(
-                "Failed to update processing log status to FAILED: task_id=%s, error=%s",
-                task_id,
-                status_err,
-            )
+            async with get_session() as session:
+                async with session.begin():
+                    return await _run_with_transaction(session)
+        except Exception as e:
+            error_msg = str(e)
+            error_code = _map_processing_error_to_code(e)
+            logger.exception("Processing failed: task_id=%s, error=%s, code=%s", task_id, error_msg, error_code)
+
+            # Clean up temp file on error
+            if file_path.exists():
+                try:
+                    await asyncio.to_thread(file_path.unlink)
+                except Exception:
+                    logger.warning(
+                        "Failed to clean up temp file: %s",
+                        file_path,
+                        exc_info=True,
+                    )
+
+            # Report the failure on its own session, after the failed transaction has
+            # exited and rolled back. Passing no session makes the helper open a fresh
+            # session, so the FAILED row survives the rollback it is reporting. The
+            # original exception keeps propagating below.
+            try:
+                await _update_processing_log_status(
+                    task_id=task_id,
+                    status=ProcessingStatus.FAILED,
+                    message=f"Processing failed: {error_msg}",
+                    finished_at=datetime.now(UTC),
+                    error_code=error_code,
+                )
+            except Exception as status_err:
+                logger.exception(
+                    "Failed to update processing log status to FAILED: task_id=%s, error=%s",
+                    task_id,
+                    status_err,
+                )
+
+            raise
 
 
 async def _store_aggregates(
