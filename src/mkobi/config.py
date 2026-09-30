@@ -78,6 +78,54 @@ def is_placeholder_credential(value: str | None) -> bool:
     return value.lower().startswith(PLACEHOLDER_CREDENTIAL_PREFIX)
 
 
+def is_weak_admin_password(value: str | None) -> bool:
+    """Return True when an admin password is unusable for production.
+
+    Composite of the four production clauses: exact known-weak member,
+    shipped placeholder prefix, empty or whitespace-only, and below the
+    minimum length. Defined once here so the configuration validator and the
+    startup-time guard in DatabaseStarter cannot drift apart. A missing value
+    (None) is treated as weak, matching an empty credential.
+
+    Args:
+        value: The admin password to inspect, possibly None.
+
+    Returns:
+        bool: True if the password must be refused in production.
+    """
+    if value is None:
+        return True
+    return (
+        is_weak_credential(value, WEAK_PASSWORDS)
+        or is_placeholder_credential(value)
+        or not value.strip()
+        or len(value) < ADMIN_PASSWORD_MIN_LENGTH
+    )
+
+
+def is_weak_admin_username(value: str | None) -> bool:
+    """Return True when an admin username is unusable for production.
+
+    Composite of the two production clauses: exact known-weak member and
+    shipped placeholder prefix or empty/whitespace. Defined once here so the
+    configuration validator and the startup-time guard in DatabaseStarter
+    cannot drift apart. A missing value (None) is treated as weak.
+
+    Args:
+        value: The admin username to inspect, possibly None.
+
+    Returns:
+        bool: True if the username must be refused in production.
+    """
+    if value is None:
+        return True
+    return (
+        is_weak_credential(value, WEAK_USERNAMES)
+        or is_placeholder_credential(value)
+        or not value.strip()
+    )
+
+
 def _set_nested_value(data: dict[str, Any], key: str, value: Any) -> None:
     """Set a nested value in a dict using __ as separator.
 
@@ -441,35 +489,36 @@ class Settings(BaseSettings):
         This validator ensures they are explicitly set via environment variables.
         """
         if self.environment == EnvironmentEnum.PRODUCTION:
-            # Reject a weak or placeholder username without echoing the value.
-            # The exact-set test stays first so an exact weak member keeps its
-            # unchanged 'too common' message.
-            if is_weak_credential(self.admin_username, WEAK_USERNAMES):
+            # Reject an unusable username without echoing the value. The
+            # exact-weak-member case keeps its established diagnosis; the
+            # unset/placeholder case gets a distinct one that names the real
+            # problem instead of calling it 'too common'.
+            if is_weak_admin_username(self.admin_username):
+                if is_weak_credential(self.admin_username, WEAK_USERNAMES):
+                    raise ValueError(
+                        "Admin username is too common. "
+                        "Please choose a more secure username."
+                    )
                 raise ValueError(
-                    "Admin username is too common. "
-                    "Please choose a more secure username."
-                )
-            if is_placeholder_credential(self.admin_username) or not self.admin_username.strip():
-                raise ValueError(
-                    "Admin username is too common. "
-                    "Please choose a more secure username."
+                    "Admin username is unset or still a shipped placeholder "
+                    "value. Set ADMIN_USERNAME to a real, unique username."
                 )
             # Ordered most-specific first so an exact weak member keeps its message.
-            if is_weak_credential(self.admin_password, WEAK_PASSWORDS):
-                raise ValueError(
-                    "Admin password is too common. Please choose a more secure password."
-                )
-            if is_placeholder_credential(self.admin_password):
-                raise ValueError(
-                    "Admin password is a known placeholder value. "
-                    "Set ADMIN_PASSWORD to a strong, unique password."
-                )
-            if not self.admin_password.strip():
-                raise ValueError(
-                    "Admin password must not be empty. "
-                    "Set ADMIN_PASSWORD to a strong, unique password."
-                )
-            if len(self.admin_password) < ADMIN_PASSWORD_MIN_LENGTH:
+            if is_weak_admin_password(self.admin_password):
+                if is_weak_credential(self.admin_password, WEAK_PASSWORDS):
+                    raise ValueError(
+                        "Admin password is too common. Please choose a more secure password."
+                    )
+                if is_placeholder_credential(self.admin_password):
+                    raise ValueError(
+                        "Admin password is a known placeholder value. "
+                        "Set ADMIN_PASSWORD to a strong, unique password."
+                    )
+                if not self.admin_password.strip():
+                    raise ValueError(
+                        "Admin password must not be empty. "
+                        "Set ADMIN_PASSWORD to a strong, unique password."
+                    )
                 raise ValueError(
                     "Admin password is too short. Please choose a stronger password."
                 )

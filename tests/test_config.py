@@ -15,6 +15,15 @@ from mkobi.config import Settings
 from mkobi.models.enums import EnvironmentEnum, FileExtensionEnum
 
 
+def _validation_msg(exc_info: pytest.ExceptionInfo) -> str:
+    """Return the first pydantic validation message without echoing inputs.
+
+    Reading the ``msg`` field avoids pydantic's ``input_value=`` rendering,
+    which can embed the rejected secret in ``str(exc_info.value)``.
+    """
+    return str(exc_info.value.errors()[0]["msg"])
+
+
 class TestSettingsBase:
     """Base class for settings tests."""
 
@@ -374,7 +383,8 @@ class TestWeakCredentialDetection(TestSettingsBase):
         """Verify the shipped placeholder username alone is refused in production.
 
         docker/.env.example ships ADMIN_USERNAME=CHANGE_ME_ADMIN_USERNAME. Even
-        with a strong password, the username clause must refuse it.
+        with a strong password, the username must be refused, and the diagnosis
+        must name 'unset or still a shipped placeholder' rather than 'too common'.
         """
         submitted_username = "CHANGE_ME_ADMIN_USERNAME"
         monkeypatch.setenv("ENV", "production")
@@ -383,10 +393,21 @@ class TestWeakCredentialDetection(TestSettingsBase):
         monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
         with pytest.raises(ValueError) as exc_info:
             Settings()
-        message = str(exc_info.value)
-        assert "too common" in message
+        message = _validation_msg(exc_info)
+        assert "unset or still a shipped placeholder" in message
+        assert "too common" not in message
         assert submitted_username not in message
         assert submitted_username[:8] not in message
+
+    def test_exact_weak_username_still_diagnosed_as_too_common(self, monkeypatch):
+        """Verify an exact weak username keeps its unchanged 'too common' message."""
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("ADMIN_USERNAME", "root")
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongP@ss1")
+        monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
+        with pytest.raises(ValueError) as exc_info:
+            Settings()
+        assert "too common" in _validation_msg(exc_info)
 
     def test_shipped_placeholder_username_accepted_in_development(self, monkeypatch):
         """Verify the shipped placeholder username is accepted outside production."""
@@ -422,8 +443,11 @@ class TestWeakCredentialDetection(TestSettingsBase):
         monkeypatch.setenv("ADMIN_USERNAME", "")
         monkeypatch.setenv("ADMIN_PASSWORD", "StrongP@ss1")
         monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
-        with pytest.raises(ValueError, match="too common"):
+        with pytest.raises(ValueError) as exc_info:
             Settings()
+        message = _validation_msg(exc_info)
+        assert "unset or still a shipped placeholder" in message
+        assert "too common" not in message
 
     def test_rejection_message_does_not_leak_submitted_value(self, monkeypatch):
         """Verify the username rejection message never echoes the secret value."""
@@ -434,7 +458,7 @@ class TestWeakCredentialDetection(TestSettingsBase):
         monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
         with pytest.raises(ValueError) as exc_info:
             Settings()
-        message = str(exc_info.value)
+        message = _validation_msg(exc_info)
         assert "too common" in message
         assert submitted_username not in message
         assert submitted_username[:3] not in message
@@ -848,7 +872,7 @@ class TestProductionCredentialValidation(TestSettingsBase):
         clear_config_cache()
         with pytest.raises(ValueError) as exc_info:
             Settings()
-        message = str(exc_info.value)
+        message = _validation_msg(exc_info)
         assert "known placeholder value" in message
         assert submitted_password not in message
         assert submitted_password[:8] not in message

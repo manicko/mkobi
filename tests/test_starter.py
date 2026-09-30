@@ -27,7 +27,11 @@ from mkobi.models.enums import EnvironmentEnum  # noqa: E402
 class TestEnsureAdminUserPlaceholderCheck:
     """Tests for placeholder password rejection in ensure_admin_user()."""
 
+    # Every value below is refused by the shared composite. The set spans all
+    # four clauses so each branch is driven through the starter path, not just
+    # the exact WEAK_PASSWORDS membership test.
     @pytest.mark.parametrize("weak_password", [
+        # exact WEAK_PASSWORDS members
         "password",
         "123456",
         "admin",
@@ -39,11 +43,23 @@ class TestEnsureAdminUserPlaceholderCheck:
         "change_me",
         "placeholder",
         "postgres",
+        # change_me prefix but not an exact member
+        "CHANGE_ME_GENERATE_STRONG_PASSWORD",
+        "change_me_generate_strong_secret",
+        # empty / whitespace-only
+        "",
+        "        ",
+        # below the minimum length
+        "Ab1!",
     ])
     def test_ensure_admin_user_rejects_placeholder_password(
         self, monkeypatch, weak_password
     ):
-        """Verify ensure_admin_user raises ValueError for known placeholder passwords."""
+        """Verify ensure_admin_user raises ValueError for every weak-password clause.
+
+        The failure must happen before any session is acquired, so the test is
+        database-free.
+        """
         monkeypatch.setenv("ADMIN_PASSWORD", weak_password)
         monkeypatch.setenv("ADMIN_USERNAME", "test_admin")
 
@@ -52,7 +68,7 @@ class TestEnsureAdminUserPlaceholderCheck:
         clear_config_cache()
 
         # The starter is constructed at the production tier, the tier at which
-        # the guard refuses; the shared predicate still runs in every tier.
+        # the guard refuses; the shared composite still runs in every tier.
         starter = DatabaseStarter(
             DatabaseStarterConfig(env=EnvironmentEnum.PRODUCTION)
         )
@@ -98,9 +114,40 @@ class TestEnsureAdminUserPlaceholderCheck:
             DatabaseStarterConfig(env=EnvironmentEnum.DEVELOPMENT)
         )
 
-        # Should not raise - development only warns; the session factory is
-        # reached, which proves the guard did not refuse in this tier.
+        # Capture the warning through a handler attached directly to the
+        # emitting logger. The application's logging setup runs with
+        # disable_existing_loggers=True and propagate=False, and an earlier
+        # test in a full session can leave mkobi.db.starter unable to reach
+        # pytest's caplog root handler, so caplog is not reliable here.
         import asyncio
+        import logging
 
-        with pytest.raises(AssertionError, match="session factory"):
-            asyncio.run(starter.ensure_admin_user())
+        starter_logger = logging.getLogger("mkobi.db.starter")
+        captured: list[logging.LogRecord] = []
+
+        class _Collector(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                captured.append(record)
+
+        collector = _Collector(level=logging.WARNING)
+        original_level = starter_logger.level
+        starter_logger.addHandler(collector)
+        starter_logger.setLevel(logging.WARNING)
+        # A disabled logger drops records before any handler runs.
+        was_disabled = starter_logger.disabled
+        starter_logger.disabled = False
+        try:
+            # Should not raise - development only warns; the session factory is
+            # reached, which proves the guard did not refuse in this tier.
+            with pytest.raises(AssertionError, match="session factory"):
+                asyncio.run(starter.ensure_admin_user())
+        finally:
+            starter_logger.removeHandler(collector)
+            starter_logger.setLevel(original_level)
+            starter_logger.disabled = was_disabled
+
+        # The warning is the other half of 'warns and proceeds' - assert it fired.
+        assert any(
+            "Admin password is a known placeholder value" in record.getMessage()
+            for record in captured
+        )

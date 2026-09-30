@@ -21,12 +21,9 @@ from sqlalchemy import DDL, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from mkobi.config import (
-    ADMIN_PASSWORD_MIN_LENGTH,
-    WEAK_PASSWORDS,
-    WEAK_USERNAMES,
     get_config,
-    is_placeholder_credential,
-    is_weak_credential,
+    is_weak_admin_password,
+    is_weak_admin_username,
 )
 from mkobi.core.security import hash_password
 from mkobi.models.enums import EnvironmentEnum, ProcessingStatus, UserRole
@@ -338,14 +335,10 @@ class DatabaseStarter:
         admin_password = get_config().admin_password
 
         # Defense-in-depth: the configuration already refuses a weak password in
-        # production, this guard restates the predicate at the point of use so the
-        # two copies cannot diverge. In development a weak value only warns.
-        is_weak_password = (
-            is_weak_credential(admin_password, WEAK_PASSWORDS)
-            or is_placeholder_credential(admin_password)
-            or not admin_password.strip()
-            or len(admin_password) < ADMIN_PASSWORD_MIN_LENGTH
-        )
+        # production, this guard restates the shared predicate at the point of
+        # use so the two sites cannot diverge. In development a weak value only
+        # warns.
+        is_weak_password = is_weak_admin_password(admin_password)
         if is_weak_password and self._config.env == EnvironmentEnum.PRODUCTION:
             raise ValueError(
                 "Admin password is a known placeholder value. "
@@ -357,8 +350,8 @@ class DatabaseStarter:
                 "Set ADMIN_PASSWORD to a strong, unique password for production."
             )
 
-        # Warn if using a known-weak username (not production due to config validation).
-        if is_weak_credential(admin_email, WEAK_USERNAMES):
+        # Warn if using an unusable username (not production due to config validation).
+        if is_weak_admin_username(admin_email):
             logger.warning(
                 "Using default admin username - set ADMIN_USERNAME environment variable"
             )
