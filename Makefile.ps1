@@ -109,6 +109,14 @@ function Show-Help {
 function Invoke-Up {
     docker compose @DevCompose rm -sf migrate
     docker compose @DevCompose up -d --wait --wait-timeout $UpTimeout
+    $upExit = $LASTEXITCODE
+    if ($upExit -ne 0) {
+        Write-Host "The dev stack did not become healthy within $UpTimeout seconds (docker compose returned $upExit)." -ForegroundColor Red
+        Write-Host "Docker Compose reported the failing service and reason above. Next steps:"
+        Write-Host "  .\Makefile.ps1 ps            - container and health status"
+        Write-Host "  .\Makefile.ps1 logs <service>  - logs for the failing service (db, app, redis, rq-worker, frontend)"
+        Write-Host "  To allow a slow start, raise --wait-timeout above $UpTimeout in Makefile.ps1."
+    }
 }
 
 function Invoke-Down {
