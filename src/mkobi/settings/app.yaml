@@ -1,8 +1,11 @@
 # Environment tier: selected by the ENV environment variable.
-# The lowercase ``env`` key that used to sit here resolved to nothing:
-# Settings.environment declares alias="ENV" and matching is case-sensitive, so
-# the lowercase key was passed through unrenamed and dropped by extra="ignore".
-# Set the tier through the ENV variable instead.
+# The lowercase ``env`` key that used to sit here resolved to nothing. The
+# reason is not case-sensitivity of this file: Settings.environment declares
+# alias="ENV" without populate_by_name, so only the exact spelling ``ENV``
+# populates the field. The lowercase key addressed no field and was dropped by
+# extra="ignore". An uppercase ``ENV`` key here would work, but the lower
+# priority of this source means the supported way to select the tier is the
+# ENV environment variable.
 
 # App settings
 app:
