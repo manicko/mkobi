@@ -23,15 +23,16 @@
 # See TASK_055_assess_test_ports_removal_impact for full assessment.
 # =============================================================================
 
+name: mkobi-test
+
 services:
   test-db:
     image: postgres:18-bookworm
-    container_name: test-db
     environment:
       POSTGRES_DB: bidb_test
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${DATABASE__PASSWORD:-test_password}
-      MKOBI_APP_PASSWORD: ${MKOBI_APP_PASSWORD:-test_app_password}
+      POSTGRES_PASSWORD: test_password
+      MKOBI_APP_PASSWORD: test_app_password
       # Initialize with builtin locale provider for immutable collation (no OS-dependent version changes).
       # C.UTF-8 supports both Latin and Cyrillic properly, unlike C/POSIX which is ASCII-only.
       POSTGRES_INITDB_ARGS: "--locale-provider=builtin --locale=C.UTF-8"
@@ -39,7 +40,9 @@ services:
       - test_postgres_data:/var/lib/postgresql
       - ./init-scripts:/docker-entrypoint-initdb.d:ro
     ports:
-      - "5433:5432"
+      # Host port configurable to allow parallel checkouts on one machine.
+      # Default 5434 (5433 is commonly taken by other projects' test databases).
+      - "${TEST_DB_HOST_PORT:-5434}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d bidb_test"]
       interval: 5s
@@ -59,11 +62,11 @@ services:
 
   test-redis:
     image: redis:7.4-alpine
-    container_name: test-redis
     volumes:
       - test_redis_data:/data
     ports:
-      - "6380:6379"
+      # Host port configurable for parallel checkouts (default 6381).
+      - "${TEST_REDIS_HOST_PORT:-6381}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -85,7 +88,6 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: test
-    container_name: test-migrate
     command: ["alembic", "upgrade", "head"]
     environment:
       ENV: test
@@ -94,17 +96,17 @@ services:
       DATABASE__HOST: test-db
       DATABASE__PORT: 5432
       DATABASE__USER: postgres
-      DATABASE__PASSWORD: ${DATABASE__PASSWORD:-test_password}
+      DATABASE__PASSWORD: test_password
       DATABASE__DBNAME: bidb_test
       DATABASE__TEST_DBNAME: bidb_test
       DATABASE__ADMIN_USER: postgres
-      DATABASE__ADMIN_PASSWORD: ${DATABASE__PASSWORD:-test_password}
+      DATABASE__ADMIN_PASSWORD: test_password
       REDIS__HOST: test-redis
       REDIS__PORT: 6379
-      JWT__SECRET_KEY: ${JWT__SECRET_KEY:-test_jwt_secret_key_for_integration_tests_32_chars}
+      JWT__SECRET_KEY: test_jwt_secret_key_for_integration_tests_32_chars
       JWT__ALGORITHM: HS256
-      ADMIN_USERNAME: ${ADMIN_USERNAME:-test-admin@example.com}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-test-password-for-integration-tests}
+      ADMIN_USERNAME: test-admin@example.com
+      ADMIN_PASSWORD: test-password-for-integration-tests
     depends_on:
       test-db:
         condition: service_healthy
@@ -123,7 +125,6 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: test
-    container_name: test-app
     environment:
       ENV: test
       HOME: /tmp
@@ -131,21 +132,22 @@ services:
       DATABASE__HOST: test-db
       DATABASE__PORT: 5432
       DATABASE__USER: mkobi_app
-      DATABASE__PASSWORD: ${MKOBI_APP_PASSWORD:-test_app_password}
+      DATABASE__PASSWORD: test_app_password
       DATABASE__DBNAME: bidb_test
       DATABASE__TEST_DBNAME: bidb_test
       DATABASE__ADMIN_USER: postgres
-      DATABASE__ADMIN_PASSWORD: ${DATABASE__PASSWORD:-test_password}
+      DATABASE__ADMIN_PASSWORD: test_password
       REDIS__HOST: test-redis
       REDIS__PORT: 6379
-      JWT__SECRET_KEY: ${JWT__SECRET_KEY:-test_jwt_secret_key_for_integration_tests_32_chars}
+      JWT__SECRET_KEY: test_jwt_secret_key_for_integration_tests_32_chars
       JWT__ALGORITHM: HS256
-      ADMIN_USERNAME: ${ADMIN_USERNAME:-test-admin@example.com}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-test-password-for-integration-tests}
+      ADMIN_USERNAME: test-admin@example.com
+      ADMIN_PASSWORD: test-password-for-integration-tests
       LOGGING__LEVEL: WARNING
       RECREATE_TEST_DB: "true"
     ports:
-      - "8001:8000"
+      # Host port configurable for parallel checkouts (default 8001).
+      - "${TEST_APP_HOST_PORT:-8001}:8000"
     depends_on:
       test-migrate:
         condition: service_completed_successfully

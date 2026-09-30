@@ -7,6 +7,8 @@
 #   Test:        docker compose -f docker/docker-compose.test.yml up -d
 # =============================================================================
 
+name: mkobi
+
 services:
   # Shared configuration can be referenced with <<: *app-common
   # Note: Using explicit config instead of YAML anchors for clarity
@@ -108,7 +110,15 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
       UPLOAD__TEMP_DIR: /app/data/tmp_uploads
       LOGGING__LOG_FILE: /app/data/logs/app.log
-      CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required in production}
+      # Redis connection for rate limiting and token revocation (fail-closed).
+      # Default host is "localhost" (config.py), which is the container itself,
+      # so it must be overridden to the compose service name.
+      REDIS__HOST: redis
+      REDIS__PORT: "6379"
+      # Default is a known placeholder origin: src/mkobi/config.py rejects it when
+      # ENV=production, so a missing value fails closed at app startup instead of
+      # silently serving a permissive policy.
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173"]}
       LOGGING__LEVEL: ${LOGGING__LEVEL:-INFO}
       # AUTO_MIGRATE removed - migrations handled by dedicated migrate service
     volumes:
@@ -202,8 +212,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    profiles:
-      - production
     deploy:
       resources:
         limits:
