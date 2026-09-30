@@ -155,12 +155,16 @@ class SecretsFileSource(PydanticBaseSettingsSource):
     def __call__(self) -> dict[str, Any]:
         """Read secrets from file-based environment variables.
 
-        Only variables whose base name is a secret-bearing field are honoured;
-        every other *_FILE name is skipped without reading anything, at debug
-        level (variable name only, never the value).
+        Only variables whose base name is a secret-bearing field are honoured.
+        A *_FILE name that resolves to an ordinary settings field is skipped
+        with a warning naming the variable and the field (never the value),
+        because silently ignoring it would let the field fall back to another
+        source. A *_FILE name that resolves to no field at all is skipped at
+        debug level.
         """
         result: dict[str, Any] = {}
         allowed_names = _secret_field_env_names(self.settings_cls)
+        known_names = _all_field_env_names(self.settings_cls)
 
         # Look for environment variables ending with _FILE
         for env_var_name in list(os.environ.keys()):
@@ -169,7 +173,22 @@ class SecretsFileSource(PydanticBaseSettingsSource):
             # Get the base env var name (without _FILE suffix)
             base_env_var = env_var_name[:-5]  # Remove "_FILE"
             if base_env_var.lower() not in allowed_names:
-                logger.debug("Skipping non-secret *_FILE variable: %s", env_var_name)
+                if base_env_var.lower() in known_names:
+                    # A real, addressable field that simply is not secret-bearing.
+                    # Ignoring it silently would let a mis-set *_FILE fall back to
+                    # another source's value, so surface the mistake by name.
+                    logger.warning(
+                        "Ignoring *_FILE variable %s: %s is not a secret-bearing field",
+                        env_var_name,
+                        base_env_var,
+                    )
+                else:
+                    # Names nothing on Settings (for example LOGGING__LOG_FILE,
+                    # which strips to logging.log). Silent at debug level.
+                    logger.debug(
+                        "Skipping *_FILE variable that names no settings field: %s",
+                        env_var_name,
+                    )
                 continue
 
             file_path_str = os.environ[env_var_name]
@@ -358,6 +377,62 @@ def _secret_field_env_names(settings_cls: type[BaseSettings]) -> frozenset[str]:
                     f"Secret field registry names {model.__name__}.{inner}, which does not exist."
                 )
             names.add(f"{outer}{delimiter}{inner}".lower())
+    return frozenset(names)
+
+
+@functools.cache
+def _all_field_env_names(settings_cls: type[BaseSettings]) -> frozenset[str]:
+    """Derive every addressable environment name on the settings model.
+
+    Symmetric with _secret_field_env_names but not limited to secrets: it walks
+    each top-level field, using its alias when it declares one, and recurses
+    into nested BaseModel fields. SecretsFileSource consults this set to tell a
+    mis-set *_FILE name that resolves to an ordinary field (warning) from one
+    that resolves to nothing at all (debug). Derived, never hand-written, so it
+    cannot drift from the model. Lazy and memoised because SecretsFileSource is
+    declared before the models in this module.
+
+    Args:
+        settings_cls: The settings class to walk.
+
+    Returns:
+        frozenset[str]: Lower-cased environment names of every addressable
+            field path on the model.
+
+    Raises:
+        TypeError: If a secret-bearing name derived from SECRET_FIELD_REGISTRY
+            is not present in the derived all-field set, so the two derivations
+            cannot silently disagree.
+    """
+    delimiter = settings_cls.model_config.get("env_nested_delimiter", "__")
+
+    def env_name(field_name: str, field_info: FieldInfo) -> str:
+        # pydantic-settings resolves a field from its alias when one is set,
+        # otherwise from its field name, and matching is case-insensitive here.
+        return str(field_info.alias or field_name).lower()
+
+    def walk(model: type[BaseModel], prefix: str) -> None:
+        for field_name, field_info in model.model_fields.items():
+            path = f"{prefix}{delimiter}{env_name(field_name, field_info)}"
+            names.add(path)
+            annotation = field_info.annotation
+            if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+                walk(annotation, path)
+
+    names: set[str] = set()
+    for field_name, field_info in settings_cls.model_fields.items():
+        top = env_name(field_name, field_info)
+        names.add(top)
+        annotation = field_info.annotation
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            walk(annotation, top)
+
+    missing = _secret_field_env_names(settings_cls) - names  # type: ignore[arg-type]
+    if missing:
+        raise TypeError(
+            "Secret field registry names settings fields absent from the derived "
+            f"all-field set: {sorted(missing)}. Update SECRET_FIELD_REGISTRY."
+        )
     return frozenset(names)
 
 
@@ -636,6 +711,22 @@ class Settings(BaseSettings):
                     "DATABASE__PASSWORD is a known placeholder value. "
                     "Set a strong password for production."
                 )
+            # Check the database admin password against the same placeholder
+            # and emptiness clauses. It has no strength guard of its own beyond
+            # the length check, so the shipped CHANGE_ME_* value would otherwise
+            # pass production unexamined.
+            db_admin_password = self.database.admin_password
+            if db_admin_password is not None:
+                if is_placeholder_credential(db_admin_password):
+                    raise ValueError(
+                        "DATABASE__ADMIN_PASSWORD is a known placeholder value. "
+                        "Set a strong password for production."
+                    )
+                if not db_admin_password.strip():
+                    raise ValueError(
+                        "DATABASE__ADMIN_PASSWORD must not be empty. "
+                        "Set a strong password for production."
+                    )
             # Check JWT secret against known-weak values. The exact-set test
             # stays first for the same reason.
             jwt_secret = self.jwt.secret_key

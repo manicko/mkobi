@@ -176,30 +176,12 @@ class TestSettingsDockerSecrets(TestSettingsBase):
         settings = Settings()
         assert settings.redis.password == "redis-secret-from-file"
 
-    def test_docker_secret_non_secret_base_is_ignored(self, tmp_path, monkeypatch):
-        """A *_FILE variable for a non-secret field is ignored, not read.
-
-        Documentation of the original reproduction: LOGGING__LOG_FILE is a
-        path-valued field, and pre-fix the source read the directory the empty
-        path resolved to. The assertion below is not by itself discriminating
-        (the pre-fix injection lands on the nonexistent inner key ``log`` and is
-        dropped by extra="ignore"), so the discriminating regression test is
-        ``test_docker_secret_non_secret_base_cannot_inject_into_list_field``.
-        """
-        secret_file = tmp_path / "log_target"
-        secret_file.write_text("must-not-be-read")
-
-        monkeypatch.setenv("LOGGING__LOG_FILE", str(secret_file))
-
-        settings = Settings()
-        # The path-valued field keeps the path it was given, not the file contents.
-        assert settings.logging.log_file == str(secret_file)
-
     def test_docker_secret_non_secret_base_cannot_inject_into_list_field(
         self, tmp_path, monkeypatch
     ):
         """A non-secret *_FILE base must not abort startup on an unrelated field.
 
+        This is the discriminating regression test for the *_FILE allow-list.
         Pre-fix, UPLOAD__ALLOWED_EXTENSIONS_FILE injected the file's string
         contents into the list-valued ``upload.allowed_extensions`` field and
         raised ValidationError, aborting startup on a configuration point that
@@ -977,8 +959,14 @@ class TestProductionCredentialValidation(TestSettingsBase):
         with pytest.raises(ValueError, match="DATABASE__PASSWORD is a known placeholder value"):
             Settings()
 
-    def test_db_password_rejection_message_does_not_leak_submitted_value(self, monkeypatch):
-        """Verify the db password rejection message never echoes the secret value."""
+    def test_db_password_placeholder_rejection_message_does_not_leak_submitted_value(self, monkeypatch):
+        """The construction-time placeholder rejection never echoes the secret.
+
+        The weak/placeholder database password is refused during Settings
+        construction by validate_production_credentials, so this test targets
+        that guard's message (it is the only reachable one; DATABASE_URL's own
+        weak-password branch cannot be reached once construction has refused).
+        """
         submitted_password = "CHANGE_ME_GENERATE_STRONG_SECRET"
         monkeypatch.setenv("ENV", "production")
         monkeypatch.setenv("DATABASE__PASSWORD", submitted_password)
@@ -994,6 +982,54 @@ class TestProductionCredentialValidation(TestSettingsBase):
         assert "known placeholder value" in message
         assert submitted_password not in message
         assert submitted_password[:8] not in message
+
+    @pytest.mark.parametrize("placeholder_admin_password", [
+        "CHANGE_ME_GENERATE_STRONG_SECRET",
+        "change_me_generate_strong_secret",
+    ])
+    def test_placeholder_db_admin_password_rejected_in_production(
+        self, monkeypatch, placeholder_admin_password
+    ):
+        """Verify a CHANGE_ME_-prefixed database admin password is rejected.
+
+        DATABASE__ADMIN_PASSWORD reaches the production tier through the compose
+        files for db and migrate; before this guard, only its length was checked,
+        so a shipped placeholder passed unexamined.
+        """
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("DATABASE__PASSWORD", "StrongDbP@ssw0rd123!")
+        monkeypatch.setenv("DATABASE__ADMIN_PASSWORD", placeholder_admin_password)
+        monkeypatch.setenv("JWT__SECRET_KEY", "strong-jwt-secret-key-32-characters-long!")
+        monkeypatch.setenv("ADMIN_USERNAME", "prodadmin")
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongP@ss1")
+        monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
+        from mkobi.config import clear_config_cache
+        clear_config_cache()
+        with pytest.raises(ValueError, match="DATABASE__ADMIN_PASSWORD is a known placeholder value"):
+            Settings()
+
+    def test_empty_db_admin_password_rejected_in_production(self, monkeypatch):
+        """Verify an empty database admin password is rejected in production."""
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("DATABASE__PASSWORD", "StrongDbP@ssw0rd123!")
+        monkeypatch.setenv("DATABASE__ADMIN_PASSWORD", "        ")
+        monkeypatch.setenv("JWT__SECRET_KEY", "strong-jwt-secret-key-32-characters-long!")
+        monkeypatch.setenv("ADMIN_USERNAME", "prodadmin")
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongP@ss1")
+        monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
+        from mkobi.config import clear_config_cache
+        clear_config_cache()
+        with pytest.raises(ValueError, match="DATABASE__ADMIN_PASSWORD must not be empty"):
+            Settings()
+
+    def test_placeholder_db_admin_password_accepted_outside_production(self, monkeypatch):
+        """Verify the placeholder guard on the db admin password is production-gated."""
+        monkeypatch.setenv("ENV", "development")
+        monkeypatch.setenv("DATABASE__ADMIN_PASSWORD", "CHANGE_ME_GENERATE_STRONG_SECRET")
+        from mkobi.config import clear_config_cache
+        clear_config_cache()
+        settings = Settings()
+        assert settings.database.admin_password == "CHANGE_ME_GENERATE_STRONG_SECRET"
 
     def test_placeholder_jwt_secret_still_accepted_in_development(self, monkeypatch):
         """Verify CHANGE_ME_GENERATE_WITH_OPENSSL_RAND_HEX_32 is accepted as a JWT secret.
@@ -1019,3 +1055,147 @@ class TestProductionCredentialValidation(TestSettingsBase):
         # Should not raise - staging allows weak db credentials
         settings = Settings()
         assert settings.database.password == "CHANGE_ME_GENERATE_STRONG_SECRET"
+
+
+
+class TestProductionServiceSettingsSurface(TestSettingsBase):
+    """Every production service that constructs Settings must satisfy one surface.
+
+    migrate (via alembic/env.py) and rq-worker build Settings() at the pinned
+    production tier, exactly as app does, so each must carry the same required
+    variables. The regression these tests pin is the whole-stack boot failure
+    those two services hit when CORS_ORIGINS was supplied to app only.
+    """
+
+    def test_production_settings_construct_with_service_shaped_environment(
+        self, monkeypatch
+    ):
+        """A production Settings with the migrate service's full surface constructs.
+
+        The compose files resolve CORS_ORIGINS for migrate, app and rq-worker
+        alike; an operator's env file is not required to set it. Without that
+        resolution, cors_origins falls back to app.yaml's two localhost
+        placeholders and construction raises, so migrate exits non-zero and app
+        and rq-worker, which depend on migrate completing, never start.
+        """
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("DATABASE__PASSWORD", "StrongDbP@ssw0rd123!")
+        monkeypatch.setenv("JWT__SECRET_KEY", "strong-jwt-secret-key-32-characters-long!")
+        monkeypatch.setenv("ADMIN_USERNAME", "prodadmin")
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongP@ss1")
+        # The value docker/docker-compose.yml resolves for every
+        # Settings-constructing production service.
+        monkeypatch.setenv("CORS_ORIGINS", '["https://service.example.com"]')
+        from mkobi.config import clear_config_cache
+        clear_config_cache()
+        settings = Settings(_env_file=None)
+        assert settings.environment == EnvironmentEnum.PRODUCTION
+        assert settings.cors_origins == ["https://service.example.com"]
+
+    def test_production_settings_without_cors_origins_fail_closed(self, monkeypatch):
+        """With no CORS_ORIGINS, construction refuses the app.yaml placeholders.
+
+        This is the exact failure the pre-fix migrate and rq-worker containers
+        produced. It is the precondition that makes supplying CORS_ORIGINS to
+        every Settings-constructing service mandatory rather than optional.
+        """
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("DATABASE__PASSWORD", "StrongDbP@ssw0rd123!")
+        monkeypatch.setenv("JWT__SECRET_KEY", "strong-jwt-secret-key-32-characters-long!")
+        monkeypatch.setenv("ADMIN_USERNAME", "prodadmin")
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongP@ss1")
+        monkeypatch.delenv("CORS_ORIGINS", raising=False)
+        from mkobi.config import clear_config_cache
+        clear_config_cache()
+        with pytest.raises(ValueError, match="Placeholder CORS origins not allowed in production"):
+            Settings(_env_file=None)
+
+
+class TestSecretsFileFieldNameWarning(TestSettingsBase):
+    """A *_FILE name that resolves to a real non-secret field warns; a name that
+    resolves to no field stays at debug."""
+
+    def _collect(self, logger_name: str, level: int):
+        import logging
+
+        captured: list[logging.LogRecord] = []
+
+        class _Collector(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                captured.append(record)
+
+        target_logger = logging.getLogger(logger_name)
+        collector = _Collector(level=level)
+        original_level = target_logger.level
+        was_disabled = target_logger.disabled
+        target_logger.addHandler(collector)
+        target_logger.setLevel(level)
+        target_logger.disabled = False
+        return target_logger, collector, captured, original_level, was_disabled
+
+    def test_file_variable_naming_ordinary_field_warns(self, tmp_path, monkeypatch):
+        """DATABASE__USER_FILE names the ordinary field database.user, so it warns.
+
+        Silently ignoring it would let database.user fall back to app.yaml's
+        postgres superuser rather than the intended least-privilege role.
+        """
+        import logging
+
+        payload_file = tmp_path / "db_user"
+        payload_file.write_text("some_role")
+        monkeypatch.setenv("DATABASE__USER_FILE", str(payload_file))
+        monkeypatch.setenv("LOGGING__LOG_FILE", str(tmp_path / "logs.txt"))
+
+        target_logger, collector, captured, original_level, was_disabled = self._collect(
+            "mkobi.config", logging.WARNING
+        )
+        try:
+            from mkobi.config import SecretsFileSource
+
+            assert SecretsFileSource(Settings)() == {}
+        finally:
+            target_logger.removeHandler(collector)
+            target_logger.setLevel(original_level)
+            target_logger.disabled = was_disabled
+
+        warnings = [r.getMessage() for r in captured if r.levelno == logging.WARNING]
+        assert any("DATABASE__USER_FILE" in m and "DATABASE__USER" in m for m in warnings)
+        # The field that resolves to nothing stays quiet at warning level.
+        assert not any("LOGGING__LOG_FILE" in m for m in warnings)
+
+    def test_file_variable_naming_no_field_does_not_warn(self, tmp_path, monkeypatch):
+        """A *_FILE name that resolves to no field is skipped at debug, not warned.
+
+        LOGGING__LOG_FILE strips to logging.log, which is not a field, so the
+        running dev stack stays quiet.
+        """
+        import logging
+
+        monkeypatch.setenv("LOGGING__LOG_FILE", str(tmp_path / "logs.txt"))
+
+        target_logger, collector, captured, original_level, was_disabled = self._collect(
+            "mkobi.config", logging.DEBUG
+        )
+        try:
+            from mkobi.config import SecretsFileSource
+
+            assert SecretsFileSource(Settings)() == {}
+        finally:
+            target_logger.removeHandler(collector)
+            target_logger.setLevel(original_level)
+            target_logger.disabled = was_disabled
+
+        assert not any(r.levelno >= logging.WARNING for r in captured)
+
+    def test_all_field_env_names_derivation_covers_secret_fields(self):
+        """The all-field derivation is a superset of the secret-field derivation."""
+        from mkobi.config import _all_field_env_names, _secret_field_env_names
+
+        all_names = _all_field_env_names(Settings)
+        assert _secret_field_env_names(Settings) <= all_names
+        # Nested, aliased and top-level names all resolve.
+        assert "database__user" in all_names
+        assert "admin_username" in all_names
+        assert "upload__allowed_extensions" in all_names
+        # A non-field name is absent.
+        assert "logging__log" not in all_names
