@@ -353,16 +353,16 @@ class TestUploadSettings(TestSettingsBase):
         ``data/tmp_uploads``, so UploadSettings falls back to its own
         platformdirs default, which is absolute on every platform.
 
-        Precondition: an untracked ``.env`` must not set ``UPLOAD__TEMP_DIR``.
-        The dotenv source outranks the YAML source and cannot be suppressed by
-        ``monkeypatch.delenv``, so this constructs the unit under test directly
-        rather than through the full Settings source chain.
+        The assertion goes through the real ``Settings`` source chain so that it
+        observes app.yaml; constructing ``UploadSettings`` directly would bypass
+        the YAML source and could never fail if a relative key were restored.
+        ``_env_file=None`` neutralises any untracked local ``.env``, whose dotenv
+        source outranks the YAML source and cannot be suppressed by
+        ``monkeypatch.delenv``.
         """
         from pathlib import Path
 
-        from mkobi.config import UploadSettings
-
-        resolved = UploadSettings().temp_dir
+        resolved = Settings(_env_file=None).upload.temp_dir
         assert Path(resolved).is_absolute()
         assert not resolved.endswith("data/tmp_uploads")
 

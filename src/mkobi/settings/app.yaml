@@ -1,7 +1,8 @@
-# Environment tier: selected by the ENV environment variable, not by this file.
-# Settings.environment declares alias="ENV" with no validation_alias, so a YAML
-# key of any name is passed through unrenamed and dropped by extra="ignore".
-# This file therefore has no effective way to set the tier; use ENV instead.
+# Environment tier: selected by the ENV environment variable.
+# The lowercase ``env`` key that used to sit here resolved to nothing:
+# Settings.environment declares alias="ENV" and matching is case-sensitive, so
+# the lowercase key was passed through unrenamed and dropped by extra="ignore".
+# Set the tier through the ENV variable instead.
 
 # App settings
 app:
