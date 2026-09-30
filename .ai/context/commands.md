@@ -6,7 +6,7 @@
 - **Package manager (Python):** uv
 - **Package manager (Frontend):** npm
 - **Database (Development):** PostgreSQL (localhost:5432, db: bidb, user: mkobi_app)
-- **Database (Testing):** PostgreSQL (localhost:5433, db: bidb_test, user: mkobi_app)
+- **Database (Testing):** PostgreSQL (localhost:5434, db: bidb_test, user: mkobi_app)
   - Default password: `test_app_password` (mkobi_app user)
   - Admin password: `test_password` (postgres user)
 
@@ -47,7 +47,7 @@ IMPORTANT: USE Get-Content to read .env files.
 | Add dependency | `uv add <package>` |
 | Add dev dependency | `uv add --dev <package>` |
 | Database CLI (dev) | `set "PGPASSWORD=<your_password>" & psql -h localhost -p 5432 -U postgres -d bidb` |
-| Database CLI (test) | `set "PGPASSWORD=test_password" & psql -h localhost -p 5433 -U postgres -d bidb_test` |
+| Database CLI (test) | `set "PGPASSWORD=test_password" & psql -h localhost -p 5434 -U postgres -d bidb_test` |
 
 > **Always run from repo root:** `C:\py_dev\mkobi`
 
