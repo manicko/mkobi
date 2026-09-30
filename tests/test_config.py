@@ -370,20 +370,33 @@ class TestWeakCredentialDetection(TestSettingsBase):
         with pytest.raises(ValueError, match="known placeholder value"):
             Settings()
 
-    def test_shipped_placeholder_template_refused_in_production(self, monkeypatch):
-        """Verify the shipped template credentials are refused as a whole.
+    def test_shipped_placeholder_username_refused_in_production(self, monkeypatch):
+        """Verify the shipped placeholder username alone is refused in production.
 
-        docker/.env.example ships ADMIN_USERNAME=CHANGE_ME_ADMIN_USERNAME and
-        ADMIN_PASSWORD=CHANGE_ME_GENERATE_STRONG_PASSWORD. Production must
-        refuse that pair; the password clause is the one that fires (R4 gives
-        the username only an emptiness rule).
+        docker/.env.example ships ADMIN_USERNAME=CHANGE_ME_ADMIN_USERNAME. Even
+        with a strong password, the username clause must refuse it.
         """
+        submitted_username = "CHANGE_ME_ADMIN_USERNAME"
         monkeypatch.setenv("ENV", "production")
-        monkeypatch.setenv("ADMIN_USERNAME", "CHANGE_ME_ADMIN_USERNAME")
-        monkeypatch.setenv("ADMIN_PASSWORD", "CHANGE_ME_GENERATE_STRONG_PASSWORD")
+        monkeypatch.setenv("ADMIN_USERNAME", submitted_username)
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongP@ss1")
         monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
-        with pytest.raises(ValueError, match="known placeholder value"):
+        with pytest.raises(ValueError) as exc_info:
             Settings()
+        message = str(exc_info.value)
+        assert "too common" in message
+        assert submitted_username not in message
+        assert submitted_username[:8] not in message
+
+    def test_shipped_placeholder_username_accepted_in_development(self, monkeypatch):
+        """Verify the shipped placeholder username is accepted outside production."""
+        monkeypatch.setenv("ENV", "development")
+        monkeypatch.setenv("ADMIN_USERNAME", "CHANGE_ME_ADMIN_USERNAME")
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongP@ss1")
+        from mkobi.config import clear_config_cache
+        clear_config_cache()
+        settings = Settings()
+        assert settings.admin_username == "CHANGE_ME_ADMIN_USERNAME"
 
     def test_empty_admin_password_rejected_in_production(self, monkeypatch):
         """Verify an empty admin password is rejected in production."""

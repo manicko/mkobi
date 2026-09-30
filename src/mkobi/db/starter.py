@@ -25,6 +25,7 @@ from mkobi.config import (
     WEAK_PASSWORDS,
     WEAK_USERNAMES,
     get_config,
+    is_placeholder_credential,
     is_weak_credential,
 )
 from mkobi.core.security import hash_password
@@ -341,7 +342,7 @@ class DatabaseStarter:
         # two copies cannot diverge. In development a weak value only warns.
         is_weak_password = (
             is_weak_credential(admin_password, WEAK_PASSWORDS)
-            or admin_password.lower().startswith("change_me")
+            or is_placeholder_credential(admin_password)
             or not admin_password.strip()
             or len(admin_password) < ADMIN_PASSWORD_MIN_LENGTH
         )

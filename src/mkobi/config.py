@@ -35,6 +35,9 @@ WEAK_PASSWORDS = {
 # and Settings.validate_admin_credentials so the two guards cannot drift apart.
 ADMIN_PASSWORD_MIN_LENGTH = 8
 
+# Case-insensitive prefix that marks a shipped placeholder credential.
+PLACEHOLDER_CREDENTIAL_PREFIX = "change_me"
+
 
 def is_weak_credential(value: str | None, weak_values: Collection[str]) -> bool:
     """Return True when a credential is a known weak or placeholder value.
@@ -54,6 +57,25 @@ def is_weak_credential(value: str | None, weak_values: Collection[str]) -> bool:
     if value is None:
         return False
     return value.lower() in {weak.lower() for weak in weak_values}
+
+
+def is_placeholder_credential(value: str | None) -> bool:
+    """Return True when a credential carries the shipped placeholder prefix.
+
+    A missing value (None) is not a placeholder. Matching is case-insensitive
+    and prefix based, which is the rule that catches the CHANGE_ME_ family the
+    shipped templates use but which is only an exact member for some values.
+
+    Args:
+        value: The credential value to inspect, possibly None.
+
+    Returns:
+        bool: True if the value starts with the placeholder prefix, ignoring
+            case; False otherwise.
+    """
+    if value is None:
+        return False
+    return value.lower().startswith(PLACEHOLDER_CREDENTIAL_PREFIX)
 
 
 def _set_nested_value(data: dict[str, Any], key: str, value: Any) -> None:
@@ -419,8 +441,15 @@ class Settings(BaseSettings):
         This validator ensures they are explicitly set via environment variables.
         """
         if self.environment == EnvironmentEnum.PRODUCTION:
-            # Reject a weak username without echoing the submitted value.
-            if is_weak_credential(self.admin_username, WEAK_USERNAMES) or not self.admin_username.strip():
+            # Reject a weak or placeholder username without echoing the value.
+            # The exact-set test stays first so an exact weak member keeps its
+            # unchanged 'too common' message.
+            if is_weak_credential(self.admin_username, WEAK_USERNAMES):
+                raise ValueError(
+                    "Admin username is too common. "
+                    "Please choose a more secure username."
+                )
+            if is_placeholder_credential(self.admin_username) or not self.admin_username.strip():
                 raise ValueError(
                     "Admin username is too common. "
                     "Please choose a more secure username."
@@ -430,7 +459,7 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "Admin password is too common. Please choose a more secure password."
                 )
-            if self.admin_password.lower().startswith("change_me"):
+            if is_placeholder_credential(self.admin_password):
                 raise ValueError(
                     "Admin password is a known placeholder value. "
                     "Set ADMIN_PASSWORD to a strong, unique password."
@@ -518,7 +547,7 @@ class Settings(BaseSettings):
                     "DATABASE__PASSWORD is a known weak/placeholder value. "
                     "Set a strong password for production."
                 )
-            if db_password and db_password.lower().startswith("change_me"):
+            if db_password and is_placeholder_credential(db_password):
                 raise ValueError(
                     "DATABASE__PASSWORD is a known placeholder value. "
                     "Set a strong password for production."
@@ -531,7 +560,7 @@ class Settings(BaseSettings):
                     "JWT__SECRET_KEY is a known weak/placeholder value. "
                     "Generate a strong secret for production."
                 )
-            if jwt_secret and jwt_secret.lower().startswith("change_me"):
+            if jwt_secret and is_placeholder_credential(jwt_secret):
                 raise ValueError(
                     "JWT__SECRET_KEY is a known placeholder value. "
                     "Generate a strong secret for production."
