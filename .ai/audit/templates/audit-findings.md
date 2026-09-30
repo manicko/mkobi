@@ -1,79 +1,72 @@
 ---
-name: audit-findings
-description: Structured findings template for audit phase output
-agent: audit-executor
-alwaysApply: false
+phase: NN-phase-name
+executed: YYYY-MM-DD
+executor: auditor
+problems-only: true
+findings: N
+by-severity:
+  CRITICAL: 0
+  HIGH: 0
+  MEDIUM: 0
+  LOW: 0
 ---
 
-# Phase N Audit Findings — {Phase Name}
-
-**Executor:** audit-executor
-**Template:** {phase-template-file}
-**Status:** {pending|in-progress|complete}
-**Validated:** {yes|no}
-
----
-
-## Findings
-
-### {ID}: {Title}
-
-| Field | Value |
-|-------|-------|
-| **ID** | {id} |
-| **Severity** | {severity} |
-| **Type** | {type} |
-| **Affected Modules** | {modules} |
-| **Classification** | {mandatory\|advisory} |
-
-**Description:** {description}
-
-**Evidence:** {evidence}
-
-**Recommendation:** {recommendation}
-
----
+# Phase NN — Findings
 
 ## Summary
 
-| Severity | Count |
-|----------|-------|
-| CRITICAL | 0 |
-| HIGH | 0 |
-| MEDIUM | 0 |
-| LOW | 0 |
+Three to six sentences. What zone was examined, what was reached at runtime, and the single
+most consequential thing found. If the phase produced no findings, state the exact reserved
+string `No problems found in this phase.` and stop — do not pad the section.
 
-## Mandatory Fixes
+## Findings
 
-{List all findings classified as mandatory}
+One block per finding, in descending severity. No finding without all five fields.
 
-## Advisory Recommendations
+### PREFIX-001 — <one-line title stating the effect, not the mechanism>
 
-{List all findings classified as advisory}
+**Severity** — CRITICAL | HIGH | MEDIUM | LOW
 
-## Doc Updates Needed
+**Zone** — the audit block title this finding came from, quoted verbatim.
 
-{List all findings classified as DOC-UPDATE type}
+**Observation** — what is true now, stated as a fact about the system. Concrete: the component,
+the value, the path shape, the reproduced behaviour. No hedging.
 
----
+**Evidence** — the artefact that makes the claim checkable: observed output, a reproduced
+behaviour, or a static proof that a stated property does not hold. Name it; do not paste a
+transcript of the entire session.
 
-## Template Field Reference
+**Consequence** — the exact effect on this system, at its real blast radius, as it stands
+today. Not the worst case if triggered again under different conditions; what is true now.
 
-### Mandatory Fields Per Finding
+**Recommendation** — the smallest change that removes the effect, and the direction to take
+when the fix has more than one reasonable shape. Where a shipped test currently asserts the
+behaviour, name it as a remediation blocker: the test encodes the defect and must change with
+it.
 
-| Field | Type | Values/Format |
-|-------|------|---------------|
-| `id` | string | Unique identifier within phase (e.g., `BE-001`, `FE-003`) |
-| `title` | string | Human-readable one-line summary |
-| `type` | enum | `SPEC-DEVIATION`, `BEST-PRACTICE`, `DOC-UPDATE`, `RUNTIME-ERROR` |
-| `severity` | enum | `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` |
-| `description` | string | Detailed problem description with context |
-| `evidence` | string | File paths, line references, log excerpts, code snippets |
-| `affected_modules` | list | Affected module paths (e.g., `src/mkobi/api/routes/`, `frontend/src/features/auth/`) |
-| `recommendation` | string | Concrete fix direction: what to change and why |
-| `classification` | enum | `mandatory` (security, data loss, correctness) or `advisory` (improvement, refactoring) |
+## Distribution
 
-### Classification Guide
+Which components, tiers, environments or roles the findings fall on, and which single one
+carries the most. One short paragraph plus at most five bullets.
 
-- **mandatory**: Security vulnerabilities, data loss risks, correctness issues, spec deviations requiring immediate fix
-- **advisory**: Code quality improvements, refactoring suggestions, best practice enhancements
+## Cross-Finding Analysis
+
+Only when two or more findings in this phase share a cause. Name the cause and the findings
+that share it. If every finding is independent, write one line saying so — do not manufacture
+a pattern.
+
+## Roadmap
+
+Ordered remediation sequence, each step naming the findings it closes and what must be true
+before the next step starts. Group by cause, not by severity, when causes differ.
+
+## Rollout Safety
+
+For any step that changes observable behaviour: what could break, which other zone depends on
+the current behaviour, what must be verified afterwards, and how to revert. One or two
+paragraphs; omit the section only if no step changes observable behaviour.
+
+## Appendices
+
+Supporting detail that would otherwise dilute the findings: enumeration tables, derived
+counts, measurement method, artefacts consulted. Optional.
