@@ -20,8 +20,13 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 # A parameterless param() block keeps every token verbatim in $args. Declaring
 # named parameters (e.g. -k) would make PowerShell try to bind them as parameter
 # names and fail before the body runs.
+# The @() wrapper is mandatory, not stylistic: `if` is a statement, so a
+# one-element array it emits is unrolled on assignment and $Rest collapses to
+# System.String. $Rest[0] then becomes a character ('.') and @Rest splats one
+# argument per character, silently breaking every target that forwards a single
+# trailing argument. Keep the parameterless param() block, and keep the @().
 $Target = if ($args.Count -gt 0) { [string]$args[0] } else { 'help' }
-$Rest   = if ($args.Count -gt 1) { [string[]]$args[1..($args.Count - 1)] } else { [string[]]@() }
+$Rest   = @(if ($args.Count -gt 1) { [string[]]$args[1..($args.Count - 1)] } else { })
 
 $DevProject  = 'mkobi'
 $TestProject = 'mkobi-test'
