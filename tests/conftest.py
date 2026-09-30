@@ -15,7 +15,7 @@ from sqlalchemy.pool import NullPool
 # Use setdefault to allow Docker Compose env vars to take precedence in containers
 os.environ.setdefault("ENV", "test")
 os.environ.setdefault("DATABASE__HOST", "localhost")
-os.environ.setdefault("DATABASE__PORT", "5433")
+os.environ.setdefault("DATABASE__PORT", "5434")
 os.environ.setdefault("DATABASE__DBNAME", "bidb_test")
 os.environ.setdefault("DATABASE__USER", "mkobi_app")
 os.environ.setdefault("DATABASE__PASSWORD", "test_app_password")
@@ -39,7 +39,7 @@ def pytest_load_initial_conftests(early_config, parser, args):
     # Use setdefault to allow Docker Compose env vars to take precedence in containers
     os.environ.setdefault("ENV", "test")
     os.environ.setdefault("DATABASE__HOST", "localhost")
-    os.environ.setdefault("DATABASE__PORT", "5433")
+    os.environ.setdefault("DATABASE__PORT", "5434")
     os.environ.setdefault("DATABASE__DBNAME", "bidb_test")
     os.environ.setdefault("DATABASE__USER", "mkobi_app")
     os.environ.setdefault("DATABASE__ADMIN_USER", "postgres")
