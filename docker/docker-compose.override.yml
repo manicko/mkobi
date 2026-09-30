@@ -86,6 +86,14 @@ services:
       # uvicorn --reload never fires on Windows. watchfiles polling is required.
       WATCHFILES_FORCE_POLLING: "true"
       WATCHFILES_POLL_DELAY_MS: "400"
+      # The dev image drops to `USER app` (uid 100) but /app stays root-owned, so
+      # ruff and mypy cannot create their default caches. Both resolve
+      # ".ruff_cache" / ".mypy_cache" against the working directory (/app), never
+      # against $HOME, so a writable HOME alone does not help. Without this, the
+      # `lint`, `format`, `typecheck` and `check` targets abort with
+      # "Failed to initialize cache ... Permission denied (os error 13)" and exit 2.
+      RUFF_CACHE_DIR: /tmp/ruff_cache
+      MYPY_CACHE_DIR: /tmp/mypy_cache
     volumes:
       # Mount source code for hot reload (writable for egg-info generation)
       - ../src:/app/src
