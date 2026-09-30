@@ -126,13 +126,13 @@ uv run alembic upgrade head
 uv run uvicorn src.mkobi.main:app --reload
 ```
 
-The application will be available at: http://127.0.0.1:8000
+The application will be available at: http://127.0.0.1:8010
 
 ### Logs on Successful Startup
 
 ```
 INFO:     Will watch for changes in these directories: ['C:\\py_dev\\mkobi']
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Uvicorn running on http://127.0.0.1:8010 (Press CTRL+C to quit)
 INFO:     Started reloader process [21368] using StatReload
 Configuring CORS with allowed origins: [...]
 Starting database initialization for ENV=development
@@ -143,13 +143,13 @@ Database initialization completed
 ## Accessing the Application
 
 After starting, the React SPA will be available at:
-- **Root/Login**: http://localhost:8000/
-- **Dashboards list**: http://localhost:8000/dashboards
-- **Specific dashboard**: http://localhost:8000/dashboard/{dashboard_id}
-- **Admin panel**: http://localhost:8000/admin
-- **Profile**: http://localhost:8000/profile
+- **Root/Login**: http://localhost:8010/
+- **Dashboards list**: http://localhost:8010/dashboards
+- **Specific dashboard**: http://localhost:8010/dashboard/{dashboard_id}
+- **Admin panel**: http://localhost:8010/admin
+- **Profile**: http://localhost:8010/profile
 
-> In development, the React dev server runs separately on http://localhost:5173 and proxies API requests to FastAPI on port 8000. See [Deployment](../10-deployment/deployment.md) for details.
+> In development, the React dev server runs separately on http://localhost:5173 and proxies API requests to FastAPI over the Docker network at container port 8000. The Docker dev app is published on host port **8010** (`${APP_HOST_PORT:-8010}`). See [Deployment](../10-deployment/deployment.md) for details.
 
 > **Development Login:** Use `admin@example.com` / `admin@example.com` to log in to the development environment. Weak passwords are allowed in development mode only — production rejects known weak password values.
 
@@ -159,11 +159,11 @@ After starting, the React SPA will be available at:
 
 ```bash
 # Health check
-curl http://localhost:8000/health
+curl http://localhost:8010/health
 
 # API Documentation
-# Swagger UI: http://localhost:8000/docs
-# ReDoc: http://localhost:8000/redoc
+# Swagger UI: http://localhost:8010/docs
+# ReDoc: http://localhost:8010/redoc
 ```
 
 ### Testing

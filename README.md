@@ -100,7 +100,7 @@ uv run alembic upgrade head
 
 6. Запустите backend:
 ```bash
-uv run uvicorn src.mkobi.app:app --reload --host 0.0.0.0 --port 8000
+uv run uvicorn src.mkobi.app:app --reload --host 0.0.0.0 --port 8010
 ```
 
 7. Запустите frontend (в другом терминале):
@@ -116,7 +116,7 @@ npm run dev
 docker-compose up -d --build
 ```
 
-Приложение будет доступно по адресу: http://localhost:8000
+Приложение будет доступно по адресу: http://localhost:8010
 
 ## Конфигурация
 

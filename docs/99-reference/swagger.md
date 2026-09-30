@@ -16,13 +16,13 @@ related:
   - backend-architecture
 ---
 
-# Working with Swagger UI at http://localhost:8000/docs/
+# Working with Swagger UI at http://localhost:8010/docs/
 
 ## Overview
 
 FastAPI provides automatic interactive API documentation using Swagger UI. This allows you to test all API endpoints directly from your browser without needing external tools like curl or Postman.
 
-Base URL: `http://localhost:8000/docs/`
+Base URL: `http://localhost:8010/docs/`
 
 ## Getting Started
 
@@ -42,7 +42,7 @@ uv run uvicorn src.mkobi.main:app --host 0.0.0.0 --port 8000 --reload
 
 Open your browser and navigate to:
 ```
-http://localhost:8000/docs/
+http://localhost:8010/docs/
 ```
 
 You should see the interactive API documentation with all available endpoints organized by tags.

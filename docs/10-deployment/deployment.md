@@ -70,7 +70,7 @@ docker compose -f docker/docker-compose.yml up -d db
 uv run alembic upgrade head
 ```
 
-The React dev server runs on port 5173 (Vite) and proxies API requests to FastAPI on port 8000. Hot reload is enabled for both servers. CORS is configured to allow cross-origin requests between the dev servers.
+The React dev server runs on port 5173 (Vite) and proxies API requests to FastAPI (container port 8000; the dev overlay publishes the app on host port 8010 by default). Hot reload is enabled for both servers. CORS is configured to allow cross-origin requests between the dev servers.
 
 ### Environment Configuration
 
@@ -196,21 +196,23 @@ See [Docker Guide](../11-guides/docker.md#production-services-profiles-productio
 
 ### Test Environment Port Configuration
 
-The standalone test Docker Compose (`docker/docker-compose.test.yml`) uses shifted host ports to enable parallel dev+test execution:
+The standalone test Docker Compose (`docker/docker-compose.test.yml`) uses shifted, **configurable** host ports to enable parallel dev+test execution and parallel checkouts on one machine:
 
-| Service | Host Port | Container Port | Production Port |
-|---------|-----------|----------------|-----------------|
-| `test-db` | **5433** | 5432 | 5432 |
-| `test-redis` | **6380** | 6379 | 6379 |
-| `test-app` | **8001** | 8000 | 8000 |
+| Service | Host Port (default) | Env override | Container Port |
+|---------|---------------------|--------------|----------------|
+| `test-db` | **5434** | `TEST_DB_HOST_PORT` | 5432 |
+| `test-redis` | **6381** | `TEST_REDIS_HOST_PORT` | 6379 |
+| `test-app` | **8001** | `TEST_APP_HOST_PORT` | 8000 |
+
+The dev app service (`docker-compose.override.yml`) similarly publishes `${APP_HOST_PORT:-8010}` to container port 8000.
 
 Ports are bound to `0.0.0.0` (Docker default). Security risk is **LOW** — the test database contains no production data and uses default test passwords.
 
-**Rationale:** Native test execution from the host terminal is a documented workflow. Running `pytest` directly (not via `docker compose exec`) is faster for iterative development. The shifted ports enable running dev and test environments simultaneously without conflicts.
+**Rationale:** Native test execution from the host terminal is a documented workflow. Running `pytest` directly (not via `docker compose exec`) is faster for iterative development. The shifted ports enable running dev and test environments simultaneously without conflicts. Ports only are interpolated from the environment — all test credentials remain literal literals in the compose file, so ambient environment variables cannot leak into the test stack.
 
-`tests/conftest.py` uses `os.environ.setdefault("DATABASE__PORT", "5433")` to support both workflows:
+`tests/conftest.py` uses `os.environ.setdefault("DATABASE__PORT", "5434")` to support both workflows:
 - Inside Docker: environment variables set by Docker Compose (port 5432 internal)
-- From host: defaults to `localhost:5433` for direct pytest execution
+- From host: defaults to `localhost:5434` for direct pytest execution
 
 > **Security note:** On shared machines, consider binding to `127.0.0.1` instead of the default `0.0.0.0` to prevent cross-talk between developers. For CI/CD environments, running tests inside the container (`docker compose exec test-app uv run pytest`) avoids exposing ports entirely.
 
