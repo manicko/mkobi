@@ -579,8 +579,9 @@ docker build -f docker/Dockerfile --no-cache --target prod -t mkobi:prod .
 
 Layer caching is preserved by copying `pyproject.toml` and `uv.lock` before the
 source tree, keeping the frontend build in its own stage, combining related
-commands into few layers, and applying `docker/.dockerignore` to the build
-context.
+commands into few layers, and applying the repository-root `.dockerignore` to the
+build context. Every service that builds declares `context: ..`, so that one root
+file is the build context for all of them; there is no `docker/.dockerignore`.
 
 ## Health Checks
 
@@ -757,7 +758,7 @@ without `--env-file .env` fails in exactly the same way.
 
 ```
 .
-├── .dockerignore                   # Build context file
+├── .dockerignore                   # Build context exclusions (applies to every `context: ..` build)
 ├── .env                            # Environment variables (gitignored, required for --env-file)
 ├── .env.example                    # Template for .env
 ├── Makefile.ps1                    # Developer task runner (PowerShell 7+)
@@ -767,7 +768,6 @@ without `--env-file .env` fails in exactly the same way.
 │   ├── docker-compose.test.yml       # Standalone test environment
 │   ├── Dockerfile                    # Multi-stage backend build (+ frontend-builder)
 │   ├── Dockerfile.frontend.dev       # Frontend dev image (avoids Windows SIGBUS)
-│   ├── .dockerignore                 # Build context exclusions
 │   ├── init-scripts/
 │   │   └── 01-create-app-role.sh     # DB initialization (creates mkobi_app role)
 │   ├── nginx/

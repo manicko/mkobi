@@ -114,11 +114,21 @@ Client → FastAPI (port 8000)
     ```
     ENV=production
     DATABASE__HOST=<production-db-host>
-    DATABASE__PASSWORD=<strong-password>
+    DATABASE__PASSWORD=<strong-password>      # postgres superuser: db, migrate
+    MKOBI_APP_PASSWORD=<strong-password>      # mkobi_app role: app, rq-worker
     JWT__SECRET_KEY=<random-256-bit-secret>
     CORS_ORIGINS=["https://app.example.org"]
     LOGGING__LEVEL=WARNING
     ```
+
+    The two password names address **different roles**, and neither name says
+    which: under the base compose file `DATABASE__PASSWORD` is the `postgres`
+    superuser password (`db` and `migrate`), and `MKOBI_APP_PASSWORD` is the
+    least-privilege `mkobi_app` password, which Compose maps onto
+    `DATABASE__PASSWORD` for `app` and `rq-worker`. Outside Compose there is no
+    second name — `DATABASE__PASSWORD` is simply the password for whichever
+    role `DATABASE__USER` names. See
+    [Required Production Variables](#required-production-variables).
 
     `https://your-domain.com` is one of the four **placeholder origins** the production
     tier refuses, so setting it aborts startup instead of producing a permissive
@@ -202,9 +212,9 @@ default; pass `--profile production` to include it:
 `redis` and `rq-worker` are **not** profile-gated. They start with the base file whether
 or not a profile is passed:
 
-- **rq-worker** — Redis Queue worker for background task processing. Runs `uv run rq worker --url redis://redis:6379/0`. Shares `app_data` volume with the app service.
+- **rq-worker** — Redis Queue worker for background task processing. Runs `/app/.venv/bin/rqworker --url redis://redis:6379/0` — the virtualenv console script invoked directly, not `uv run rq worker`. Shares `app_data` volume with the app service.
 
-See [Docker Guide](../11-guides/docker.md#production-deployment) for details.
+See [Docker Guide](../11-guides/docker.md#rq-worker) for its dependencies, environment and mounts.
 
 ### Test Environment Port Configuration
 
@@ -258,7 +268,7 @@ practice.
 
 ### Database Migrations
 
-- `AUTO_MIGRATE=true` — runs `alembic upgrade head` on container startup (default in docker-compose.yml)
+- `AUTO_MIGRATE` — **off by default**, and off everywhere in the shipped Compose files. The `auto_migrate` setting is `false` in `src/mkobi/settings/app.yaml` and in the `Settings` field, and `AUTO_MIGRATE=true` makes the **application process** run `alembic upgrade head` during startup (`DatabaseStarter.startup`). It therefore takes effect only where a process actually receives the variable, and in the base compose file none does: `app` is not given `AUTO_MIGRATE` at all, and `rq-worker` receives a literal `AUTO_MIGRATE: "false"`. Setting `AUTO_MIGRATE=true` in an env file changes nothing — use the `migrate` service below.
 - **Migration advisory lock** — In multi-instance deployments (K8s replicas, multiple Gunicorn workers), parallel migrations can corrupt the schema. The `_apply_migrations()` method acquires a PostgreSQL advisory lock (`pg_advisory_lock(42)`) before running migrations, ensuring only one instance runs migrations at a time. The lock is released after completion, even on failure.
 - **Migration job pattern** — For production Docker Compose deployments, a dedicated `migrate` service runs `alembic upgrade head` before the app service starts. The app service depends on the migration service completing successfully (`depends_on: migrate: condition: service_completed_successfully`). This separates migration concerns from application startup and allows `AUTO_MIGRATE=false` in the app config.
 - Manual migration:
