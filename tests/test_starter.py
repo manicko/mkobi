@@ -9,7 +9,7 @@ import pytest
 
 # Set required env vars before importing app modules
 os.environ.setdefault("DATABASE__HOST", "localhost")
-os.environ.setdefault("DATABASE__PORT", "5433")
+os.environ.setdefault("DATABASE__PORT", "5434")
 os.environ.setdefault("DATABASE__DBNAME", "bidb_test")
 os.environ.setdefault("DATABASE__USER", "mkobi_app")
 os.environ.setdefault("DATABASE__PASSWORD", "StrongDbP@ss123!")
