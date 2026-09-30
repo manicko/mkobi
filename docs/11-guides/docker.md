@@ -248,13 +248,18 @@ docker compose -p mkobi --env-file .env \
 The `production` profile adds exactly one service, `nginx`. `redis` and
 `rq-worker` are not profile-gated and are already part of the base stack.
 
-The `app` service build target is `${DOCKER_TARGET:-prod}`. Set
-`DOCKER_TARGET` in the environment to build a different stage:
+The `app` service build target is `${DOCKER_TARGET:-prod}`. Set `DOCKER_TARGET` in the
+shell environment to build a different stage — the shell wins over `--env-file`:
 
 ```bash
-docker compose -p mkobi --env-file .env \
-  -f docker/docker-compose.yml build --build-arg DOCKER_TARGET=prod
+# DOCKER_TARGET is interpolated into build.target; it is not a declared build arg
+DOCKER_TARGET=dev docker compose -p mkobi --env-file .env \
+  -f docker/docker-compose.yml build app
 ```
+
+Passing `--build-arg DOCKER_TARGET=...` instead would have no effect: `docker/Dockerfile`
+declares only `DEBIAN_MIRROR` and `UV_VERSION` as build args. The variable selects a
+Dockerfile **stage**, which `build.target` does, so no build arg is involved.
 
 ## Daily Operations
 

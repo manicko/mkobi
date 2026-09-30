@@ -116,9 +116,16 @@ Client → FastAPI (port 8000)
     DATABASE__HOST=<production-db-host>
     DATABASE__PASSWORD=<strong-password>
     JWT__SECRET_KEY=<random-256-bit-secret>
-    CORS_ORIGINS=["https://your-domain.com"]
+    CORS_ORIGINS=["https://app.example.org"]
     LOGGING__LEVEL=WARNING
     ```
+
+    `https://your-domain.com` is one of the four **placeholder origins** the production
+    tier refuses, so setting it aborts startup instead of producing a permissive
+    policy. Replace it with your real domain(s). The refused set, and why the refusal
+    also surfaces on `migrate` and `rq-worker`, which serve no HTTP, is documented in
+    [Security Checklist](security-checklist.md#required-production-variables) and
+    [Docker Guide](../11-guides/docker.md#cors_origins-is-required-in-practice).
 
 ### Option B — Nginx Reverse Proxy
 
@@ -166,7 +173,7 @@ The project uses a multi-stage Dockerfile supporting dev, test, and prod targets
 # Production (default target)
 docker compose -f docker/docker-compose.yml up -d
 
-# Production with RQ worker and nginx (production profile)
+# Production with nginx (production profile; rq-worker starts either way)
 docker compose -f docker/docker-compose.yml --profile production up -d
 
 # Development with hot reload and frontend dev server
@@ -187,12 +194,17 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.override.ym
 
 ### Production Profiles
 
-Services with `profiles: [production]` are not started by default. Use `--profile production` to include them:
+`nginx` is the **only** service gated by `profiles: [production]`. It is not started by
+default; pass `--profile production` to include it:
 
-- **rq-worker** — Redis Queue worker for background task processing. Runs `uv run rq worker --url redis://redis:6379/0`. Shares `app_data` volume with the app service.
 - **nginx** — Reverse proxy serving React SPA and proxying API requests to FastAPI.
 
-See [Docker Guide](../11-guides/docker.md#production-services-profiles-production) for details.
+`redis` and `rq-worker` are **not** profile-gated. They start with the base file whether
+or not a profile is passed:
+
+- **rq-worker** — Redis Queue worker for background task processing. Runs `uv run rq worker --url redis://redis:6379/0`. Shares `app_data` volume with the app service.
+
+See [Docker Guide](../11-guides/docker.md#production-deployment) for details.
 
 ### Test Environment Port Configuration
 
@@ -218,12 +230,31 @@ Ports are bound to `0.0.0.0` (Docker default). Security risk is **LOW** — the 
 
 ### Required Production Variables
 
-The following environment variables **must** be set explicitly. Docker Compose will refuse to start the `app` service without them:
+The base compose file requires these names through `${VAR:?}`, so Compose aborts
+interpolation when any one of them is absent and **nothing starts** — not `db`, not
+`app`, and not even a read-only `config` invocation. There are **five**, not two:
+
+| Variable | Description |
+| --- | --- |
+| `DATABASE__PASSWORD` | PostgreSQL **superuser** password, used by `db` and `migrate` |
+| `MKOBI_APP_PASSWORD` | Password of the least-privilege application role (`mkobi_app`), mapped onto `DATABASE__PASSWORD` for `app` and `rq-worker` |
+| `JWT__SECRET_KEY` | JWT signing secret |
+| `ADMIN_USERNAME` | Initial admin username (must be a valid email) |
+| `ADMIN_PASSWORD` | Initial admin password |
 
 ```
 DATABASE__PASSWORD=<production-password>
+MKOBI_APP_PASSWORD=<app-role-password>
 JWT__SECRET_KEY=<production-secret>
+ADMIN_USERNAME=admin@your-domain.com
+ADMIN_PASSWORD=<production-password>
 ```
+
+`${VAR:?}` enforces presence only, not strength — credential strength is checked by the
+application at startup and refuses weak, placeholder and empty values in the production
+tier. See [Security Checklist](security-checklist.md#required-production-variables) for
+the per-variable detail and the names that carry a default but are still required in
+practice.
 
 ### Database Migrations
 

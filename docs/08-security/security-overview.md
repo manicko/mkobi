@@ -161,13 +161,31 @@ Configuration is loaded from multiple sources (highest priority first):
 
 ### Secret Variables
 
-| Variable | Description | Docker Secrets Support |
+The `_FILE` suffix pattern is honoured **only** for the five names below. Any other
+`*_FILE` variable is skipped **without the file being read**: a name that resolves to a
+real but non-secret field is ignored **with a warning** naming the variable and the
+field (never the value), and a name that resolves to no field at all — `LOGGING__LOG_FILE`
+strips to `LOGGING__LOG`, which addresses nothing — is skipped at debug level. A
+path-valued or list-valued setting is therefore never read as a secret pointer.
+
+| Variable | Description | `_FILE` name |
 | --- | --- | --- |
 | `DATABASE__PASSWORD` | Database password | `DATABASE__PASSWORD_FILE=/run/secrets/db_password` |
+| `DATABASE__ADMIN_USER` | Database admin username | `DATABASE__ADMIN_USER_FILE=/run/secrets/db_admin_user` |
+| `DATABASE__ADMIN_PASSWORD` | Database admin password | `DATABASE__ADMIN_PASSWORD_FILE=/run/secrets/db_admin_password` |
 | `JWT__SECRET_KEY` | JWT signing key | `JWT__SECRET_KEY_FILE=/run/secrets/jwt_secret` |
+| `REDIS__PASSWORD` | Redis password | `REDIS__PASSWORD_FILE=/run/secrets/redis_password` |
+
+The honoured set is derived from `SECRET_FIELD_REGISTRY` in `src/mkobi/config.py` rather
+than hand-written, so it cannot drift from the settings model. Note the double
+underscore: `redis` is a nested model, so the single-underscore `REDIS_PASSWORD_FILE`
+addresses no field.
 
 - Nested variables use double underscore format: `DATABASE__HOST`, `DATABASE__PORT`, `JWT__SECRET_KEY`
 - `app.yaml` contains **only non-sensitive** settings (hosts, ports, paths)
+
+See [Configuration](../06-backend/configuration.md#docker-secrets-support) for the full
+behaviour and the change that introduced the allow-list.
 
 ---
 
