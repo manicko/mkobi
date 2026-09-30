@@ -2,8 +2,8 @@ import functools
 import logging
 import os
 from pathlib import Path
-from collections.abc import Collection
-from typing import Any, ClassVar, Final
+from collections.abc import Collection, Hashable
+from typing import Any, ClassVar, Final, cast
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, PostgresDsn, ValidationInfo, field_validator, model_validator
@@ -427,7 +427,11 @@ def _all_field_env_names(settings_cls: type[BaseSettings]) -> frozenset[str]:
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             walk(annotation, top)
 
-    missing = _secret_field_env_names(settings_cls) - names  # type: ignore[arg-type]
+    # functools.cache keys its memo on Hashable arguments; a class object is
+    # hashable at runtime but the cached callable's signature demands Hashable,
+    # and this module's settings class resolves to type[Any] under the project's
+    # mypy import policy. Cast the argument to the demanded type.
+    missing = _secret_field_env_names(cast(Hashable, settings_cls)) - names
     if missing:
         raise TypeError(
             "Secret field registry names settings fields absent from the derived "

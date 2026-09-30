@@ -10,7 +10,6 @@ from datetime import datetime, UTC, timedelta
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.interfaces.repository_interfaces import IProcessingLogRepository

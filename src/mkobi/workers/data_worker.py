@@ -736,8 +736,11 @@ async def _store_aggregates(
             filter_values = await agg_service.extract_filter_values(combined_records, filter_names)
             for fname, fvalues in filter_values.items():
                 if fvalues:
+                    # Persist filter labels as text; the filter value column is
+                    # String-backed, so str() here keeps that contract honest.
+                    str_values = [str(value) for value in fvalues]
                     await filter_values_repo.save_filter_values(
-                        dashboard_id, fname, fvalues, db_session
+                        dashboard_id, fname, str_values, db_session
                     )
                     logger.info(
                         "Filter values saved: dashboard_id=%s, filter_name=%s, count=%d",
@@ -814,8 +817,12 @@ async def _store_aggregates(
                     filter_values = await agg_service.extract_filter_values(combined_records, filter_names)
                     for fname, fvalues in filter_values.items():
                         if fvalues:
+                            # Persist filter labels as text; the filter value
+                            # column is String-backed, so str() here keeps that
+                            # contract honest.
+                            str_values = [str(value) for value in fvalues]
                             await filter_values_repo.save_filter_values(
-                                dashboard_id, fname, fvalues, session
+                                dashboard_id, fname, str_values, session
                             )
                             logger.info(
                                 "Filter values saved: dashboard_id=%s, filter_name=%s, count=%d",
