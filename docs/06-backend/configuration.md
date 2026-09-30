@@ -34,10 +34,20 @@ Settings are loaded from multiple sources. The first matching value wins:
 | 1 (highest) | **Environment variables**                | `DATABASE__PASSWORD`, `JWT__SECRET_KEY`, etc.  |
 | 2        | **Docker secrets files** (`_FILE` suffix)   | `DATABASE__PASSWORD_FILE=/run/secrets/db_password` |
 | 3        | **`.env` file**                             | Development convenience via pydantic-settings  |
-| 4        | **`app.yaml`**                              | Non-sensitive defaults (hosts, ports, paths)   |
+| 4        | **`app.yaml`**                              | `cors_origins`, `app.name`/`app.version`, hosts, ports, paths |
 | 5 (lowest) | **Code defaults**                         | Field defaults in `Settings` class             |
 
 This is implemented via `Settings.settings_customise_sources()` which returns sources in priority order.
+
+`app.yaml` contributes `cors_origins` — `http://localhost:3000` and
+`http://localhost:5173` — above the field default of an empty list. It is also the
+single owner of the application's displayed name and version through `app.name` and
+`app.version`.
+
+It carries **no key that sets the environment tier**. The lowercase `env` key it used
+to carry resolved to nothing: `Settings.environment` declares `alias="ENV"` and the
+YAML source matches case-sensitively, so the unrenamed key was dropped by
+`extra="ignore"`. Set the tier with the `ENV` environment variable.
 
 ## Environment Variables
 
@@ -58,12 +68,12 @@ All environment variables use the double-underscore (`__`) delimiter for nesting
 | `REDIS__HOST`                 | `redis.host`             | `localhost`    | Redis host                      |
 | `REDIS__PORT`                 | `redis.port`             | `6379`         | Redis port                      |
 | `ADMIN_USERNAME`              | `admin_username`         | `admin`        | Admin user email                |
-| `ADMIN_PASSWORD`              | `admin_password`         | `admin`        | Admin user password (secret)    |
+| `ADMIN_PASSWORD`              | `admin_password`         | `CHANGE_ME_ADMIN_PASSWORD` | Admin user password (secret)    |
 | `AUTO_MIGRATE`                | `auto_migrate`           | `false`        | Auto-apply Alembic migrations   |
 | `RECREATE_TEST_DB`            | `recreate_test_db`       | `false`        | Recreate test DB on startup. Set to `true` in test environment for automatic test database recreation. |
 | `STALE_FILE_THRESHOLD_HOURS`  | `stale_file_threshold_hours` | `24`      | Temp file cleanup threshold     |
 | `RATE_LIMITER_FAIL_CLOSED`    | `rate_limiter_fail_closed` | `true`      | Fail-closed on Redis outage     |
-| `CORS_ORIGINS`                | `cors_origins`           | `[]`           | Allowed CORS origins            |
+| `CORS_ORIGINS`                | `cors_origins`           | `["http://localhost:3000", "http://localhost:5173"]` | Allowed CORS origins (from `app.yaml`) |
 | `TEMP_PASSWORD_TTL_SECONDS`   | `temp_password_ttl_seconds` | `86400`     | Temp password Redis TTL (min 60s) |
 
 ## Secrets Management
@@ -80,7 +90,27 @@ DATABASE__PASSWORD=supersecret
 DATABASE__PASSWORD_FILE=/run/secrets/db_password
 ```
 
-The custom `SecretsFileSource` class scans all environment variables ending with `_FILE`, reads the referenced file, and injects the value under the base variable name (e.g., `DATABASE__PASSWORD`).
+The custom `SecretsFileSource` class honours a `*_FILE` variable **only when the base
+name — the part before the suffix — is a declared secret-bearing field**. The honoured
+set is derived from `SECRET_FIELD_REGISTRY` in `config.py` rather than hard-coded, and
+is exactly these five names:
+
+| Honoured variable          | Field it populates      |
+| -------------------------- | ----------------------- |
+| `DATABASE__PASSWORD_FILE`  | `database.password`     |
+| `DATABASE__ADMIN_USER_FILE` | `database.admin_user`  |
+| `DATABASE__ADMIN_PASSWORD_FILE` | `database.admin_password` |
+| `JWT__SECRET_KEY_FILE`     | `jwt.secret_key`        |
+| `REDIS__PASSWORD_FILE`     | `redis.password`        |
+
+Every other `*_FILE` variable is skipped without the file being read, and logged at
+debug level with the variable name only. A path-valued or list-valued setting is
+therefore ignored: `LOGGING__LOG_FILE` names a filesystem path, not a secret, and is
+no longer read as one.
+
+Note the **double underscore** in the last row. `redis` is a nested model, so the
+single-underscore spelling `REDIS_PASSWORD_FILE` addresses no field and has never been
+honoured.
 
 ### Secrets in Code
 
@@ -90,43 +120,80 @@ The custom `SecretsFileSource` class scans all environment variables ending with
 
 ## Production Credential Enforcement
 
-The application **refuses to start in production** if default credentials are detected:
+The application **refuses to start in production** if known-weak credentials are
+detected. Every guard below is gated on the resolved tier being `production`; outside
+production the same values are permitted and only a warning is logged.
 
-### Database Password
-
-- `DATABASE__PASSWORD` must be explicitly set in production
-- In development, placeholder passwords (e.g., `postgres`) are permitted but not recommended
-- The placeholder validation runs only in production mode, allowing easier development setup
+The base compose file (`docker/docker-compose.yml`) pins `ENV: production` as a
+literal for `migrate`, `app` and `rq-worker`, so an env file cannot downgrade the tier
+and these guards cannot be switched off that way. Only the development override
+(`docker/docker-compose.override.yml`) declares a different tier.
 
 ### Admin Credentials
 
-```python
-# In production, this raises ValueError:
-# "Default admin credentials are not allowed in production."
-if environment == "production" and (admin_username == "admin" or admin_password == "admin"):
-    raise ValueError(...)
-```
+`Settings.validate_admin_credentials()` refuses an admin username or password that is:
+
+- an **exact, case-insensitive member** of `WEAK_USERNAMES` / `WEAK_PASSWORDS`;
+- carrying the **case-insensitive `change_me` prefix** — the shape every shipped
+  `CHANGE_ME_*` template value takes, which exact membership alone misses;
+- **empty or whitespace-only**;
+- a password **shorter than 8 characters**.
+
+The predicates live in `config.py` as `is_weak_admin_username()` and
+`is_weak_admin_password()`, and the bootstrap path in
+`DatabaseStarter.ensure_admin_user()` now calls the same two functions under the same
+tier condition, so the two copies cannot drift apart.
+
+Neither message interpolates the rejected value:
+
+| Value | Message |
+| --- | --- |
+| Username is an exact weak member | `Admin username is too common. Please choose a more secure username.` |
+| Username is a placeholder or empty | `Admin username is unset or still a shipped placeholder value. Set ADMIN_USERNAME to a real, unique username.` |
+| Password is an exact weak member | `Admin password is too common. Please choose a more secure password.` |
+| Password carries the `change_me` prefix | `Admin password is a known placeholder value. Set ADMIN_PASSWORD to a strong, unique password.` |
+| Password is empty after strip | `Admin password must not be empty. Set ADMIN_PASSWORD to a strong, unique password.` |
+| Password is shorter than 8 characters | `Admin password is too short. Please choose a stronger password.` |
 
 **Required in production:**
-- `ADMIN_USERNAME` must be explicitly set (not `admin`)
-- `ADMIN_PASSWORD` must be explicitly set (not `admin`)
+- `ADMIN_USERNAME` must be explicitly set to a value outside `WEAK_USERNAMES`, with no
+  `change_me` prefix and not empty
+- `ADMIN_PASSWORD` must be explicitly set to a value at least 8 characters long that
+  is neither a known weak value nor a `change_me` placeholder
 
 In development, default credentials are permitted but a warning is logged.
 
 ### JWT Secret Key
 
-- `JWT__SECRET_KEY` must be explicitly set in production
-- The Docker Compose production config uses `${JWT__SECRET_KEY:?...}` syntax to fail on startup if unset
+- `JWT__SECRET_KEY` must be explicitly set in production; `JWTSettings.validate_secret_key`
+  refuses any value shorter than 32 characters, and refuses an exact, case-insensitive
+  member of `JWTSettings.WEAK_SECRETS`.
+- `Settings.validate_production_credentials()` adds a production-only refusal for a
+  `change_me` prefix on the same field.
+- The base compose file uses `${JWT__SECRET_KEY:?...}`, which aborts interpolation when
+  the variable is absent.
 
 ### Database Password
 
-- `DATABASE__PASSWORD` must be explicitly set in production
-- Same fail-if-unset pattern in Docker Compose via `${DATABASE__PASSWORD:?...}`
+- `DATABASE__PASSWORD` must be explicitly set in production. `Settings.DATABASE_URL`
+  raises when it is unset in production.
+- `Settings.validate_production_credentials()` refuses an exact, case-insensitive member
+  of `WEAK_PASSWORDS` and a `change_me` prefix. Outside production both are permitted and
+  a warning is logged, which is what allows a convenient development database.
+- **The name carries two roles in the base compose file.** On `db` and `migrate` it is the
+  PostgreSQL **superuser** password (`POSTGRES_PASSWORD` and the migration connection).
+  The least-privilege `mkobi_app` role's password is supplied as `MKOBI_APP_PASSWORD` and
+  mapped onto `DATABASE__PASSWORD` for `app` and `rq-worker` only. See
+  [Docker Guide](../11-guides/docker.md#required-variables).
+- `${DATABASE__PASSWORD:?...}` is required by `db` and `migrate`; `app` and `rq-worker`
+  require `${MKOBI_APP_PASSWORD:?...}` instead.
 
 ### CORS Origins
 
 - `CORS_ORIGINS` must be explicitly configured in production
 - The application validates CORS configuration at startup and raises an error if origins are not set in production mode
+- `Settings.validate_cors_origins` refuses a `"*"` wildcard outright in production, naming the wildcard and how to remove it; in every other tier the wildcard and any non-`http(s)` entry are dropped with a warning
+- `Settings.validate_cors_origins_not_placeholder` additionally refuses the known placeholder origins (`http://localhost:3000`, `http://localhost:5173`, `https://example.com`, `https://your-domain.com`) in production
 
 ### Temp Password TTL
 

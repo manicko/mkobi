@@ -139,7 +139,7 @@ The application **refuses to start** in production mode if default credentials a
 | Variable | Default (dev) | Production Requirement |
 | --- | --- | --- |
 | `ADMIN_USERNAME` | `admin` | Must be explicitly set via environment variable |
-| `ADMIN_PASSWORD` | `admin` | Must be explicitly set; default `admin`/`admin` combination is rejected |
+| `ADMIN_PASSWORD` | `CHANGE_ME_ADMIN_PASSWORD` | Must be explicitly set; the shipped placeholder is rejected in production |
 | `JWT__SECRET_KEY` | — | Must be explicitly set; Docker Compose uses `${JWT__SECRET_KEY:?...}` fail-if-unset syntax |
 | `DATABASE__PASSWORD` | — | Must be explicitly set; same fail-if-unset pattern; placeholder validation only applies in production |
 
