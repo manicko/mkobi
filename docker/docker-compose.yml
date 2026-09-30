@@ -75,6 +75,10 @@ services:
       # Admin credentials for initial setup
       ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME is required}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      # get_config() builds Settings and creates the upload temp directory, so
+      # alembic needs a writable absolute path. HOME is /nonexistent in the prod
+      # image, which makes the platformdirs default uncreatable for the app user.
+      UPLOAD__TEMP_DIR: /app/data/tmp_uploads
     depends_on:
       db:
         condition: service_healthy

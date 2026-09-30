@@ -23,6 +23,10 @@ services:
       DATABASE__PASSWORD: ${DATABASE__PASSWORD:?DATABASE__PASSWORD must be set}
       JWT__ALGORITHM: HS256
       JWT__SECRET_KEY: ${JWT__SECRET_KEY:?JWT__SECRET_KEY must be set}
+      # get_config() builds Settings and creates the upload temp directory, so
+      # alembic needs a writable absolute path. HOME is unset in the dev image,
+      # which makes the platformdirs default diverge from what the app uses.
+      UPLOAD__TEMP_DIR: /app/data/tmp_uploads
     depends_on:
       db:
         condition: service_healthy
