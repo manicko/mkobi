@@ -354,6 +354,92 @@ class TestWeakCredentialDetection(TestSettingsBase):
         assert settings.admin_username == "secure_admin"
         assert settings.admin_password == "StrongP@ss1"
 
+    @pytest.mark.parametrize("placeholder_password", [
+        "CHANGE_ME_GENERATE_STRONG_PASSWORD",
+        "change_me_generate_strong_password",
+        "CHANGE_ME_ADMIN_USERNAME",
+    ])
+    def test_change_me_placeholder_password_rejected_in_production(
+        self, monkeypatch, placeholder_password
+    ):
+        """Verify a placeholder-family password is rejected in production."""
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("ADMIN_USERNAME", "secure_admin")
+        monkeypatch.setenv("ADMIN_PASSWORD", placeholder_password)
+        monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
+        with pytest.raises(ValueError, match="known placeholder value"):
+            Settings()
+
+    def test_shipped_placeholder_template_refused_in_production(self, monkeypatch):
+        """Verify the shipped template credentials are refused as a whole.
+
+        docker/.env.example ships ADMIN_USERNAME=CHANGE_ME_ADMIN_USERNAME and
+        ADMIN_PASSWORD=CHANGE_ME_GENERATE_STRONG_PASSWORD. Production must
+        refuse that pair; the password clause is the one that fires (R4 gives
+        the username only an emptiness rule).
+        """
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("ADMIN_USERNAME", "CHANGE_ME_ADMIN_USERNAME")
+        monkeypatch.setenv("ADMIN_PASSWORD", "CHANGE_ME_GENERATE_STRONG_PASSWORD")
+        monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
+        with pytest.raises(ValueError, match="known placeholder value"):
+            Settings()
+
+    def test_empty_admin_password_rejected_in_production(self, monkeypatch):
+        """Verify an empty admin password is rejected in production."""
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("ADMIN_USERNAME", "secure_admin")
+        monkeypatch.setenv("ADMIN_PASSWORD", "")
+        monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
+        with pytest.raises(ValueError, match="Admin password"):
+            Settings()
+
+    def test_whitespace_admin_password_rejected_in_production(self, monkeypatch):
+        """Verify a whitespace-only admin password is rejected in production."""
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("ADMIN_USERNAME", "secure_admin")
+        monkeypatch.setenv("ADMIN_PASSWORD", "        ")
+        monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
+        with pytest.raises(ValueError, match="Admin password"):
+            Settings()
+
+    def test_empty_admin_username_rejected_in_production(self, monkeypatch):
+        """Verify an empty admin username is rejected in production."""
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("ADMIN_USERNAME", "")
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongP@ss1")
+        monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
+        with pytest.raises(ValueError, match="too common"):
+            Settings()
+
+    def test_rejection_message_does_not_leak_submitted_value(self, monkeypatch):
+        """Verify the username rejection message never echoes the secret value."""
+        monkeypatch.setenv("ENV", "production")
+        submitted_username = "root"
+        monkeypatch.setenv("ADMIN_USERNAME", submitted_username)
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongP@ss1")
+        monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
+        with pytest.raises(ValueError) as exc_info:
+            Settings()
+        message = str(exc_info.value)
+        assert "too common" in message
+        assert submitted_username not in message
+        assert submitted_username[:3] not in message
+
+    def test_password_containing_weak_word_accepted_in_production(self, monkeypatch):
+        """Verify a legitimate password that merely contains a weak word is accepted.
+
+        Regression guard for R2: the predicate must never fall back to substring
+        matching, otherwise this value (which contains 'test' and 'password')
+        would be rejected.
+        """
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("ADMIN_USERNAME", "secure_admin")
+        monkeypatch.setenv("ADMIN_PASSWORD", "testpassword123")
+        monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
+        settings = Settings()
+        assert settings.admin_password == "testpassword123"
+
 
 class TestJWTSecretValidation(TestSettingsBase):
     """Tests for JWT secret key validation and loading."""
@@ -722,6 +808,51 @@ class TestProductionCredentialValidation(TestSettingsBase):
         # Should not raise - development allows weak db credentials
         settings = Settings()
         assert settings.database.password == "CHANGE_ME_GENERATE_STRONG_SECRET"
+
+    def test_placeholder_database_password_rejected_in_production(self, monkeypatch):
+        """Verify a CHANGE_ME_-prefixed db password that is not an exact weak member is rejected."""
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("DATABASE__PASSWORD", "CHANGE_ME_GENERATE_STRONG_SECRET")
+        monkeypatch.setenv("JWT__SECRET_KEY", "strong-jwt-secret-key-32-characters-long!")
+        monkeypatch.setenv("ADMIN_USERNAME", "prodadmin")
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongP@ss1")
+        monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
+        from mkobi.config import clear_config_cache
+        clear_config_cache()
+        with pytest.raises(ValueError, match="DATABASE__PASSWORD is a known placeholder value"):
+            Settings()
+
+    def test_db_password_rejection_message_does_not_leak_submitted_value(self, monkeypatch):
+        """Verify the db password rejection message never echoes the secret value."""
+        submitted_password = "CHANGE_ME_GENERATE_STRONG_SECRET"
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("DATABASE__PASSWORD", submitted_password)
+        monkeypatch.setenv("JWT__SECRET_KEY", "strong-jwt-secret-key-32-characters-long!")
+        monkeypatch.setenv("ADMIN_USERNAME", "prodadmin")
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongP@ss1")
+        monkeypatch.setenv("CORS_ORIGINS", '["https://production.example.com"]')
+        from mkobi.config import clear_config_cache
+        clear_config_cache()
+        with pytest.raises(ValueError) as exc_info:
+            Settings()
+        message = str(exc_info.value)
+        assert "known placeholder value" in message
+        assert submitted_password not in message
+        assert submitted_password[:8] not in message
+
+    def test_placeholder_jwt_secret_still_accepted_in_development(self, monkeypatch):
+        """Verify CHANGE_ME_GENERATE_WITH_OPENSSL_RAND_HEX_32 is accepted as a JWT secret.
+
+        R3 decision made executable: JWTSettings.validate_secret_key stays
+        unconditional and gains no placeholder clause, so the shipped dev template
+        value remains usable outside production.
+        """
+        monkeypatch.setenv("ENV", "development")
+        monkeypatch.setenv("JWT__SECRET_KEY", "CHANGE_ME_GENERATE_WITH_OPENSSL_RAND_HEX_32")
+        from mkobi.config import clear_config_cache
+        clear_config_cache()
+        settings = Settings()
+        assert settings.jwt.secret_key == "CHANGE_ME_GENERATE_WITH_OPENSSL_RAND_HEX_32"
 
     def test_weak_db_password_accepted_in_staging(self, monkeypatch):
         """Verify weak db password passes validation in staging."""

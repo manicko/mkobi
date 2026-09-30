@@ -1,6 +1,7 @@
 import logging
 import os
 from pathlib import Path
+from collections.abc import Collection
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
@@ -29,6 +30,30 @@ WEAK_PASSWORDS = {
     "placeholder",
     "postgres",
 }
+
+# Minimum admin password length, shared by DatabaseSettings.validate_admin_password_strength
+# and Settings.validate_admin_credentials so the two guards cannot drift apart.
+ADMIN_PASSWORD_MIN_LENGTH = 8
+
+
+def is_weak_credential(value: str | None, weak_values: Collection[str]) -> bool:
+    """Return True when a credential is a known weak or placeholder value.
+
+    A missing value (None) is not weak; callers guard optional fields with a
+    truthiness check. Comparison is case-insensitive and exact, never substring
+    based, so a legitimate value that merely contains a weak word is accepted.
+
+    Args:
+        value: The credential value to inspect, possibly None.
+        weak_values: The set of known weak values to compare against.
+
+    Returns:
+        bool: True if the value is an exact, case-insensitive member of
+            weak_values; False otherwise.
+    """
+    if value is None:
+        return False
+    return value.lower() in {weak.lower() for weak in weak_values}
 
 
 def _set_nested_value(data: dict[str, Any], key: str, value: Any) -> None:
@@ -170,7 +195,7 @@ class DatabaseSettings(BaseModel):
         Raises:
             ValueError: If admin password is less than 8 characters.
         """
-        if v is not None and len(v) < 8:
+        if v is not None and len(v) < ADMIN_PASSWORD_MIN_LENGTH:
             raise ValueError(
                 "Admin password must be at least 8 characters for security"
             )
@@ -394,24 +419,40 @@ class Settings(BaseSettings):
         This validator ensures they are explicitly set via environment variables.
         """
         if self.environment == EnvironmentEnum.PRODUCTION:
-            if self.admin_username.lower() in WEAK_USERNAMES:
+            # Reject a weak username without echoing the submitted value.
+            if is_weak_credential(self.admin_username, WEAK_USERNAMES) or not self.admin_username.strip():
                 raise ValueError(
-                    f"Admin username '{self.admin_username}' is too common. "
+                    "Admin username is too common. "
                     "Please choose a more secure username."
                 )
-            if self.admin_password.lower() in WEAK_PASSWORDS:
+            # Ordered most-specific first so an exact weak member keeps its message.
+            if is_weak_credential(self.admin_password, WEAK_PASSWORDS):
                 raise ValueError(
                     "Admin password is too common. Please choose a more secure password."
                 )
+            if self.admin_password.lower().startswith("change_me"):
+                raise ValueError(
+                    "Admin password is a known placeholder value. "
+                    "Set ADMIN_PASSWORD to a strong, unique password."
+                )
+            if not self.admin_password.strip():
+                raise ValueError(
+                    "Admin password must not be empty. "
+                    "Set ADMIN_PASSWORD to a strong, unique password."
+                )
+            if len(self.admin_password) < ADMIN_PASSWORD_MIN_LENGTH:
+                raise ValueError(
+                    "Admin password is too short. Please choose a stronger password."
+                )
         else:
             # Log warning in development if defaults are used
-            if self.admin_username.lower() in WEAK_USERNAMES:
+            if is_weak_credential(self.admin_username, WEAK_USERNAMES):
                 logger.warning(
                     "Using default admin username in %s environment - "
                     "set ADMIN_USERNAME for production use",
                     self.environment.value,
                 )
-            if self.admin_password.lower() in WEAK_PASSWORDS:
+            if is_weak_credential(self.admin_password, WEAK_PASSWORDS):
                 logger.warning(
                     "Using default admin password in %s environment - "
                     "set ADMIN_PASSWORD for production use",
@@ -468,22 +509,31 @@ class Settings(BaseSettings):
         than allowing a production deployment with compromised credentials.
         """
         if self.environment == EnvironmentEnum.PRODUCTION:
-            # Check database password against known-weak values
+            # Check database password against known-weak values.
+            # The exact-set membership test stays first so an exact weak member
+            # keeps its established message.
             db_password = self.database.password
-            if db_password and db_password.lower() in {
-                p.lower() for p in WEAK_PASSWORDS
-            }:
+            if db_password and is_weak_credential(db_password, WEAK_PASSWORDS):
                 raise ValueError(
                     "DATABASE__PASSWORD is a known weak/placeholder value. "
                     "Set a strong password for production."
                 )
-            # Check JWT secret against known-weak values
+            if db_password and db_password.lower().startswith("change_me"):
+                raise ValueError(
+                    "DATABASE__PASSWORD is a known placeholder value. "
+                    "Set a strong password for production."
+                )
+            # Check JWT secret against known-weak values. The exact-set test
+            # stays first for the same reason.
             jwt_secret = self.jwt.secret_key
-            if jwt_secret and jwt_secret.lower() in {
-                s.lower() for s in JWTSettings.WEAK_SECRETS
-            }:
+            if jwt_secret and is_weak_credential(jwt_secret, JWTSettings.WEAK_SECRETS):
                 raise ValueError(
                     "JWT__SECRET_KEY is a known weak/placeholder value. "
+                    "Generate a strong secret for production."
+                )
+            if jwt_secret and jwt_secret.lower().startswith("change_me"):
+                raise ValueError(
+                    "JWT__SECRET_KEY is a known placeholder value. "
                     "Generate a strong secret for production."
                 )
         return self
@@ -639,9 +689,9 @@ class Settings(BaseSettings):
                 )
             return None
         if self.environment == EnvironmentEnum.PRODUCTION:
-            if self.database.password.lower() in {p.lower() for p in WEAK_PASSWORDS}:
+            if is_weak_credential(self.database.password, WEAK_PASSWORDS):
                 raise ValueError(
-                    f"DATABASE__PASSWORD is a known placeholder: '{self.database.password}'. "
+                    "DATABASE__PASSWORD is a known placeholder value. "
                     "Set a strong password for production."
                 )
         return str(self.database.database_url)
