@@ -75,6 +75,11 @@ services:
       # Admin credentials for initial setup
       ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME is required}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      # Settings() is constructed at the pinned production tier, so the same
+      # placeholder-origin guard the app satisfies applies here too. Same shape
+      # as the app service: a missing value falls back to the shipped
+      # placeholder and fails closed at settings construction.
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173"]}
       # get_config() builds Settings and creates the upload temp directory, so
       # alembic needs a writable absolute path. HOME is /nonexistent in the prod
       # image, which makes the platformdirs default uncreatable for the app user.
@@ -204,6 +209,11 @@ services:
       # Admin credentials
       ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME is required}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      # Settings() is constructed at the pinned production tier, so the same
+      # placeholder-origin guard the app satisfies applies here too. Same shape
+      # as the app service: a missing value falls back to the shipped
+      # placeholder and fails closed at settings construction.
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173"]}
       UPLOAD__TEMP_DIR: /app/data/tmp_uploads
       LOGGING__LOG_FILE: /app/data/logs/app.log
       LOGGING__LEVEL: ${LOGGING__LEVEL:-INFO}
