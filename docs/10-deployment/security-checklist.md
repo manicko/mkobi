@@ -48,27 +48,73 @@ When Redis is unavailable:
 
 ## Required Production Variables
 
-The following environment variables must be set explicitly in production. Only
-`DATABASE__PASSWORD` and `JWT__SECRET_KEY` are required with `${VAR:?}`, which aborts
-Compose interpolation when they are absent — the stack does not start. The other two
-carry `:-` defaults, so the stack starts without them; `RATE_LIMITER_FAIL_CLOSED` then
-resolves to its secure default `true`, and `CORS_ORIGINS` resolves to a known
-placeholder origin that the application refuses when the tier is `production`.
+### Required by Compose (`${VAR:?}`)
 
-| Variable | Description | Required In Production |
+The base compose file uses `${VAR:?}` for the five names below, so Compose aborts
+interpolation when any one of them is absent and **the stack does not start**. Read
+the whole table before assuming the stack will come up: following a shorter list
+means an aborted start. `${VAR:?}` enforces presence only, not strength.
+
+| Variable | Description |
+| --- | --- |
+| `DATABASE__PASSWORD` | PostgreSQL **superuser** password. On `db` and `migrate` it is used directly; the `mkobi_app` role's password is supplied separately as `MKOBI_APP_PASSWORD` and mapped onto `DATABASE__PASSWORD` for `app` and `rq-worker` |
+| `MKOBI_APP_PASSWORD` | Password of the least-privilege application database role (`mkobi_app`) |
+| `JWT__SECRET_KEY` | JWT signing secret (256-bit random) |
+| `ADMIN_USERNAME` | Initial admin username (must be a valid email) |
+| `ADMIN_PASSWORD` | Initial admin password |
+
+The development override adds `DATABASE__ADMIN_PASSWORD` to the same list.
+
+### Required in Practice but Carrying a Default (`${VAR:-}`)
+
+The two names below carry a `:-` default, so the stack starts without them. One
+default is safe, the other is refused at startup:
+
+| Variable | Compose default | Required In Production |
 | --- | --- | --- |
-| `DATABASE__PASSWORD` | PostgreSQL **superuser** password. On `db` and `migrate` it is used directly; the `mkobi_app` role's password is supplied separately as `MKOBI_APP_PASSWORD` and mapped onto `DATABASE__PASSWORD` for `app` and `rq-worker` | Yes |
-| `JWT__SECRET_KEY` | JWT signing secret (256-bit random) | Yes |
-| `RATE_LIMITER_FAIL_CLOSED` | Rate limiter failure mode | Yes (set to `true`) |
-| `CORS_ORIGINS` | Allowed CORS origins (JSON array) | Yes |
+| `RATE_LIMITER_FAIL_CLOSED` | `true` | Set to `true` explicitly to pin the choice |
+| `CORS_ORIGINS` | `["http://localhost:5173"]` | **Yes — the default is a placeholder and is refused** |
+
+`CORS_ORIGINS` is effectively required. The compose default is one of the four
+placeholder origins the production tier refuses, so a production start that relies on
+the default aborts while `Settings` is being constructed:
+
+```
+Placeholder CORS origins not allowed in production: ['http://localhost:5173']. Please set CORS_ORIGINS to your actual production domains.
+```
+
+The refused set is `http://localhost:3000`, `http://localhost:5173`,
+`https://example.com` and `https://your-domain.com`; the message lists whichever of
+them are actually present. The base compose supplies `CORS_ORIGINS` to all three
+Python services — `migrate`, `app` and `rq-worker` — so the refusal surfaces on any
+of them, including the two that do not serve HTTP. A CORS-settings error on `migrate`
+or `rq-worker` means the *setting* is wrong, not that the service needs origins.
+
+> **`docker/.env.production` ships `CORS_ORIGINS` commented out.** It previously
+> shipped `CORS_ORIGINS='["https://your-domain.com"]'`, which was itself a
+> placeholder and was refused by the same guard. The template now carries guidance
+> and an example instead, so an operator copying it must supply real domains, for
+> example `CORS_ORIGINS='["https://app.example.org"]'`.
+
+> **Admin password strength is a boot-time failure, not a warning.** `${ADMIN_PASSWORD:?}`
+> checks presence only, so Compose starts and the application then refuses a password
+> that is shorter than 8 characters, a known weak value, empty, or a `change_me`
+> placeholder. A 6-character admin password that worked before this check existed now
+> hard-fails at startup in the production tier. This is fail-closed and intended, but
+> it will surprise the first operator who tries one. See
+> [Configuration](../06-backend/configuration.md#admin-credentials) for the full
+> predicate.
 
 ## Optional Security Hardening
 
 | Variable | Default | Production Recommendation |
 | --- | --- | --- |
 | `LOGGING__LEVEL` | `INFO` | Set to `WARNING` to reduce log verbosity |
-| `ADMIN_USERNAME` | `admin` | Must be explicitly set (non-default) |
-| `ADMIN_PASSWORD` | `CHANGE_ME_ADMIN_PASSWORD` | Must be explicitly set (non-default) |
+
+`ADMIN_USERNAME` and `ADMIN_PASSWORD` are listed as `${VAR:?}`-required above. Their
+production requirement goes beyond presence: the username must be outside the weak
+set, carry no `change_me` prefix and not be empty; the password must satisfy the same
+rules and be at least 8 characters long.
 
 ## Docker Compose Production Check
 

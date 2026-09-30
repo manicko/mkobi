@@ -45,9 +45,15 @@ single owner of the application's displayed name and version through `app.name` 
 `app.version`.
 
 It carries **no key that sets the environment tier**. The lowercase `env` key it used
-to carry resolved to nothing: `Settings.environment` declares `alias="ENV"` and the
-YAML source matches case-sensitively, so the unrenamed key was dropped by
-`extra="ignore"`. Set the tier with the `ENV` environment variable.
+to carry resolved to nothing, and the reason is not case-sensitivity:
+`Settings.environment` declares `alias="ENV"` while `model_config` does **not** set
+`populate_by_name`, so `env` is not an accepted name for the field at all. The key
+was passed through unrenamed and dropped by `extra="ignore"`.
+`Settings.model_config["case_sensitive"]` is `False`, and that flag governs the
+environment-variable and `.env` sources, not the YAML one. An uppercase `ENV` key in
+`app.yaml` **would** in fact take effect, but the YAML source ranks below the
+environment and `.env` sources, so the supported way to select the tier is the `ENV`
+environment variable.
 
 ## Environment Variables
 
@@ -103,10 +109,20 @@ is exactly these five names:
 | `JWT__SECRET_KEY_FILE`     | `jwt.secret_key`        |
 | `REDIS__PASSWORD_FILE`     | `redis.password`        |
 
-Every other `*_FILE` variable is skipped without the file being read, and logged at
-debug level with the variable name only. A path-valued or list-valued setting is
-therefore ignored: `LOGGING__LOG_FILE` names a filesystem path, not a secret, and is
-no longer read as one.
+Every other `*_FILE` variable is skipped without the file being read. A name that
+resolves to a real but non-secret field is **ignored with a warning** naming the
+variable and the field (never the value); a name that resolves to no field at all —
+`LOGGING__LOG_FILE`, which strips to `LOGGING__LOG`, addressing nothing — is skipped
+at debug level. So a path-valued or list-valued setting is not read as a secret
+pointer.
+
+> **Behaviour change.** Only the five names in the table above are honoured. A
+> `*_FILE` variable naming a real but non-secret field, for example
+> `DATABASE__USER_FILE`, used to be applied and is now ignored with a warning. The
+> risk this removes is silent fallback: where no `DATABASE__USER` environment
+> variable is supplied, the field would have fallen through to the next source down,
+> which is `app.yaml`'s `postgres` — the **superuser** role — so a mis-set `*_FILE`
+> could quietly downgrade the runtime connection.
 
 Note the **double underscore** in the last row. `redis` is a nested model, so the
 single-underscore spelling `REDIS_PASSWORD_FILE` addresses no field and has never been
@@ -141,10 +157,27 @@ and these guards cannot be switched off that way. Only the development override
 
 The predicates live in `config.py` as `is_weak_admin_username()` and
 `is_weak_admin_password()`, and the bootstrap path in
-`DatabaseStarter.ensure_admin_user()` now calls the same two functions under the same
-tier condition, so the two copies cannot drift apart.
+`DatabaseStarter.ensure_admin_user()` now calls the same two functions, so the two
+copies cannot drift apart. They do **not** behave identically, by design: they share
+the predicate and the production tier condition, but the action differs.
 
-Neither message interpolates the rejected value:
+| Value | `Settings.validate_admin_credentials()` | `DatabaseStarter.ensure_admin_user()` |
+| --- | --- | --- |
+| Weak **password**, production tier | **Raises** `ValueError` | **Raises** `ValueError` |
+| Weak password, any other tier | Warns (exact weak member only) | Warns (full predicate) |
+| Weak **username**, production tier | **Raises** `ValueError` | **Warns** and proceeds |
+| Weak username, any other tier | Warns (exact weak member only) | Warns (full predicate) |
+
+The username asymmetry is deliberate: the configuration guard has already refused an
+unusable username by the time the starter runs, so the starter's check is a backstop
+that must never be the thing that stops a legitimate bootstrap. The password is
+re-raised at the point of use because the hash is written there. Outside production
+the two differ only in breadth, not in severity — the settings guard's non-production
+warning covers exact weak members, while the starter applies the full composite
+predicate and so also warns on a `change_me` prefix, an empty value or a short one.
+
+The messages below come from `Settings.validate_admin_credentials`. Neither
+interpolates the rejected value:
 
 | Value | Message |
 | --- | --- |

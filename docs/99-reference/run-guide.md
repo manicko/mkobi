@@ -34,8 +34,11 @@ All settings are located in: `src/mkobi/settings/app.yaml`
 ```yaml
 # No environment tier key here: the tier is selected by the ENV environment
 # variable (development, staging, production, test). Settings.environment
-# declares alias="ENV" and this YAML source matches case-sensitively, so an
-# "env" key would be passed through unrenamed and discarded.
+# declares alias="ENV" without populate_by_name, so only the exact spelling
+# "ENV" populates the field; an "env" key is passed through unrenamed and
+# discarded. An uppercase "ENV" key here would work, but this YAML source
+# ranks below the environment and .env sources, so ENV as an environment
+# variable is the supported way to select the tier.
 
 # Automatic migrations (true/false)
 auto_migrate: true

@@ -433,25 +433,76 @@ aborts before it will print a config or start anything:
 
 The development override adds `DATABASE__ADMIN_PASSWORD` to the same list.
 
+Those five are enough to get past interpolation — **not** enough to get a running
+stack. One more name is required in practice: `CORS_ORIGINS`.
+
+#### `CORS_ORIGINS` Is Required in Practice
+
+The base compose file supplies `${CORS_ORIGINS:-["http://localhost:5173"]}` to all
+three Python services (`migrate`, `app` and `rq-worker`), so the stack starts even
+when you set nothing. But that default is a **placeholder origin**, and the
+production tier — which the base file pins for all three services — refuses
+placeholders outright while `Settings` is being constructed:
+
+```
+Placeholder CORS origins not allowed in production: ['http://localhost:5173']. Please set CORS_ORIGINS to your actual production domains.
+```
+
+The refused set is `http://localhost:3000`, `http://localhost:5173`,
+`https://example.com` and `https://your-domain.com`; the message names whichever are
+present. Set `CORS_ORIGINS` to your real domains, as a JSON array:
+
+```bash
+CORS_ORIGINS='["https://app.example.org"]'
+```
+
+Two things make this confusing when it happens:
+
+- **The refusal names CORS, not HTTP.** It is raised at settings construction in
+  every Python service, including `migrate` and `rq-worker`, neither of which serves
+  HTTP. A CORS error on those services means the setting is wrong, not that the
+  service needs origins.
+- **The shipped template does not set it.** `docker/.env.production` previously
+  carried `CORS_ORIGINS='["https://your-domain.com"]'`, which was itself one of the
+  refused placeholders. It is now commented out with guidance, so an operator who
+  copies the template must supply real domains; leaving it commented out is
+  equivalent to accepting the compose placeholder, which is also refused.
+
+The development override is unaffected: it defaults to
+`["http://localhost:3000"]` and runs at the `development` tier, where placeholders
+are allowed.
+
 > **Security Note:** `${VAR:?}` enforces presence only, not strength; strength is
 > checked by the production-gated predicates in `Settings` at startup. The base
 > compose file pins `ENV: production` as a literal, so `ENV=staging` in an env file
 > no longer downgrades the tier — only the development override sets otherwise.
+> `ADMIN_PASSWORD` is the sharpest case: presence is all Compose checks, so a
+> password shorter than 8 characters starts the stack and is then refused by the
+> application. See [Configuration](../06-backend/configuration.md#admin-credentials).
 
 ### Key Variables
 
 | Variable | Description |
 |----------|-------------|
 | `ENV` | Environment tier. A literal `production` in the base compose file — not interpolated, so an env file cannot change it. The development override declares `development` for `migrate`, `app` and `rq-worker` |
-| `DOCKER_TARGET` | Build target for `app` and `migrate` (default `prod`) |
+| `DOCKER_TARGET` | Build target for `app` (default `prod`). `migrate` and `rq-worker` are pinned to `prod` in the base file, and the development override hard-codes `dev` for `migrate` and `app` — so this variable changes the `app` image only |
 | `DATABASE__HOST` | Database host |
 | `LOGGING__LEVEL` | Logging level (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
-| `RECREATE_TEST_DB` | Recreate the test database on startup. Supplied only by the test compose (`test-app`); the base and dev stacks leave it at `false` |
+| `RECREATE_TEST_DB` | Recreate the test database on startup. Supplied only by the test compose (`test-app`); the base and dev stacks leave it at `false`. See the note below |
 | `APP__COOKIE_SECURE` | Cookie `Secure` attribute. Defaults to `true`; the dev override sets `false` |
 | `REDIS__HOST`, `REDIS__PORT` | Redis address. Must be `redis` inside a container, since the default `localhost` resolves to the container itself |
 | `APP_HOST_PORT` | Host port for the dev `app` (default `8010`) |
 | `TEST_DB_HOST_PORT`, `TEST_REDIS_HOST_PORT`, `TEST_APP_HOST_PORT` | Host ports for the test stack (defaults `5434`, `6381`, `8001`) |
-| `CORS_ORIGINS` | Allowed origins. Defaults to `["http://localhost:5173"]` in the base file, `["http://localhost:3000"]` in the dev override |
+| `CORS_ORIGINS` | Allowed origins. Defaults to `["http://localhost:5173"]` in the base file, `["http://localhost:3000"]` in the dev override. The base default is a placeholder the production tier refuses — see [Required Variables](#cors_origins-is-required-in-practice) |
+
+> **`RECREATE_TEST_DB=true` now fails in the production-pinned base stack.** Since
+> the least-privilege change, `app` and `rq-worker` run as `mkobi_app` and no longer
+> receive `DATABASE__ADMIN_USER` / `DATABASE__ADMIN_PASSWORD`, so the recreation
+> path cannot build its admin URL and startup raises `Admin database URL is required
+> for test database recreation`. It previously worked there. This is fail-closed and
+> unreachable in every shipped compose file — only the test compose sets the flag,
+> and it also supplies the admin credentials — but it is a behaviour change if you
+> had set the variable by hand.
 
 ## Docker Internals
 
