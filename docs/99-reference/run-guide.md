@@ -32,8 +32,10 @@ All settings are located in: `src/mkobi/settings/app.yaml`
 ### Main Settings
 
 ```yaml
-# Environment: development, staging, production, test
-env: development
+# No environment tier key here: the tier is selected by the ENV environment
+# variable (development, staging, production, test). Settings.environment
+# declares alias="ENV" and this YAML source matches case-sensitively, so an
+# "env" key would be passed through unrenamed and discarded.
 
 # Automatic migrations (true/false)
 auto_migrate: true
@@ -57,8 +59,10 @@ jwt:
   access_token_expire_minutes: 30
 
 # Upload
+# No temp_dir key here: without one the field resolves to an absolute
+# platformdirs path (user_data_dir("mkobi", "ZOO")/tmp_uploads). Override it
+# with the UPLOAD__TEMP_DIR environment variable.
 upload:
-  temp_dir: "data/tmp_uploads"
   allowed_file_types:
     - ".csv.gz"
     - ".csv"
@@ -72,8 +76,9 @@ redis:
   db: 0
 
 # Logging
+# No format key here: setup_logging takes no format parameter, so the
+# non-JSON format is a literal in the logging configuration module.
 logging:
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
   level: INFO
 
 # Charts

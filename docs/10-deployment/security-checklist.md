@@ -48,11 +48,16 @@ When Redis is unavailable:
 
 ## Required Production Variables
 
-The following environment variables **must** be set explicitly in production. Docker Compose will fail to start if unset:
+The following environment variables must be set explicitly in production. Only
+`DATABASE__PASSWORD` and `JWT__SECRET_KEY` are required with `${VAR:?}`, which aborts
+Compose interpolation when they are absent — the stack does not start. The other two
+carry `:-` defaults, so the stack starts without them; `RATE_LIMITER_FAIL_CLOSED` then
+resolves to its secure default `true`, and `CORS_ORIGINS` resolves to a known
+placeholder origin that the application refuses when the tier is `production`.
 
 | Variable | Description | Required In Production |
 | --- | --- | --- |
-| `DATABASE__PASSWORD` | Database password for `mkobi_app` role | Yes |
+| `DATABASE__PASSWORD` | PostgreSQL **superuser** password. On `db` and `migrate` it is used directly; the `mkobi_app` role's password is supplied separately as `MKOBI_APP_PASSWORD` and mapped onto `DATABASE__PASSWORD` for `app` and `rq-worker` | Yes |
 | `JWT__SECRET_KEY` | JWT signing secret (256-bit random) | Yes |
 | `RATE_LIMITER_FAIL_CLOSED` | Rate limiter failure mode | Yes (set to `true`) |
 | `CORS_ORIGINS` | Allowed CORS origins (JSON array) | Yes |
@@ -63,22 +68,32 @@ The following environment variables **must** be set explicitly in production. Do
 | --- | --- | --- |
 | `LOGGING__LEVEL` | `INFO` | Set to `WARNING` to reduce log verbosity |
 | `ADMIN_USERNAME` | `admin` | Must be explicitly set (non-default) |
-| `ADMIN_PASSWORD` | `admin` | Must be explicitly set (non-default) |
+| `ADMIN_PASSWORD` | `CHANGE_ME_ADMIN_PASSWORD` | Must be explicitly set (non-default) |
 
 ## Docker Compose Production Check
 
-Run this command to verify your production configuration:
+Run this command to print the resolved `environment:` map of the `app` service:
 
 ```bash
-docker compose -f docker/docker-compose.yml config --services
+docker compose -p mkobi --env-file docker/.env.production \
+  -f docker/docker-compose.yml config --format json \
+  | jq '.services.app.environment'
 ```
 
-Verify the `app` service includes:
+Verify that `ENV` is the literal `production` and that the rate-limiter, upload-size
+and JSON-logging controls are present with their resolved values:
 
-```yaml
-environment:
-  RATE_LIMITER_FAIL_CLOSED: ${RATE_LIMITER_FAIL_CLOSED:-true}
+```json
+{
+  "ENV": "production",
+  "RATE_LIMITER_FAIL_CLOSED": "true",
+  "UPLOAD__MAX_FILE_SIZE_MB": "100",
+  "LOGGING__JSON_LOGGING": "true"
+}
 ```
+
+Do **not** use `docker compose … config --services` for this check: it prints service
+names only and cannot show a single environment value.
 
 ## Security Verification Steps
 

@@ -413,10 +413,10 @@ docker compose --env-file docker/.env.production \
   -f docker/docker-compose.yml up -d
 ```
 
-> **Note on Development Credentials:** in development, weak passwords are
-> allowed for `ADMIN_USERNAME` and `ADMIN_PASSWORD`, and the default `.env`
-> uses `admin@example.com` for both. This enables quick startup — **never use
-> these in production**, where known-weak values are rejected.
+> **Note on Development Credentials:** in development, weak passwords are allowed
+> for `ADMIN_USERNAME` and `ADMIN_PASSWORD`, so the `CHANGE_ME_*` values in
+> `docker/.env.development` start the stack as they are — replace them for anything
+> beyond a local scratch stack, and never carry them to production.
 
 ### Required Variables
 
@@ -433,20 +433,20 @@ aborts before it will print a config or start anything:
 
 The development override adds `DATABASE__ADMIN_PASSWORD` to the same list.
 
-> **Security Note:** `${VAR:?}` enforces presence, not strength. For production
-> deployments set strong, unique values for `DATABASE__PASSWORD`,
-> `MKOBI_APP_PASSWORD` and `JWT__SECRET_KEY`; the application validates
-> credential strength at startup when `ENV=production`.
+> **Security Note:** `${VAR:?}` enforces presence only, not strength; strength is
+> checked by the production-gated predicates in `Settings` at startup. The base
+> compose file pins `ENV: production` as a literal, so `ENV=staging` in an env file
+> no longer downgrades the tier — only the development override sets otherwise.
 
 ### Key Variables
 
 | Variable | Description |
 |----------|-------------|
-| `ENV` | Environment (`development` / `test` / `production`) |
+| `ENV` | Environment tier. A literal `production` in the base compose file — not interpolated, so an env file cannot change it. The development override declares `development` for `migrate`, `app` and `rq-worker` |
 | `DOCKER_TARGET` | Build target for `app` and `migrate` (default `prod`) |
 | `DATABASE__HOST` | Database host |
 | `LOGGING__LEVEL` | Logging level (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
-| `RECREATE_TEST_DB` | Recreate the test database on startup |
+| `RECREATE_TEST_DB` | Recreate the test database on startup. Supplied only by the test compose (`test-app`); the base and dev stacks leave it at `false` |
 | `APP__COOKIE_SECURE` | Cookie `Secure` attribute. Defaults to `true`; the dev override sets `false` |
 | `REDIS__HOST`, `REDIS__PORT` | Redis address. Must be `redis` inside a container, since the default `localhost` resolves to the container itself |
 | `APP_HOST_PORT` | Host port for the dev `app` (default `8010`) |
@@ -748,7 +748,7 @@ correct ownership for the non-root `app` user.
 
 ### Upload Temp Directory
 
-- **Configuration:** `UPLOAD__TEMP_DIR` (defaults to a platformdirs path)
+- **Configuration:** `UPLOAD__TEMP_DIR` (defaults to an absolute `platformdirs` path)
 - **Used by:** `src/mkobi/api/routes/upload.py` for streaming uploads
 - **Lifecycle:**
   1. Initial temp file created with prefix `upload_{uuid}` during streaming
