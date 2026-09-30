@@ -202,15 +202,6 @@ def create_app() -> FastAPI:
         if not config.cors_origins:
             logger.error("CORS origins must be set in production environment")
             raise ValueError("CORS origins must be configured for production")
-        if "*" in config.cors_origins:
-            logger.error(
-                "CORS wildcard (*) in production is a security risk. "
-                "Remove '*' from CORS_ORIGINS and specify allowed origins explicitly."
-            )
-            raise ValueError(
-                "CORS wildcard (*) is not allowed in production. "
-                "Please configure specific CORS origins in CORS_ORIGINS environment variable."
-            )
 
     application = FastAPI(
         title=config.app_name,

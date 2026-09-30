@@ -1,12 +1,13 @@
+import functools
 import logging
 import os
 from pathlib import Path
 from collections.abc import Collection
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import BaseModel, Field, PostgresDsn, field_validator, model_validator
+from pydantic import BaseModel, Field, PostgresDsn, ValidationInfo, field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, YamlConfigSettingsSource
 from pydantic_settings.sources import PydanticBaseSettingsSource
@@ -153,27 +154,38 @@ class SecretsFileSource(PydanticBaseSettingsSource):
         return None  # Not used - we override __call__ instead
 
     def __call__(self) -> dict[str, Any]:
-        """Read secrets from file-based environment variables."""
+        """Read secrets from file-based environment variables.
+
+        Only variables whose base name is a secret-bearing field are honoured;
+        every other *_FILE name is skipped without reading anything, at debug
+        level (variable name only, never the value).
+        """
         result: dict[str, Any] = {}
+        allowed_names = _secret_field_env_names(self.settings_cls)
 
         # Look for environment variables ending with _FILE
         for env_var_name in list(os.environ.keys()):
-            if env_var_name.endswith("_FILE"):
-                # Get the base env var name (without _FILE suffix)
-                base_env_var = env_var_name[:-5]  # Remove "_FILE"
-                file_path_str = os.environ[env_var_name]
-                file_path = Path(file_path_str)
+            if not env_var_name.endswith("_FILE"):
+                continue
+            # Get the base env var name (without _FILE suffix)
+            base_env_var = env_var_name[:-5]  # Remove "_FILE"
+            if base_env_var.lower() not in allowed_names:
+                logger.debug("Skipping non-secret *_FILE variable: %s", env_var_name)
+                continue
 
-                if file_path.exists():
-                    try:
-                        secret_value = file_path.read_text().strip()
-                        # Convert DATABASE__PASSWORD to nested dict structure
-                        _set_nested_value(result, base_env_var, secret_value)
-                        logger.debug(
-                            f"Loaded secret for {base_env_var} from {file_path}"
-                        )
-                    except OSError as e:
-                        logger.warning(f"Failed to read secret file {file_path}: {e}")
+            file_path_str = os.environ[env_var_name]
+            file_path = Path(file_path_str)
+
+            if file_path.exists():
+                try:
+                    secret_value = file_path.read_text().strip()
+                    # Convert DATABASE__PASSWORD to nested dict structure
+                    _set_nested_value(result, base_env_var, secret_value)
+                    logger.debug(
+                        f"Loaded secret for {base_env_var} from {file_path}"
+                    )
+                except OSError as e:
+                    logger.warning(f"Failed to read secret file {file_path}: {e}")
 
         return result
 
@@ -311,6 +323,57 @@ class RedisSettings(BaseModel):
     port: int = 6379
     db: int = 0
     password: str | None = None
+
+
+# Secret-bearing fields, declared as (outer Settings field, model class, inner
+# field names). SecretsFileSource derives their environment names from this
+# registry so the allow-list cannot become a second, drifting copy of the field
+# list. Extend a tuple to admit a field; add a triple to admit a model.
+SECRET_FIELD_REGISTRY: Final[tuple[tuple[str, type[BaseModel], tuple[str, ...]], ...]] = (
+    ("database", DatabaseSettings, ("password", "admin_user", "admin_password")),
+    ("jwt", JWTSettings, ("secret_key",)),
+    ("redis", RedisSettings, ("password",)),
+)
+
+
+@functools.cache
+def _secret_field_env_names(settings_cls: type[BaseSettings]) -> frozenset[str]:
+    """Derive the environment names the *_FILE source is allowed to honour.
+
+    Names are derived from SECRET_FIELD_REGISTRY by reading the nesting rule
+    from the settings model config, so the filter and _set_nested_value share
+    one definition of the rule. Lazy and memoised because SecretsFileSource is
+    declared before the models in this module: evaluating it at import time
+    would raise NameError. Results are lower-cased because the settings model
+    is case-insensitive (case_sensitive=False).
+
+    Args:
+        settings_cls: The settings class whose model config supplies the
+            nested delimiter.
+
+    Returns:
+        frozenset[str]: Lower-cased environment names of secret-bearing fields.
+
+    Raises:
+        TypeError: If a registry entry names an outer Settings field that no
+            longer points at the expected model class, so drift is loud.
+    """
+    delimiter = settings_cls.model_config.get("env_nested_delimiter", "__")
+    names: set[str] = set()
+    for outer, model, inner_fields in SECRET_FIELD_REGISTRY:
+        outer_annotation = settings_cls.model_fields[outer].annotation
+        if outer_annotation is not model:
+            raise TypeError(
+                f"Secret field registry expects Settings.{outer} to be {model.__name__}, "
+                f"but it is {outer_annotation!r}. Update SECRET_FIELD_REGISTRY."
+            )
+        for inner in inner_fields:
+            if inner not in model.model_fields:
+                raise TypeError(
+                    f"Secret field registry names {model.__name__}.{inner}, which does not exist."
+                )
+            names.add(f"{outer}{delimiter}{inner}".lower())
+    return frozenset(names)
 
 
 class AppSettings(BaseModel):
@@ -551,7 +614,6 @@ class Settings(BaseSettings):
 
     # --- Placeholder CORS origins that should never be used in production ---
     CORS_ORIGINS_PLACEHOLDERS: ClassVar[set[str]] = {
-        "*",
         "http://localhost:3000",
         "http://localhost:5173",
         "https://example.com",
@@ -618,18 +680,32 @@ class Settings(BaseSettings):
 
     @field_validator("cors_origins")
     @classmethod
-    def validate_cors_origins(cls, value: list[str]) -> list[str]:
+    def validate_cors_origins(cls, value: list[str], info: ValidationInfo) -> list[str]:
         """Validate CORS origins are proper http(s) URLs.
+
+        In production a wildcard is refused outright, naming the wildcard and how
+        to remove it. Every other tier drops the wildcard and non-http(s) entries
+        with a warning, as before.
 
         Args:
             value: List of CORS origins (already parsed by pydantic-settings).
+            info: Validation context; carries the already-validated environment.
 
         Returns:
             list[str]: Validated list of CORS origins. Invalid origins are filtered out
                 and a warning is logged.
+
+        Raises:
+            ValueError: If the production tier configures a wildcard origin.
         """
         if not isinstance(value, list):
             return []
+        if info.data.get("environment") == EnvironmentEnum.PRODUCTION:
+            if any(str(origin) == "*" for origin in value):
+                raise ValueError(
+                    "CORS wildcard '*' is not allowed in production. "
+                    "Remove '*' from CORS_ORIGINS and list your production domains explicitly."
+                )
         validated: list[str] = []
         for origin in value:
             parsed = urlparse(str(origin))

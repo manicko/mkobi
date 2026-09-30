@@ -132,6 +132,23 @@ class TestSettingsFromYaml(TestSettingsBase):
 class TestSettingsDockerSecrets(TestSettingsBase):
     """Tests for Docker secrets support."""
 
+    def test_derived_secret_field_env_names(self):
+        """The *_FILE allow-list is exactly the five secret-bearing fields.
+
+        This is the guard against two silent defects: the absent
+        DatabaseSettings.redis_password (which would KeyError at construction)
+        and a Redis test that asserts "not None" on a dropped field.
+        """
+        from mkobi.config import _secret_field_env_names
+
+        assert _secret_field_env_names(Settings) == frozenset({
+            "database__password",
+            "database__admin_user",
+            "database__admin_password",
+            "jwt__secret_key",
+            "redis__password",
+        })
+
     def test_docker_secret_file_loading(self, tmp_path, monkeypatch):
         """Test loading secrets from files (_FILE suffix)."""
         # Create temporary file with secret
@@ -145,6 +162,58 @@ class TestSettingsDockerSecrets(TestSettingsBase):
 
         settings = Settings()
         assert settings.database.password == "secret-from-file"
+
+    def test_docker_secret_admin_credentials_file_loading(self, tmp_path, monkeypatch):
+        """DATABASE__ADMIN_USER_FILE and DATABASE__ADMIN_PASSWORD_FILE still load."""
+        admin_user_file = tmp_path / "admin_user"
+        admin_user_file.write_text("db-admin")
+        admin_password_file = tmp_path / "admin_password"
+        admin_password_file.write_text("db-admin-password")
+
+        monkeypatch.setenv("DATABASE__ADMIN_USER_FILE", str(admin_user_file))
+        monkeypatch.setenv("DATABASE__ADMIN_PASSWORD_FILE", str(admin_password_file))
+        monkeypatch.delenv("DATABASE__ADMIN_USER", raising=False)
+        monkeypatch.delenv("DATABASE__ADMIN_PASSWORD", raising=False)
+
+        settings = Settings()
+        assert settings.database.admin_user == "db-admin"
+        assert settings.database.admin_password == "db-admin-password"
+
+    def test_docker_secret_redis_password_file_loading(self, tmp_path, monkeypatch):
+        """REDIS__PASSWORD_FILE loads the real file contents into redis.password.
+
+        The base is a nested field, so the working env name is REDIS__PASSWORD,
+        not REDIS_PASSWORD. Asserting equality (not merely "not None") is what
+        proves the value was actually injected.
+        """
+        secret_file = tmp_path / "redis_password"
+        secret_file.write_text("redis-secret-from-file")
+        monkeypatch.setenv("REDIS__PASSWORD_FILE", str(secret_file))
+        monkeypatch.delenv("REDIS__PASSWORD", raising=False)
+
+        settings = Settings()
+        assert settings.redis.password == "redis-secret-from-file"
+
+    def test_docker_secret_non_secret_base_is_ignored(self, tmp_path, monkeypatch):
+        """A *_FILE variable for a non-secret field is ignored, not read."""
+        secret_file = tmp_path / "log_target"
+        secret_file.write_text("must-not-be-read")
+
+        monkeypatch.setenv("LOGGING__LOG_FILE", str(secret_file))
+
+        settings = Settings()
+        # The path-valued field keeps the path it was given, not the file contents.
+        assert settings.logging.log_file == str(secret_file)
+
+    def test_docker_secret_lowercase_variable_name_still_loads(self, tmp_path, monkeypatch):
+        """A lower/mixed-case *_FILE name loads, per case_sensitive=False."""
+        secret_file = tmp_path / "jwt_secret"
+        secret_file.write_text("secret-from-file-32-characters-long")
+        monkeypatch.setenv("jwt__secret_key_FILE", str(secret_file))
+        monkeypatch.delenv("JWT__SECRET_KEY", raising=False)
+
+        settings = Settings()
+        assert settings.jwt.secret_key == "secret-from-file-32-characters-long"
 
     def test_docker_secret_overrides_yaml(self, tmp_path, monkeypatch):
         """Test that Docker secrets override YAML."""
@@ -728,6 +797,28 @@ class TestCORsOriginUrlValidation(TestSettingsBase):
         clear_config_cache()
         settings = Settings()
         assert settings.cors_origins == []
+
+    def test_wildcard_refused_in_production(self, monkeypatch):
+        """Under ENV=production a wildcard raises a message naming the wildcard."""
+        monkeypatch.setenv("ENV", "production")
+        monkeypatch.setenv("ADMIN_USERNAME", "prodadmin")
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongP@ss1")
+        monkeypatch.setenv("DATABASE__PASSWORD", "StrongDbP@ss123")
+        monkeypatch.setenv("JWT__SECRET_KEY", "strong-jwt-secret-key-32-characters-long!")
+        monkeypatch.setenv("CORS_ORIGINS", '["*", "https://real.example.com"]')
+        from mkobi.config import clear_config_cache
+        clear_config_cache()
+        with pytest.raises(ValueError, match=r"wildcard '\*' is not allowed in production"):
+            Settings()
+
+    def test_wildcard_filtered_in_non_production_tier(self, monkeypatch):
+        """The default tier still filters the wildcard out and keeps valid origins."""
+        monkeypatch.setenv("CORS_ORIGINS", '["*", "https://real.example.com"]')
+        from mkobi.config import clear_config_cache
+        clear_config_cache()
+        settings = Settings()
+        assert "*" not in settings.cors_origins
+        assert "https://real.example.com" in settings.cors_origins
 
     def test_empty_cors_origins_accepted(self, monkeypatch):
         """Test that empty CORS origins list is valid."""
