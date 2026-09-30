@@ -1,5 +1,7 @@
-# Environment: development, staging, production, test
-env: development
+# Environment tier: selected by the ENV environment variable, not by this file.
+# Settings.environment declares alias="ENV" with no validation_alias, so a YAML
+# key of any name is passed through unrenamed and dropped by extra="ignore".
+# This file therefore has no effective way to set the tier; use ENV instead.
 
 # App settings
 app:
@@ -31,8 +33,6 @@ jwt:
   refresh_token_expire_minutes: 10080
 
 upload:
-  temp_dir: "data/tmp_uploads"
-  temp_dir_prefix: "mkobi_upload"
   max_file_size_mb: 100
   allowed_extensions:
     - "csv.gz"
@@ -51,7 +51,6 @@ redis:
   # Or use Docker secrets: set REDIS__PASSWORD_FILE=/run/secrets/redis_password
 
 logging:
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
   level: INFO
   log_file: null
   json_logging: true
@@ -91,6 +90,3 @@ email:
   blocked_domains:
     - "tempmail.com"
     - "throwaway.email"
-
-dashboard:
-  default_items_per_page: 20

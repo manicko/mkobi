@@ -104,29 +104,11 @@ class TestSettingsFromEnv(TestSettingsBase):
 class TestSettingsFromYaml(TestSettingsBase):
     """Tests for loading from YAML file."""
 
-    def test_load_app_name_from_yaml(self):
-        """Test loading app.name from YAML file."""
-        settings = Settings()
-        yaml_config = settings.load_yaml_config()
-        assert "app" in yaml_config
-        assert yaml_config["app"]["name"] == "mkobi"
-
-    def test_load_app_version_from_yaml(self):
-        """Test loading app.version from YAML file."""
-        settings = Settings()
-        yaml_config = settings.load_yaml_config()
-        assert yaml_config["app"]["version"] == "1.0.0"
-
     def test_load_email_blocked_domains_from_yaml(self):
         """Test loading email.blocked_domains from YAML file."""
         settings = Settings()
         assert "tempmail.com" in settings.email.blocked_domains
         assert "throwaway.email" in settings.email.blocked_domains
-
-    def test_load_dashboard_default_items_from_yaml(self):
-        """Test loading dashboard.default_items_per_page from YAML file."""
-        settings = Settings()
-        assert settings.dashboard.default_items_per_page == 20
 
 
 class TestSettingsDockerSecrets(TestSettingsBase):
@@ -344,13 +326,6 @@ class TestSettingsProperties(TestSettingsBase):
         settings = Settings()
         assert settings.log_level == "INFO"
 
-    def test_load_yaml_config_method(self):
-        """Test load_yaml_config() method."""
-        settings = Settings()
-        config = settings.load_yaml_config()
-        assert isinstance(config, dict)
-        assert "app" in config
-
 
 class TestAppSettings(TestSettingsBase):
     """Tests for AppSettings."""
@@ -369,8 +344,27 @@ class TestUploadSettings(TestSettingsBase):
         """Test default values for UploadSettings."""
         settings = Settings()
         assert settings.upload.max_file_size_mb == 100
-        assert settings.upload.temp_dir_prefix == "mkobi_upload"
         assert FileExtensionEnum.CSV in settings.upload.allowed_extensions
+
+    def test_upload_temp_dir_is_absolute_without_env(self):
+        """The resolved upload temp dir is absolute when no env value is supplied.
+
+        Guards the VAL-002 remedy: app.yaml no longer pins a relative
+        ``data/tmp_uploads``, so UploadSettings falls back to its own
+        platformdirs default, which is absolute on every platform.
+
+        Precondition: an untracked ``.env`` must not set ``UPLOAD__TEMP_DIR``.
+        The dotenv source outranks the YAML source and cannot be suppressed by
+        ``monkeypatch.delenv``, so this constructs the unit under test directly
+        rather than through the full Settings source chain.
+        """
+        from pathlib import Path
+
+        from mkobi.config import UploadSettings
+
+        resolved = UploadSettings().temp_dir
+        assert Path(resolved).is_absolute()
+        assert not resolved.endswith("data/tmp_uploads")
 
 
 class TestEmailSettings(TestSettingsBase):
@@ -381,15 +375,6 @@ class TestEmailSettings(TestSettingsBase):
         settings = Settings()
         assert "tempmail.com" in settings.email.blocked_domains
         assert "throwaway.email" in settings.email.blocked_domains
-
-
-class TestDashboardSettings(TestSettingsBase):
-    """Tests for DashboardSettings."""
-
-    def test_dashboard_default_items(self):
-        """Test default items per page."""
-        settings = Settings()
-        assert settings.dashboard.default_items_per_page == 20
 
 
 class TestCORSOrigins(TestSettingsBase):

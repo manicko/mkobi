@@ -204,9 +204,9 @@ def create_app() -> FastAPI:
             raise ValueError("CORS origins must be configured for production")
 
     application = FastAPI(
-        title=config.app_name,
+        title=config.app.name,
         description="BI Dashboard System API",
-        version="1.0.0",
+        version=config.app.version,
         debug=config.debug,
         docs_url=None if config.environment == EnvironmentEnum.PRODUCTION else "/docs",
         redoc_url=None if config.environment == EnvironmentEnum.PRODUCTION else "/redoc",

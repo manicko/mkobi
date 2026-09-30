@@ -6,7 +6,6 @@ from collections.abc import Collection
 from typing import Any, ClassVar, Final
 from urllib.parse import urlparse
 
-import yaml
 from pydantic import BaseModel, Field, PostgresDsn, ValidationInfo, field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, YamlConfigSettingsSource
@@ -220,26 +219,6 @@ class DatabaseSettings(BaseModel):
             path=self.dbname,
         )
 
-    @property
-    def admin_database_url(self) -> str | None:
-        """Build PostgreSQL admin connection URL for database creation operations.
-
-        Uses the postgres superuser for CREATE DATABASE/DROP DATABASE operations
-        which require CREATEDB privilege that application user doesn't have.
-        """
-        if not self.admin_password:
-            return None
-        return str(
-            PostgresDsn.build(
-                scheme="postgresql+asyncpg",
-                username=self.admin_user,
-                password=self.admin_password,
-                host=self.host,
-                port=self.port,
-                path="postgres",  # Connect to default postgres db for admin ops
-            )
-        )
-
     @field_validator("password")
     @classmethod
     def validate_password_not_placeholder(cls, v: str | None) -> str | None:
@@ -399,7 +378,6 @@ class UploadSettings(BaseModel):
     """File upload settings."""
 
     temp_dir: str = Field(default="", alias="temp_dir")
-    temp_dir_prefix: str = "mkobi_upload"
     max_file_size_mb: int = Field(default=100, alias="max_file_size_mb")
     allowed_extensions: list[FileExtensionEnum] = [
         FileExtensionEnum.CSV_GZ,
@@ -426,16 +404,9 @@ class EmailSettings(BaseModel):
     blocked_domains: list[str] = ["tempmail.com", "throwaway.email"]
 
 
-class DashboardSettings(BaseModel):
-    """Dashboard settings."""
-
-    default_items_per_page: int = 20
-
-
 class LoggingSettings(BaseModel):
     """Logging settings."""
 
-    format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     level: str = "INFO"
     log_file: str | None = None
     json_logging: bool = True
@@ -484,16 +455,12 @@ class Settings(BaseSettings):
     """
 
     # --- App ---
-    app_name: str = "mkobi"
     environment: EnvironmentEnum = Field(
         default=EnvironmentEnum.DEVELOPMENT, alias="ENV"
     )
     debug: bool = False
-    host: str = "0.0.0.0"
-    port: int = 8000
     app: AppSettings = AppSettings()
     email: EmailSettings = EmailSettings()
-    dashboard: DashboardSettings = DashboardSettings()
 
     # --- Database ---
     database: DatabaseSettings = DatabaseSettings()
@@ -956,19 +923,6 @@ class Settings(BaseSettings):
     def admin_pass(self) -> str:
         """Return admin password."""
         return self.admin_password
-
-    def load_yaml_config(self) -> dict[str, Any]:
-        """Load and return configuration from app.yaml.
-
-        Returns:
-            dict[str, Any]: Dictionary with settings from YAML file.
-        """
-        yaml_file_path = Path(__file__).parent / "settings" / "app.yaml"
-        if yaml_file_path.exists():
-            with open(yaml_file_path) as f:
-                result: Any = yaml.safe_load(f)
-                return result if isinstance(result, dict) else {}
-        return {}
 
 
 # Cached configuration instance
