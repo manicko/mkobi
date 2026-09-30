@@ -1063,8 +1063,19 @@ class TestProductionServiceSettingsSurface(TestSettingsBase):
 
     migrate (via alembic/env.py) and rq-worker build Settings() at the pinned
     production tier, exactly as app does, so each must carry the same required
-    variables. The regression these tests pin is the whole-stack boot failure
-    those two services hit when CORS_ORIGINS was supplied to app only.
+    variables. These tests pin that surface at the Settings level: with the
+    production tier pinned, a service that lacks CORS_ORIGINS falls back to the
+    shipped app.yaml placeholders and construction fails closed. That
+    fail-closed precondition is the mechanism behind the whole-stack boot
+    failure the pre-fix migrate and rq-worker containers produced when
+    CORS_ORIGINS was supplied to app only.
+
+    Scope limitation: both tests monkeypatch the environment and assert a
+    property of Settings; neither reads docker/docker-compose.yml. They
+    therefore verify the precondition, not the compose wiring that satisfies
+    it, so reverting the compose-level fix would leave this suite green. The
+    compose wiring is verified separately by inspecting the resolved Compose
+    configuration (docker compose config), not by pytest.
     """
 
     def test_production_settings_construct_with_service_shaped_environment(
@@ -1166,7 +1177,7 @@ class TestSecretsFileFieldNameWarning(TestSettingsBase):
     def test_file_variable_naming_no_field_does_not_warn(self, tmp_path, monkeypatch):
         """A *_FILE name that resolves to no field is skipped at debug, not warned.
 
-        LOGGING__LOG_FILE strips to logging.log, which is not a field, so the
+        LOGGING__LOG_FILE strips to logging__log, which is not a field, so the
         running dev stack stays quiet.
         """
         import logging

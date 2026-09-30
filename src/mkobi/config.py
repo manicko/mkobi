@@ -184,7 +184,9 @@ class SecretsFileSource(PydanticBaseSettingsSource):
                     )
                 else:
                     # Names nothing on Settings (for example LOGGING__LOG_FILE,
-                    # which strips to logging.log). Silent at debug level.
+                    # which strips to logging__log: only the "_FILE" suffix is
+                    # removed, so the "__" nesting separator survives and the
+                    # base is not a field path). Silent at debug level.
                     logger.debug(
                         "Skipping *_FILE variable that names no settings field: %s",
                         env_var_name,
