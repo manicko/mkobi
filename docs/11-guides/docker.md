@@ -17,161 +17,297 @@ related:
 
 ## Purpose
 
-This document provides comprehensive Docker setup instructions for the mkobi BI Dashboard System, including multi-stage builds, development environment configuration, testing procedures, and production deployment guidelines.
+This document describes the containerised state of mkobi BI Dashboard: the two
+Compose projects, the services in each, published host ports, profiles, build
+stages and health checks. It also explains the failure modes seen most often in
+development.
+
+`.\Makefile.ps1` is the canonical entry point for developer commands. This
+document describes the *state* those commands act on; the raw `docker compose`
+invocations are given for reference and diagnosis, not as the normal path.
 
 ## Architecture Overview
 
+### Compose Projects
+
+Two independent Compose projects exist. Each is pinned by a top-level `name:`
+key, so tearing one stack down can never destroy the other.
+
+| Project | `name:` declared in | Files | Used for |
+|---------|--------------------|-------|----------|
+| `mkobi` | `docker/docker-compose.yml` | `docker-compose.yml`, plus `docker-compose.override.yml` in development | Development and production |
+| `mkobi-test` | `docker/docker-compose.test.yml` | `docker-compose.test.yml` | Test suite |
+
+`docker-compose.override.yml` deliberately declares **no** `name:`. With
+multiple `-f` files the last one would win, and development and production are
+the same stack — so the name belongs in the base file only.
+
+No compose file sets `container_name:`. Those keys are daemon-global, they
+prevent a second concurrent stack, and `docker compose run` discards them
+silently.
+
+### Service Sets
+
+The service set depends on which files and profiles are supplied. Verify any of
+these locally with `docker compose ... config --services`.
+
+| Invocation | `config --services` |
+|------------|---------------------|
+| Base file only | `db`, `migrate`, `app`, `redis`, `rq-worker` |
+| Base + `docker-compose.override.yml` (development) | `db`, `migrate`, `app`, `frontend`, `redis`, `rq-worker` |
+| Base + `--profile production` | `db`, `migrate`, `app`, `nginx`, `redis`, `rq-worker` |
+| `docker-compose.test.yml` | `test-db`, `test-migrate`, `test-app`, `test-redis` |
+
+Two consequences cause most of the confusion in this area:
+
+- **`frontend` is defined only in the development override.** A base-file-only
+  invocation never starts it, because no profile enables it — there is no
+  `frontend` profile. Add `-f docker/docker-compose.override.yml` to reach it.
+- **`nginx` is the only profile-gated service in the project.** `redis` and
+  `rq-worker` are unconditional and start with the base file whether or not a
+  profile is passed.
+
+`migrate` is a one-shot (`restart: "no"`): it runs `alembic upgrade head` and
+exits 0. `app` depends on it with `condition: service_completed_successfully`.
+
 ### Containers
 
-| Container | Purpose | Ports |
-|-----------|---------|-------|
-| `app` | FastAPI backend with hot reload (dev) or multi-workers (prod) | 8000 |
-| `frontend` | Vite development server (dev only) | 5173 |
-| `db` | PostgreSQL 18 database | 5432 |
-| `redis` | Redis for task queue (production profile) | 6379 |
-| `nginx` | Reverse proxy for production (production profile) | 80 |
+| Service | Image / build target | Purpose | Profile |
+|---------|----------------------|---------|---------|
+| `db` | `postgres:18-bookworm` | PostgreSQL 18 database | — |
+| `migrate` | `docker/Dockerfile` (`prod`, `dev` in override) | One-shot Alembic migration | — |
+| `app` | `docker/Dockerfile` (`${DOCKER_TARGET:-prod}`, `dev` in override) | FastAPI backend | — |
+| `redis` | `redis:7.4-alpine` | Rate limiting, token revocation, RQ broker | — |
+| `rq-worker` | `docker/Dockerfile` (`prod`) | Background processing: uploads, aggregation | — |
+| `frontend` | `docker/Dockerfile.frontend.dev` | Vite dev server with HMR | — (override only) |
+| `nginx` | `nginx:1.27-alpine` | Production reverse proxy | `production` |
 
-### Networks
+The test project mirrors this with a `test-` prefix: `test-db`, `test-redis`,
+`test-migrate`, `test-app`.
 
-- Default: `app_network` (bridge)
-- Test: `test_network` (isolated)
+### Published Host Ports
+
+Container-internal ports are fixed. Only the **host** side is
+Compose-interpolated, so several checkouts can run side by side without editing
+committed files.
+
+| Service | Variable | Host default | Container port |
+|---------|----------|--------------|----------------|
+| `app` (dev) | `APP_HOST_PORT` | `8010` | `8000` |
+| `frontend` (dev) | none — fixed | `5173` | `5173` |
+| `db` (dev) | none — fixed | `5432`, bound to `127.0.0.1` | `5432` |
+| `test-db` | `TEST_DB_HOST_PORT` | `5434` | `5432` |
+| `test-redis` | `TEST_REDIS_HOST_PORT` | `6381` | `6379` |
+| `test-app` | `TEST_APP_HOST_PORT` | `8001` | `8000` |
+
+Because the internal ports never move, everything addressing a service over the
+Compose network is unaffected by the host-port variables:
+`frontend/vite.config.ts` proxies to `http://app:8000`, the `app` healthcheck
+calls `http://localhost:8000/health`, and nginx proxies to `app:8000`.
+
+The development database is bound to `127.0.0.1` deliberately. Do not change it
+to `0.0.0.0` — that would expose PostgreSQL to the network.
 
 ### Volumes
 
-- `postgres_data` — PostgreSQL data persistence (mounted at `/var/lib/postgresql` for PG18+ compatibility)
-- `app_data` — Application data (uploads, logs, temp files)
-- `redis_data` — Redis data (if using task queue)
+| Compose key | Host volume (`mkobi` project) | Mount point | Scope |
+|-------------|-------------------------------|-------------|-------|
+| `postgres_data` | `mkobi_postgres_data` | `/var/lib/postgresql` (PG18+ requirement) | base |
+| `app_data` | `mkobi_app_data` | `/app/data` | base |
+| `redis_data` | `mkobi_redis_data` | `/data` | base |
+| `frontend_vite_cache` | `mkobi_frontend_vite_cache` | `/app/node_modules/.vite` | dev override |
 
-### Profiles
+The test project owns `mkobi-test_test_postgres_data` and
+`mkobi-test_test_redis_data`. `node_modules` is **not** a volume: the frontend
+dev image installs it at build time, which is also what avoids the Windows
+SIGBUS fault described under Troubleshooting.
 
-- Default: Starts `app`, `frontend`, `db`, `migrate`
-- `production`: Adds `rq-worker`, `nginx`, `redis`
+### Networks
+
+- `mkobi` project: `mkobi_default` (bridge)
+- `mkobi-test` project: `test_network` (bridge), isolated from the dev stack
 
 ## Prerequisites
 
 - Docker Engine 20.10+
-- Docker Compose 2.0+
-- uv (for local development)
+- Docker Compose 2.0+ — the `docker compose` v2 subcommand, not `docker-compose`
+- PowerShell 7+ — `.\Makefile.ps1` refuses to run on Windows PowerShell 5.1
+- uv — host-native Python work only
 
 ## Quick Start
 
+`.\Makefile.ps1` wraps `docker compose` with the correct project name, file
+list and `--env-file` for each stack. Run it from the repository root: relative
+paths such as `--env-file .env` resolve against the current directory.
+
 ### Development
 
-```bash
-# Start development environment with hot reload
-docker compose -f docker/docker-compose.yml -f docker/docker-compose.override.yml --env-file .env up -d
+```powershell
+# Start the dev stack and block until healthy
+.\Makefile.ps1 up
 
-# Frontend dev server runs at http://localhost:5173 (Vite hot reload)
-# Backend API runs at http://localhost:8000
-
-# View logs
-docker compose -f docker/docker-compose.yml --env-file .env logs -f app
-docker compose -f docker/docker-compose.yml --env-file .env logs -f frontend
+# Stop the dev stack
+.\Makefile.ps1 down
 ```
 
-> **Note on Cookie Security:** The `AppSettings.cookie_secure` setting defaults to `true`, which requires HTTPS for cookies to be sent. Since the development environment runs over HTTP, `docker-compose.override.yml` sets `APP__COOKIE_SECURE=false` to allow authentication cookies to work correctly. Do not use `true` in production — the default value is secure.
+The raw invocations the task runner performs, for reference:
 
-> **Note on Port 8000 Access in Development:** Port 8000 serves the backend API and the production React build. The production frontend build uses secure cookies and memory-only token storage, which cannot authenticate over HTTP. **The intended development entry point is http://localhost:5173**, which runs the Vite development server with hot reload. The frontend dev server proxies `/api` requests to the backend at port 8000, enabling proper authentication flow in development.
+```bash
+# Development stack: 6 services, no nginx
+docker compose -p mkobi --env-file .env \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.override.yml up -d
 
-> **Note on Frontend Profile:** The frontend service requires the `frontend` profile. To start it explicitly:
-> ```bash
-> docker compose -f docker/docker-compose.yml -f docker/docker-compose.override.yml --env-file .env --profile frontend up -d
-> ```
+# Any command that mentions frontend must include the override file,
+# because no profile makes it start
+docker compose -p mkobi --env-file .env \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.override.yml logs -f frontend
+```
+
+- Frontend dev server: <http://localhost:5173> (Vite, HMR)
+- Backend API: <http://localhost:8010> on the host, container port `8000`.
+  Override the host port with `APP_HOST_PORT` when `8010` is taken.
+
+> **Note on `--env-file .env`:** a base-file-only `config` or
+> `config --services` **requires** `--env-file .env`. The base compose still
+> uses `${VAR:?}` for `DATABASE__PASSWORD`, `MKOBI_APP_PASSWORD`,
+> `JWT__SECRET_KEY`, `ADMIN_USERNAME` and `ADMIN_PASSWORD`; without the env file
+> interpolation aborts and no config is printed. Every `docker compose
+> -f docker/docker-compose.yml` command needs the flag.
+
+> **Note on Cookie Security:** the `AppSettings.cookie_secure` setting defaults
+> to `true`, which requires HTTPS for cookies to be sent. Development runs over
+> HTTP, so `docker-compose.override.yml` sets `APP__COOKIE_SECURE=false` to allow
+> authentication cookies to work. Do not use `false` in production — the default
+> is the secure value.
+
+> **Note on the Development Entry Point:** the dev `app` on host port `8010`
+> also serves the production React build, which uses secure cookies and
+> memory-only token storage and therefore cannot authenticate over HTTP. **The
+> intended entry point in development is <http://localhost:5173>**, the Vite dev
+> server, which proxies `/api` to `http://app:8000` over the Docker network.
 
 ### Testing
 
-```bash
-# Start test environment (standalone compose, no production overlap)
-docker compose -f docker/docker-compose.test.yml up -d --build
+Tests run in a separate Compose project, `mkobi-test`, with its own volumes and
+network. Credentials there are hard-coded literals; only the ports are
+interpolated, so ambient environment variables cannot leak into the stack.
 
-# Run tests
-docker compose -f docker/docker-compose.test.yml exec test-app /app/.venv/bin/pytest tests/ -v
+```powershell
+# Start test-db + test-redis and wait for them to be healthy
+.\Makefile.ps1 test-up
 
-# Stop test environment
-docker compose -f docker/docker-compose.test.yml down
+# Run the full suite (default gate)
+.\Makefile.ps1 test
+
+# Full suite with the live coverage gate
+.\Makefile.ps1 test-all
+
+# Wipe the test volumes, recreate the schema, run the full suite
+.\Makefile.ps1 test-fresh
+
+# Forward arguments to pytest verbatim
+.\Makefile.ps1 test-select -k some_test -v
+
+# Stop the test stack
+.\Makefile.ps1 test-down
+
+# Destroy the test volumes and recreate a clean test database
+.\Makefile.ps1 test-reset
 ```
 
-> **Test Compose is Standalone:** `docker-compose.test.yml` defines its own isolated services (`test-db`, `test-redis`, `test-migrate`, `test-app`), volumes (`test_postgres_data`, `test_redis_data`), and network (`test_network`). It uses shifted host ports (**5433**, **6380**, **8001**) so it can run in parallel with the production compose without conflicts.
+Run `.\Makefile.ps1 help` for the full target list; that is the single source of
+truth for the command surface, so it is not reproduced here.
 
-> **Test Port Security Note:** Host ports are intentionally exposed for development workflow convenience:
-> - **Rationale:** Running `pytest` directly from the host terminal is faster for iterative development than `docker compose exec`. The shifted ports enable running both dev and test environments simultaneously.
-> - **Security risk is LOW** — the test database contains no production data and uses default test passwords.
-> - **For shared machines:** Consider binding to `127.0.0.1` instead of the default `0.0.0.0` to prevent cross-talk between developers.
-> - **For CI/CD:** Run tests inside the container (`docker compose exec test-app uv run pytest`) to avoid exposing ports entirely.
+Note that `test-migrate` is declared in the compose file but the runner never
+starts it: the test targets bring up `test-db` and `test-redis` only and then
+run pytest with `--no-deps`, because `tests/conftest.py` recreates and migrates
+the test database itself (`setup_test_database`).
+
+> **Test Port Security Note:** host ports are intentionally exposed so the
+> suite can be run natively from a host terminal during development.
+> - **Risk is LOW** — the test database holds no production data and uses
+>   default test passwords.
+> - **Shifted defaults** — `5434`, `6381`, `8001` avoid the ports a dev or
+>   production stack already uses, so both can run at once.
+> - **For shared machines:** consider binding to `127.0.0.1` instead of the
+>   default `0.0.0.0` to prevent cross-talk between developers.
+> - **For CI/CD:** run inside the container
+>   (`docker compose -p mkobi-test -f docker/docker-compose.test.yml exec test-app uv run pytest`)
+>   to avoid exposing ports at all.
 
 ### Production
 
+```powershell
+# Add the production reverse proxy on top of the base stack
+docker compose -p mkobi --env-file .env \
+  -f docker/docker-compose.yml --profile production up -d
+```
+
+The `production` profile adds exactly one service, `nginx`. `redis` and
+`rq-worker` are not profile-gated and are already part of the base stack.
+
+The `app` service build target is `${DOCKER_TARGET:-prod}`. Set
+`DOCKER_TARGET` in the environment to build a different stage:
+
 ```bash
-# Build and start production environment
-docker compose -f docker/docker-compose.yml --env-file .env up -d
-
-# Or with specific target
-DOCKER_TARGET=prod docker compose -f docker/docker-compose.yml --env-file .env up -d
-
-# Start with production services (RQ worker, nginx)
-docker compose -f docker/docker-compose.yml --profile production up -d
+docker compose -p mkobi --env-file .env \
+  -f docker/docker-compose.yml build --build-arg DOCKER_TARGET=prod
 ```
 
 ## Daily Operations
 
-### Start Services
+`.\Makefile.ps1` covers the daily loop. The equivalent raw commands are listed
+for diagnosis; they carry the same project name, file list and `--env-file` the
+runner uses.
+
+| Task | Task runner | Raw command basis |
+|------|-------------|-------------------|
+| Start | `.\Makefile.ps1 up` | `up -d --wait` on the dev pair |
+| Stop | `.\Makefile.ps1 down` | `down --remove-orphans` on the dev pair |
+| Status | `.\Makefile.ps1 ps` | `ps` on the dev pair |
+| Logs | `.\Makefile.ps1 logs [service]` | `logs -f --tail=200 [service]` |
+| Shell | `.\Makefile.ps1 shell` | `run --rm --no-deps app bash` |
+| Command in `app` | `.\Makefile.ps1 exec <cmd>` | `exec app <cmd>` |
+| Rebuild | `.\Makefile.ps1 build` / `rebuild` | `build` / `build --no-cache` |
+
+A few operations are intentionally not wrapped, because they destroy data or
+print secrets. Run them deliberately:
 
 ```bash
-docker compose -f docker/docker-compose.yml --env-file .env up -d
+# Remove dev volumes as well as containers
+docker compose -p mkobi --env-file .env \
+  -f docker/docker-compose.yml -f docker/docker-compose.override.yml down -v
+
+# Resolved configuration — prints interpolated secrets, do not paste it
+docker compose -p mkobi --env-file .env \
+  -f docker/docker-compose.yml -f docker/docker-compose.override.yml config
 ```
 
-### Stop Services
-
-```bash
-docker compose -f docker/docker-compose.yml --env-file .env down
-```
-
-### Stop and Remove Volumes
-
-```bash
-docker compose -f docker/docker-compose.yml --env-file .env down -v
-```
-
-### View Logs
-
-```bash
-docker compose -f docker/docker-compose.yml --env-file .env logs -f app
-docker compose -f docker/docker-compose.yml --env-file .env logs -f frontend
-docker compose -f docker/docker-compose.yml --env-file .env logs db
-```
-
-### Execute Commands in Container
-
-```bash
-docker compose -f docker/docker-compose.yml --env-file .env exec app /bin/bash
-docker compose -f docker/docker-compose.yml --env-file .env exec app /app/.venv/bin/pytest tests/
-```
-
-### Rebuild After Changes
-
-```bash
-docker compose -f docker/docker-compose.yml --env-file .env up -d --build
-```
-
-### View Running Containers
-
-```bash
-docker compose -f docker/docker-compose.yml --env-file .env ps
-```
+`.\Makefile.ps1 clean`, `fullclean` and `nuke` cover the equivalent cleanup
+across both projects; `fullclean` and `nuke` prompt before removing volumes and
+are scoped to `mkobi` and `mkobi-test` only.
 
 ## Development Workflow
 
 ### Hot Reload
 
-The development environment uses:
-- **Backend:** `--reload` flag with uvicorn for automatic reload on code changes
-- **Frontend:** Vite dev server with hot module replacement (HMR)
+- **Backend:** uvicorn `--reload` with `--reload-exclude /app/tests/`. On
+  Windows, Docker Desktop's gRPC-FUSE bind mounts deliver no inotify events, so
+  the dev `app` service also sets `WATCHFILES_FORCE_POLLING=true` and
+  `WATCHFILES_POLL_DELAY_MS=400`; without those, reload never fires.
+- **Frontend:** Vite dev server with hot module replacement. The dev `frontend`
+  service sets `CHOKIDAR_USEPOLLING` and `WATCHPACK_POLLING` for the same
+  reason.
 
 ### Frontend Development
 
-- Dev server: http://localhost:5173
-- Proxies `/api` to backend at http://localhost:8000
-- TypeScript/React with TanStack Query
+- Dev server: <http://localhost:5173>
+- Proxies `/api` to the container address `http://app:8000`; the host port
+  (`8010` by default) is irrelevant to the browser
+- React 18 + TypeScript, TanStack Query
+- `npm` lives in the frontend images only — see Docker Internals below
 
 ### Backend Development
 
@@ -181,82 +317,74 @@ The development environment uses:
 
 ### Cookie Configuration
 
-The `AppSettings.cookie_secure` setting controls cookie security:
-- `true` (default): Requires HTTPS — use in production
-- `false`: Works over HTTP — used in development via override
+`AppSettings.cookie_secure` controls cookie security:
+
+- `true` (default) — requires HTTPS, use in production
+- `false` — works over HTTP, set by the development override
 
 ## Testing
 
-### Test Compose
+For the isolated test environment, its volumes, its network and the runner
+targets, see [Quick Start](#quick-start). The essentials:
 
-`docker-compose.test.yml` provides an isolated testing environment:
-- Shifted ports: 5433 (Postgres), 6380 (Redis), 8001 (API)
-- Separate volumes: `test_postgres_data`, `test_redis_data`
-- Standalone network: `test_network`
+- Standalone compose, no merge with the dev or production stack
+- Separate services (`test-db`, `test-redis`, `test-migrate`, `test-app`),
+  volumes (`test_postgres_data`, `test_redis_data`) and network (`test_network`)
+- Configurable host ports: `TEST_DB_HOST_PORT` (`5434`), `TEST_REDIS_HOST_PORT`
+  (`6381`), `TEST_APP_HOST_PORT` (`8001`)
+- Hard-coded credentials, so no ambient variable can change them
+- No port or volume conflicts with the dev stack, because the two stacks are
+  separate Compose projects
 
-### Running Tests
-
-```bash
-# Run all tests
-docker compose -f docker/docker-compose.test.yml exec test-app /app/.venv/bin/pytest tests/ -v
-
-# Run specific test file
-docker compose -f docker/docker-compose.test.yml exec test-app /app/.venv/bin/pytest tests/test_auth.py -v
-
-# Run with coverage
-docker compose -f docker/docker-compose.test.yml exec test-app /app/.venv/bin/pytest tests/ --cov=src/mkobi
-```
-
-### Test Isolation
-
-The test environment is completely isolated from development:
-- No port conflicts
-- No shared volumes
-- Separate database instance
+`tests/conftest.py` sets `os.environ.setdefault` for the database connection, so
+Compose values win inside the container while native host runs keep working
+defaults. The schema is created and migrated by `conftest`, not by
+`test-migrate`.
 
 ## Production Deployment
 
-### Production Profile
-
-Start with the production profile to include `rq-worker` and `nginx`:
-
-```bash
-docker compose -f docker/docker-compose.yml --profile production up -d
-```
-
 ### RQ Worker
 
-Runs the Redis Queue worker for background task processing (CSV uploads, data aggregation).
+Runs the Redis Queue worker for background task processing (CSV uploads, data
+aggregation). It is part of the base stack, not a production-only service.
 
-```bash
-# Start production environment with RQ worker
-docker compose -f docker/docker-compose.yml --profile production up -d
-```
-
-- **Command:** `uv run rq worker --url redis://redis:6379/0`
+- **Command:** `/app/.venv/bin/rqworker --url redis://redis:6379/0`
 - **Depends on:** `redis` (healthy), `migrate` (completed successfully)
-- **Environment:** Same as `app` service but with `AUTO_MIGRATE: "false"` (migrations handled by the `migrate` service)
-- **Shares volume:** `app_data` (access to the same upload/temp files as the app)
-- **Shares alembic config:** Mounted read-only for migration rollback capability
+- **Environment:** as `app`, plus `AUTO_MIGRATE: "false"` — migrations belong to
+  the `migrate` service
+- **Shares volume:** `app_data`, so it sees the same upload and temp files as
+  the app
+- **Mounts** `alembic/` and `alembic.ini` read-only, for migration rollback
+- **Does not need `REDIS__HOST`/`REDIS__PORT`**: it receives its target from the
+  explicit `--url` on the command line
 
-> **Note:** The RQ worker is the production implementation of the task queue. The in-memory `asyncio.Queue` (MVP) is used when the RQ worker is not running. See [Task Queue Migration](./task-queue-migration.md) for the migration plan details.
+> **Note:** the RQ worker is the production implementation of the task queue. The
+> in-memory `asyncio.Queue` is used when it is not running. See
+> [Task Queue Migration](./task-queue-migration.md) for the migration plan.
 
 ### Nginx Reverse Proxy
 
-Optional Nginx reverse proxy for production. Serves the React SPA static files and proxies API requests to FastAPI.
+Optional production reverse proxy, and the only service gated by the
+`production` profile. Serves the React SPA static files and proxies API requests
+to FastAPI at `app:8000`.
 
 - **Depends on:** `app`
 - **Ports:** `80:80`
-- **Volumes:** `nginx.conf` (read-only), `frontend/dist` (read-only)
+- **Volumes:** `docker/nginx/nginx.conf` (read-only), `frontend/dist` (read-only)
+- **Requires a prior frontend build** — the dist directory is mounted, not built
 - **Security hardening:**
   - `read_only: true` — immutable root filesystem
-  - `tmpfs` for runtime-writable paths: `/tmp`, `/var/cache/nginx`, `/var/run`, `/var/log/nginx`
+  - `tmpfs` for runtime-writable paths: `/tmp`, `/var/cache/nginx`, `/var/run`,
+    `/var/log/nginx`
   - All volumes mounted read-only (`:ro`)
-  - Healthcheck verifies HTTP response (not just config syntax)
+  - Healthcheck verifies an HTTP response, not just config syntax
 
-> **Note on `no-new-privileges`:** The official `nginx` image uses `setuid` internally to drop from root to the `nginx` user. Adding `security_opt: no-new-privileges:true` would crash the container. For nginx, the `read_only` filesystem is the primary hardening control.
+> **Note on `no-new-privileges`:** the official `nginx` image uses `setuid`
+> internally to drop from root to the `nginx` user, so
+> `security_opt: no-new-privileges:true` would crash the container. For nginx,
+> the read-only filesystem is the primary hardening control.
 
-See [Deployment](../10-deployment/deployment.md) for the nginx configuration details.
+See [Deployment](../10-deployment/deployment.md) for the nginx configuration.
 
 ## Environment Configuration
 
@@ -264,298 +392,326 @@ See [Deployment](../10-deployment/deployment.md) for the nginx configuration det
 
 | File | Purpose | Values |
 |------|---------|--------|
-| `.env` (project root) | Development - ready to use | Contains working development values |
-| `docker/.env.development` | Development template | Template with `CHANGE_ME` placeholders - must be copied |
-| `docker/.env.production` | Production deployment | Template with comments - must be filled before deployment |
-
-### Development Setup
-
-For new developers, set up your environment:
+| `.env` (repository root) | Development — ready to use | Working development values |
+| `docker/.env.development` | Development template | `CHANGE_ME` placeholders — must be copied |
+| `docker/.env.production` | Production deployment | Commented template — must be filled before deployment |
 
 ```bash
-# Option 1: Use the root .env (works out of the box for development)
-# No setup needed - the .env file contains working development values
-docker compose -f docker/docker-compose.yml --env-file .env -f docker/docker-compose.override.yml up -d
+# Development with the root .env (no setup needed)
+docker compose -p mkobi --env-file .env \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.override.yml up -d
 
-# Option 2: Copy the development template to docker/.env
-# Fill in your preferred values (not required if using root .env)
-cp docker/.env.development docker/.env
-# Edit docker/.env and replace CHANGE_ME placeholders
-docker compose -f docker/docker-compose.yml --env-file docker/.env -f docker/docker-compose.override.yml up -d
+# Or with a copied template
+cp docker/.env.development docker/.env    # then replace CHANGE_ME values
+docker compose -p mkobi --env-file docker/.env \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.override.yml up -d
+
+# Production
+docker compose --env-file docker/.env.production \
+  -f docker/docker-compose.yml up -d
 ```
 
-> **Note on Development Credentials:** In development mode, weak passwords are allowed for `ADMIN_USERNAME` and `ADMIN_PASSWORD`. The default `.env` uses `admin@example.com` for both login and password. This enables quick startup for development — **never use these credentials in production**. Production will reject known weak password values.
-
-### Production Setup
-
-For production deployments, use `docker/.env.production`:
-
-```bash
-# Production deployment (correct)
-docker compose --env-file docker/.env.production -f docker/docker-compose.yml up -d
-```
+> **Note on Development Credentials:** in development, weak passwords are
+> allowed for `ADMIN_USERNAME` and `ADMIN_PASSWORD`, and the default `.env`
+> uses `admin@example.com` for both. This enables quick startup — **never use
+> these in production**, where known-weak values are rejected.
 
 ### Required Variables
 
-**Required in production `.env`:**
+The base compose file uses `${VAR:?}`, so these must be present or Compose
+aborts before it will print a config or start anything:
 
 | Variable | Description |
 |----------|-------------|
 | `DATABASE__PASSWORD` | PostgreSQL superuser password |
 | `MKOBI_APP_PASSWORD` | Application database role password |
 | `JWT__SECRET_KEY` | JWT signing secret |
-| `ADMIN_USERNAME` | Initial admin username |
+| `ADMIN_USERNAME` | Initial admin username (must be a valid email) |
 | `ADMIN_PASSWORD` | Initial admin password |
 
-**Key Variables:**
+The development override adds `DATABASE__ADMIN_PASSWORD` to the same list.
+
+> **Security Note:** `${VAR:?}` enforces presence, not strength. For production
+> deployments set strong, unique values for `DATABASE__PASSWORD`,
+> `MKOBI_APP_PASSWORD` and `JWT__SECRET_KEY`; the application validates
+> credential strength at startup when `ENV=production`.
+
+### Key Variables
 
 | Variable | Description |
 |----------|-------------|
-| `ENV` | Environment (development/test/production) |
+| `ENV` | Environment (`development` / `test` / `production`) |
+| `DOCKER_TARGET` | Build target for `app` and `migrate` (default `prod`) |
 | `DATABASE__HOST` | Database host |
-| `DATABASE__PASSWORD` | Database password |
-| `JWT__SECRET_KEY` | JWT secret key |
-| `LOGGING__LEVEL` | Logging level (DEBUG/INFO/WARNING/ERROR) |
-| `AUTO_MIGRATE` | Auto-run database migrations (true/false) |
-| `RECREATE_TEST_DB` | Recreate test database on startup (true/false) |
-| `APP__COOKIE_SECURE` | Cookie Secure attribute (true/false). Defaults to `true`. Set to `false` in development when using HTTP. |
-
-> **Security Note:** For production deployments, always set `DATABASE__PASSWORD`, `MKOBI_APP_PASSWORD`, and `JWT__SECRET_KEY` to strong, unique values. The compose file uses `${VAR:?error}` enforcement — services will fail to start without these variables explicitly set.
+| `LOGGING__LEVEL` | Logging level (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
+| `RECREATE_TEST_DB` | Recreate the test database on startup |
+| `APP__COOKIE_SECURE` | Cookie `Secure` attribute. Defaults to `true`; the dev override sets `false` |
+| `REDIS__HOST`, `REDIS__PORT` | Redis address. Must be `redis` inside a container, since the default `localhost` resolves to the container itself |
+| `APP_HOST_PORT` | Host port for the dev `app` (default `8010`) |
+| `TEST_DB_HOST_PORT`, `TEST_REDIS_HOST_PORT`, `TEST_APP_HOST_PORT` | Host ports for the test stack (defaults `5434`, `6381`, `8001`) |
+| `CORS_ORIGINS` | Allowed origins. Defaults to `["http://localhost:5173"]` in the base file, `["http://localhost:3000"]` in the dev override |
 
 ## Docker Internals
 
 ### Multi-Stage Build Architecture
 
-This project uses a multi-stage Dockerfile with the following targets:
+`docker/Dockerfile` defines the following stages:
 
 | Stage | Description |
 |-------|-------------|
-| `frontend-builder` | Builds React SPA (intermediate stage) |
-| `base` | Common base image with system dependencies (build-essential, libpq-dev, libmagic1) |
-| `prod-base` | Minimal runtime base for production (libpq5, libmagic1 only; no build tools) |
+| `frontend-builder` | Builds the React SPA (intermediate stage) |
+| `base` | Common base with system dependencies |
+| `prod-base` | Minimal runtime base for production |
 | `dev` | Development environment with hot reload |
 | `test` | Environment for running tests |
 | `prod` (default) | Production image with multiple workers |
 
-**Stage Details:**
-
 **base**
-- Python 3.12-slim-bookworm as base
-- Installs system dependencies: `build-essential`, `libpq-dev`, `libmagic1`, `curl`
-  - `libmagic1` is required for server-side MIME type detection (python-magic library) in the file upload pipeline
-- Installs uv for fast dependency management
-- Creates non-root user for security
+- Python 3.12-slim-bookworm
+- System dependencies: `build-essential`, `libpq-dev`, `libmagic1`, `curl`
+  - `libmagic1` is required for server-side MIME detection in the upload
+    pipeline
+- Installs uv, creates a non-root `app` user
 
 **frontend-builder**
-- Uses Node 20 Alpine
-- Installs frontend dependencies via `npm ci` with BuildKit `--mount=type=cache` for persistent `node_modules` across builds
-- Builds React production bundle
+- Node 20 Alpine
+- `npm ci` then `npm run build`; no BuildKit cache mount, so `node_modules`
+  persists in the image layer
 - Output: `frontend/dist/`
 
 **dev**
-- Extends base
-- Installs ALL dependencies (including dev)
-- Copies source code for hot reload
-- Runs with `--reload` flag
+- Extends `base`; installs all dependencies including dev
+- Copies source for hot reload
+- Runs with `--reload`
 
 **test**
-- Extends base
-- Installs ALL dependencies (including dev)
-- Copies tests and source code
-- Sets `ENV=test`
+- Extends `base`; installs all dependencies including dev
+- Copies tests and source, sets `ENV=test`
 - Default command runs pytest
 
 **prod-base**
-- Python 3.12-slim-bookworm as base
-- Installs only runtime dependencies: `libpq5`, `libmagic1`, `curl`
-- No build tools (build-essential, libpq-dev) — smaller attack surface
-- Installs uv for dependency management
-- Creates non-root user
-- Extended by `prod` stage
+- Python 3.12-slim-bookworm with runtime dependencies only: `libpq5`,
+  `libmagic1`, `curl`
+- No build tools — smaller attack surface
 
 **prod** (default target)
-- Extends **prod-base** (not `base`) for minimal image size
-- Installs only production dependencies (`uv sync --no-dev`)
-- Copies frontend build artifacts from frontend-builder stage
+- Extends **prod-base**
+- Installs production dependencies only (`uv sync --no-dev`)
+- Copies the frontend build artifacts from `frontend-builder`
 - Runs with multiple workers (`--workers 4`)
-- Includes HEALTHCHECK directive (curl `/health`)
+- Includes a `HEALTHCHECK` directive (curl `/health`)
 
-### Layer Caching Optimizations
-
-The Dockerfile is optimized for fast builds:
-
-1. **Copy dependency files first**: `pyproject.toml` and `uv.lock` are copied before source code
-2. **Separate frontend build**: Frontend is built in a separate stage using `npm ci` (deterministic, lockfile-enforcing install)
-3. **BuildKit cache mount for npm**: `RUN --mount=type=cache,target=/app/frontend/node_modules` persists `node_modules` across rebuilds — dependencies are only re-downloaded when `package.json` changes
-4. **Minimal layers**: Related commands are combined to reduce layers
-5. **Proper .dockerignore**: Excludes unnecessary files from build context
+> **`npm` is not in the backend images.** It exists only in `frontend-builder`
+> (a Node image) and in the separate `docker/Dockerfile.frontend.dev` used by
+> the `frontend` service. The `app` container is a Python image, so a frontend
+> build cannot be executed inside it. Build the bundle from the `frontend`
+> service or on the host.
 
 ### Build Examples
 
 ```bash
-# Build specific target
+# Build a specific target
 docker build -f docker/Dockerfile --target dev -t mkobi:dev .
 docker build -f docker/Dockerfile --target prod -t mkobi:prod .
 docker build -f docker/Dockerfile --target test -t mkobi:test .
 
-# Build with no cache (force rebuild)
+# Force a full rebuild
 docker build -f docker/Dockerfile --no-cache --target prod -t mkobi:prod .
-
-# Build with build args
-docker build -f docker/Dockerfile --build-arg UV_VERSION=v0.1.0 --target prod -t mkobi:prod .
 ```
+
+Layer caching is preserved by copying `pyproject.toml` and `uv.lock` before the
+source tree, keeping the frontend build in its own stage, combining related
+commands into few layers, and applying `docker/.dockerignore` to the build
+context.
 
 ## Health Checks
 
-| Service | Method |
-|---------|--------|
-| db | Uses `pg_isready` to check PostgreSQL readiness |
-| app | Uses HTTP health endpoint `/health` with `start_period: 40s` (waits for db + migrate) |
-| redis | Uses `redis-cli ping` |
-| nginx | Uses `wget --spider -q http://localhost/` (verifies nginx is actually serving, not just config-valid) |
+| Service | Method | Notes |
+|---------|--------|-------|
+| `db` | `pg_isready -U postgres -d bidb` | |
+| `app` | `curl -f http://localhost:8000/health` | `start_period: 40s`; **disabled in the dev override** |
+| `redis` | `redis-cli ping` | |
+| `rq-worker` | Python one-liner, `Redis(...).ping()` | **disabled in the dev override** |
+| `nginx` | `wget --spider -q http://localhost/` | Verifies nginx is serving, not merely config-valid |
+
+The dev override disables the `app` and `rq-worker` healthchecks for faster
+startup, so `up --wait` in development does not gate on them.
 
 ## PostgreSQL Locale Configuration
 
-PostgreSQL 18 uses the `builtin` locale provider with `C.UTF-8` collation, configured via `POSTGRES_INITDB_ARGS`:
+PostgreSQL 18 uses the `builtin` locale provider with `C.UTF-8` collation,
+configured via `POSTGRES_INITDB_ARGS`:
 
 ```yaml
 POSTGRES_INITDB_ARGS: "--locale-provider=builtin --locale=C.UTF-8"
 ```
 
 This provides:
-- **Immutable collation version** (fixed at `1`) — no collation mismatch errors on image updates
+
+- **Immutable collation version** (fixed at `1`) — no collation mismatch errors
+  on image updates
 - **Full UTF-8 support** for both Latin and Cyrillic characters
 - **No index corruption risk** from OS locale changes
 
-The `-bookworm` Debian tag is used for stability. When upgrading to `-trixie` in the future, no collation refresh is needed — the builtin provider is immutable.
+The `-bookworm` Debian tag is used for stability. When upgrading to `-trixie` in
+the future, no collation refresh is needed — the builtin provider is immutable.
 
 ## Troubleshooting
 
 ### Database connection issues
 
 ```bash
-# Check if database is ready
-docker compose -f docker/docker-compose.yml --env-file .env exec db pg_isready -U postgres
+# Is the database ready?
+docker compose -p mkobi --env-file .env \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.override.yml exec db pg_isready -U postgres
 
-# View database logs
-docker compose -f docker/docker-compose.yml --env-file .env logs db
+# Or, with the task runner:
+.\Makefile.ps1 exec pg_isready -U postgres
 ```
+
+Database logs: `.\Makefile.ps1 logs db`.
 
 ### Migration issues
 
-```bash
-# Run migrations manually
-docker compose -f docker/docker-compose.yml --env-file .env exec app uv run alembic upgrade head
+```powershell
+# Apply migrations
+.\Makefile.ps1 migrate
 
-# Check migration status
-docker compose -f docker/docker-compose.yml --env-file .env exec app uv run alembic current
+# Show current vs head
+.\Makefile.ps1 migration-status
 ```
 
-### SIGBUS Error in Frontend Container (Windows)
-
-When running the frontend container on Windows Docker Desktop, you may encounter:
+### SIGBUS Error in the Frontend Container (Windows)
 
 ```
 npm error signal SIGBUS
 npm error command sh -c vite --host 0.0.0.0
 ```
 
-**Root cause:** This occurs due to cross-OS file system incompatibility. Mounts from Windows NTFS to Linux containers through gRPC FUSE or SMB layers cause memory alignment issues when Node.js/Vite accesses files.
+**Root cause:** cross-OS filesystem incompatibility. Mounts from Windows NTFS to
+Linux containers through gRPC FUSE or SMB layers cause memory-alignment issues
+when Node.js/Vite accesses files.
 
-**Solution:** The frontend service now uses a dedicated Docker image (`Dockerfile.frontend.dev`) that:
-- Installs `node_modules` inside the container during build (avoiding Windows file system issues)
-- Mounts individual source files explicitly for hot reload
+**Fix already in place:** the `frontend` service builds from a dedicated image,
+`docker/Dockerfile.frontend.dev`, which installs `node_modules` inside the image
+at build time and mounts only individual source files for hot reload. Source
+mounts are the problem, so a `node_modules` volume is not used.
 
-**Alternative workaround (if issue persists):**
+If the symptom persists, clear the Vite cache volume:
+
 ```powershell
-# Clear corrupted frontend cache volume
-docker volume rm docker_frontend_node_modules frontend_vite_cache
+docker volume rm mkobi_frontend_vite_cache
 ```
 
 ### Frontend not loading
 
 ```bash
-# Rebuild frontend
-docker compose -f docker/docker-compose.yml --env-file .env exec app npm run build --prefix frontend
+# Rebuild the frontend service — the only place a bundle can be built
+docker compose -p mkobi --env-file .env \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.override.yml up -d --build frontend
 
-# Check nginx logs (if using)
-docker compose -f docker/docker-compose.yml --env-file .env logs nginx
+# Frontend container logs
+docker compose -p mkobi --env-file .env \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.override.yml logs -f frontend
+
+# Backend logs, if the API is what fails
+.\Makefile.ps1 logs app
 ```
+
+Remember that the base file alone does not define `frontend`; the override is
+required.
 
 ### PostgreSQL 18 Collation Version Error
 
-When starting PostgreSQL 18 containers, you may see repeated errors in the logs like:
+When starting PostgreSQL 18 containers you may see repeated log messages like:
 
 ```
 ERROR:  syntax error at or near "COLLATION_VERSION"
 LINE:  ALTER DATABASE template1 REFRESH COLLATION_VERSION
 ```
 
-**Why this is harmless:** This error is caused by a known incompatibility between the Debian `postgresql-common` package (used in the postgres image) and PostgreSQL 18's stricter parser. The underscore syntax `REFRESH COLLATION_VERSION` was valid in PG16/17 but PostgreSQL 18 requires `REFRESH COLLATION VERSION` (space instead of underscore).
+**Why this is harmless:** a known incompatibility between the Debian
+`postgresql-common` package (used in the postgres image) and PostgreSQL 18's
+stricter parser. `REFRESH COLLATION_VERSION` was valid in PG16/17, but
+PostgreSQL 18 requires `REFRESH COLLATION VERSION`.
 
-**Why it doesn't affect this project:** The PostgreSQL 18 configuration uses the `builtin` locale provider with `C.UTF-8` collation:
-
-```yaml
-POSTGRES_INITDB_ARGS: "--locale-provider=builtin --locale=C.UTF-8"
-```
-
-The `builtin` locale provider creates an immutable collation version (always `1`), meaning this refresh operation is never actually needed. The database starts and operates correctly despite these log messages.
-
-**Current status:** The issue is tracked in:
-- Debian bug tracker: `postgresql-common` package
-- Docker Library GitHub: `docker-library/postgres`
-
-These error messages are cosmetic and do not require any action. You can safely ignore them.
+**Why it does not affect this project:** the `builtin` locale provider creates an
+immutable collation version (always `1`), so this refresh is never needed. The
+database starts and operates correctly despite the log lines. These messages
+are cosmetic and require no action.
 
 ### "required variable X is missing a value" error
 
-This means Docker Compose cannot find your `.env` file. Ensure you:
-1. Have a `.env` file in the project root (copy from `.env.example`)
-2. Pass `--env-file .env` flag with every `docker compose -f docker/docker-compose.yml` command
+Compose cannot interpolate a variable the compose file requires with
+`${VAR:?}`. Ensure you:
+
+1. Have a `.env` file in the repository root
+2. Pass `--env-file .env` with every base-file command — without it,
+   `DATABASE__PASSWORD`, `MKOBI_APP_PASSWORD`, `JWT__SECRET_KEY`,
+   `ADMIN_USERNAME` and `ADMIN_PASSWORD` are all missing and the command aborts
+   before producing any output
+
+This affects read-only commands too: a base-file `config` or `config --services`
+without `--env-file .env` fails in exactly the same way.
 
 ## Security
 
-1. **Non-root user**: Application runs as `app` user (not root)
-2. **Read-only filesystem**: `nginx` service uses `read_only: true` with explicit `tmpfs` mounts for runtime-writable paths (nginx uses setuid internally, so `security_opt` cannot be applied)
-3. **No privilege escalation**: `app` service uses `security_opt: no-new-privileges:true`, blocking `setuid`/`setgid` binary exploitation
-4. **Minimal capabilities**: `app` service drops all Linux capabilities via `cap_drop: ALL` (binds to port 8000, no privileged ports needed)
-5. **Secrets**: Use Docker secrets or environment variables for sensitive data
-6. **.env file**: Never commit `.env` file to version control
-7. **Production**: Change default passwords and JWT secret in production
-8. **Image scanning**: Run `docker/scripts/scan-images.ps1` to scan built images for CVEs before deployment
+1. **Non-root user:** the application runs as `app` (not root)
+2. **Read-only filesystem:** `nginx` uses `read_only: true` with explicit `tmpfs`
+   mounts (it uses `setuid` internally, so `security_opt` cannot be applied)
+3. **No privilege escalation:** `app` uses `security_opt: no-new-privileges:true`,
+   blocking `setuid`/`setgid` exploitation
+4. **Minimal capabilities:** `app` drops all Linux capabilities via
+   `cap_drop: ALL` — it binds port 8000, so no privileged port is needed
+5. **Secrets:** use Docker secrets or environment variables; the script never
+   mutates `COMPOSE_PROJECT_NAME`, which would leak into unrelated invocations
+6. **`.env` is never committed** to version control
+7. **Production:** change all default passwords and the JWT secret
+8. **Image scanning:** `docker/scripts/scan-images.ps1` scans built images for
+   CVEs
 
-**Important**: When running with the development override (`docker-compose.override.yml`), the `app` and `rq-worker` services override `read_only: true` to `read_only: false` to allow write access to temp directories. This is necessary because:
-- The app service streams upload files to `/app/data/tmp_uploads`
-- The RQ worker processes these files and needs the same access
-- Both services share the `app_data` volume for consistent permissions
+> **Important:** the dev override sets `read_only: false` on `app` and
+> `rq-worker`, because both stream and process files under
+> `/app/data/tmp_uploads` and share the `app_data` volume. Production keeps
+> `read_only: true`.
 
 ### Volume vs tmpfs for Data Directories
 
-The `app_data` volume is used for `/app/data` instead of tmpfs mounts for a critical reason:
+`app_data` is used for `/app/data` rather than tmpfs mounts:
 
-- **tmpfs limitation**: tmpfs mounts in Docker create directories owned by root. The application runs as the `app` user (uid=100, gid=101), which cannot write to root-owned tmpfs directories.
-- **Solution**: The `app_data` named volume persists data and inherits the ownership set in the Dockerfile (`chown -R app:app /app/data`).
+- **tmpfs limitation:** tmpfs directories are owned by root, and the
+  application runs as `app` (uid 100, gid 101), which cannot write to them
+- **Solution:** the `app_data` named volume inherits the ownership set in the
+  Dockerfile (`chown -R app:app /app/data`)
 
 ## Performance Tips
 
-1. **Use layer caching**: Order Dockerfile commands from least to most frequently changing
-2. **Multi-stage builds**: Reduces final image size by excluding build dependencies
-3. **uv package manager**: Faster than pip for dependency installation
-4. **--no-dev flag**: Excludes development dependencies in production
+1. **Use layer caching:** order Dockerfile commands from least to most frequently
+   changing
+2. **Multi-stage builds:** exclude build dependencies from the final image
+3. **uv:** faster than pip for dependency installation
+4. **`--no-dev`:** excludes development dependencies in production
 
 ## File Structure
 
 ```
 .
-├── .dockerignore                   # Build context file (at root)
+├── .dockerignore                   # Build context file
 ├── .env                            # Environment variables (gitignored, required for --env-file)
 ├── .env.example                    # Template for .env
+├── Makefile.ps1                    # Developer task runner (PowerShell 7+)
 ├── docker/
-│   ├── docker-compose.yml            # Production compose file
-│   ├── docker-compose.override.yml   # Development overrides
-│   ├── docker-compose.test.yml       # Test environment (standalone)
-│   ├── Dockerfile                    # Multi-stage Dockerfile (backend + frontend-builder)
-│   ├── Dockerfile.frontend.dev       # Frontend development Dockerfile (avoids Windows SIGBUS)
+│   ├── docker-compose.yml            # Base compose: db, migrate, app, redis, rq-worker (+ nginx profile)
+│   ├── docker-compose.override.yml   # Development overrides, incl. frontend
+│   ├── docker-compose.test.yml       # Standalone test environment
+│   ├── Dockerfile                    # Multi-stage backend build (+ frontend-builder)
+│   ├── Dockerfile.frontend.dev       # Frontend dev image (avoids Windows SIGBUS)
+│   ├── .dockerignore                 # Build context exclusions
 │   ├── init-scripts/
 │   │   └── 01-create-app-role.sh     # DB initialization (creates mkobi_app role)
 │   ├── nginx/
@@ -571,32 +727,35 @@ The `app_data` volume is used for `/app/data` instead of tmpfs mounts for a crit
 
 If migrating from a single-stage Dockerfile:
 
-1. Review the new multi-stage Dockerfile
-2. Update `docker-compose.yml` to specify build target
-3. Test each environment (dev/test/prod)
-4. Update CI/CD pipelines to use new targets
+1. Review the multi-stage `docker/Dockerfile`
+2. Update the compose file to specify the build target
+3. Test each environment (dev, test, production)
+4. Update CI/CD pipelines to use the new targets
 
 ## Application Data Directories
 
 ### Temporary and Upload Folders
 
-The application uses several directories for file processing, managed through the `app_data` Docker volume. This volume-based approach (instead of tmpfs) ensures correct ownership for the non-root `app` user.
+The application uses several directories for file processing, managed through
+the `app_data` volume. This volume-based approach (instead of tmpfs) ensures
+correct ownership for the non-root `app` user.
 
 | Directory | Path (Docker) | Purpose | Lifecycle |
-|---------|---------------|---------|-----------|
-| `tmp_uploads` | `/app/data/tmp_uploads` | Initial upload streaming, temp file storage during processing | Auto-cleanup on success/failure, startup cleanup for stale files |
-| `uploads` | `/app/data/uploads` | Potential permanent file storage (if used) | Manual or policy-based cleanup |
+|-----------|---------------|---------|-----------|
+| `tmp_uploads` | `/app/data/tmp_uploads` | Initial upload streaming, temp storage during processing | Auto-cleanup on success or failure; startup cleanup for stale files |
+| `uploads` | `/app/data/uploads` | Potential permanent file storage | Manual or policy-based cleanup |
 | `logs` | `/app/data/logs` | Application logs | Rotated, retention by `LOGS_RETENTION_DAYS` |
 
 ### Upload Temp Directory
 
-- **Configuration:** `UPLOAD__TEMP_DIR` environment variable (defaults to platformdirs path)
+- **Configuration:** `UPLOAD__TEMP_DIR` (defaults to a platformdirs path)
 - **Used by:** `src/mkobi/api/routes/upload.py` for streaming uploads
 - **Lifecycle:**
   1. Initial temp file created with prefix `upload_{uuid}` during streaming
-  2. File renamed to `{log_id}.csv` or `{log_id}.csv.gz` when processing starts
+  2. Renamed to `{log_id}.csv` or `{log_id}.csv.gz` when processing starts
   3. Deleted after processing completes (success or failure)
-  4. Orphaned files (>= 24h old) cleaned up on application startup via `cleanup_stale_temp_files()`
+  4. Orphaned files (24h or older) cleaned on startup by
+     `cleanup_stale_temp_files()`
 
 ### Cleanup Configuration
 
@@ -605,27 +764,34 @@ The application uses several directories for file processing, managed through th
 | `STALE_FILE_THRESHOLD_HOURS` | Age threshold for stale temp files | 24 |
 | `LOGS_RETENTION_DAYS` | Log retention period | 30 |
 
-See [Temp File Cleanup](../03-processing/file-cleanup.md) for the complete cleanup architecture.
+See [Temp File Cleanup](../03-processing/file-cleanup.md) for the complete
+cleanup architecture.
 
 ## Cross-References
 
-- [Run Guide](../99-reference/run-guide.md) - Complete application run instructions
-- [Deployment](../10-deployment/deployment.md) - Production deployment strategies
-- [Task Queue Migration](./task-queue-migration.md) - Background task processing setup
-- [Temp File Cleanup](../03-processing/file-cleanup.md) - File cleanup architecture
+- [Run Guide](../99-reference/run-guide.md) — complete application run
+  instructions
+- [Deployment](../10-deployment/deployment.md) — production deployment
+  strategies
+- [Task Queue Migration](./task-queue-migration.md) — background task processing
+  setup
+- [Temp File Cleanup](../03-processing/file-cleanup.md) — file cleanup
+  architecture
+- `.\Makefile.ps1 help` — authoritative list of task-runner targets
 
 ## Reference
 
 ### Docker Image Versions
 
 | Service | Image | Version |
-|---------|-------|--------|
-| db | postgres | 18-bookworm |
-| redis | redis | 7.4-alpine |
+|---------|-------|---------|
+| db / test-db | postgres | 18-bookworm |
+| redis / test-redis | redis | 7.4-alpine |
 | nginx | nginx | 1.27-alpine |
-| frontend | node | 20-alpine |
+| frontend-builder / frontend | node | 20-alpine |
 
-To update image versions, visit Docker Hub for latest tags and update in compose files.
+To update image versions, check Docker Hub for the latest tags and change them
+in the compose files.
 
 ## License
 
