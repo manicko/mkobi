@@ -27,10 +27,10 @@
    Use strict TypeScript on frontend and Pydantic v2 + type hints on backend. Share types via OpenAPI. Avoid `any` completely.
 
 10. **StrEnum for All Constants**  
-   All fixed values (roles, statuses, graph types, permissions, etc.) must use `Enum` or `StrEnum` instead of dicts and lists. Keep them separately in models. 
+   All fixed values and settings must use `Enum` or `StrEnum` instead of dicts and lists. Keep them separately in models. 
 
 11. **Pydantic**  
-    All data processing must use Polars. All models and validation — through Pydantic.
+    All models and validation use Pydantic v2 (DTO/validation layer at system boundaries: bot input, settings schemas, future API). Django ORM remains the persistence layer for standard CRUD operations. 
 
 12. **No `print()` Statements**  
     Use proper logging: `logger = logging.getLogger(__name__)`.
@@ -40,5 +40,10 @@
 
 14. Keep documentation updated continuously
     Architecture decisions, setup instructions, and API usage must always stay current.
+15. **Small Modules and Functions**
+    Short, focused files and functions give higher ROI in maintenance — they are
+    easier to edit, review, and less prone to corruption.
+
+
 
 

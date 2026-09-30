@@ -5,7 +5,7 @@ agent: auditor
 alwaysApply: false
 ---
 
-# Test Quality Audit — mkobi BI Dashboard
+# Test Quality Audit
 
 ## Step 0 — Ensure Docker Environment is Running
 
@@ -42,11 +42,10 @@ Use `websearch` to verify current best practices for:
 ## Anti-Patterns (subject to deletion or complete rewrite)
 
 ### 1. Architecture / Contract Mismatch
-- Sync/async mismatch (mkobi uses async SQLAlchemy 2.0 throughout)
+- Sync/async mismatch 
 - Use of deprecated methods, DTOs, data types, or contracts
 - Testing removed or renamed functionality
 - Forces keeping legacy code just to pass tests
-- Uses `pandas` instead of `polars` (forbidden in mkobi)
 - Tests against old response shapes (e.g., pre-`TokenWithUser` login response)
 
 ### 2. Overmocking
@@ -163,28 +162,6 @@ Verify tests exist for all key system parts:
 - Test database isolation (SAVEPOINT rollback, NullPool)
 - Fixture structure matches `docs/06-backend/testing.md` specification
 
-### Expected Test Files (per `docs/06-backend/testing.md`)
-
-```
-tests/
-├── conftest.py              # Shared fixtures (DB, auth, Redis mock)
-├── test_auth.py             # Auth API endpoint tests
-├── test_auth_service.py     # AuthService unit tests
-├── test_config.py           # Configuration loading tests
-├── test_dashboards_api.py   # Dashboard API endpoint tests
-├── test_data_service.py     # DataService unit tests
-├── test_filters.py          # Filter API tests
-├── test_graph_service.py    # GraphService unit tests
-├── test_graphs.py           # Graph API tests
-├── test_layouts.py          # Layout API tests
-├── test_processing_logs.py  # Processing log tests
-├── test_pydantic_models.py  # Pydantic model validation tests
-├── test_repositories.py     # Repository layer tests
-├── test_security.py         # Security utility tests
-├── test_storage_manager.py  # File storage tests
-├── test_upload_api.py       # Upload API endpoint tests
-└── test_users_api.py        # User management API tests
-```
 
 ## Audit Result Format
 

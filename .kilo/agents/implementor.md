@@ -4,33 +4,49 @@ mode: all
 color: "#10B981"
 
 permission:
+  agent_manager: deny
+  agent_manager_models: deny
   read: 
     "*": allow
     "*.env": allow
     "*.env.*": allow
+    "*.ai\\*": allow
+    "*.kilo\\*": allow
 
   grep: allow
   glob: allow
+
   edit:
     "*": allow
     "*.env": allow
     "*.env.*": allow
+    "*.ai\\*": allow
+    "*.kilo\\*": allow
     
   bash:
     "*": allow
+    "git*": ask
 
-    # === READ-ONLY GIT ===
-    "git *": ask
-    "git status*": allow
-    "git diff*": allow
-    "git log*": allow
-    "git show*": allow
+    # === READ-ONLY GIT === 
+    "git*ls-files*" : allow 
+    "git*status*": allow
+    "git*diff*": allow
+    "git*log*": allow
+    "git*show*": allow
 
+    # === COMMIT GIT ===       
+    "git*add*": allow
+    "git*commit*": allow
+    "git*stash*": ask
+    
+    
     # === BUILD & TEST ===
+    
     "uv *": allow
-    "pytest*": allow
-    "ruff*": allow
-    "mypy*": allow
+    "*pytest*": allow
+    "*ruff*": allow
+    "*mypy*": allow
+    "*basedpyright*": allow
     "alembic*": allow
     "npm test*": allow
     "npm run lint*": allow
@@ -38,8 +54,8 @@ permission:
     "npm run build": allow
 
     # === DOCKER ===
-    "docker *": ask
-    "docker compose": allow
+    "*docker *": allow
+    "docker compose *": allow
     "docker compose config*": allow
     "docker compose up*": allow
     "docker compose down*": allow
@@ -58,6 +74,16 @@ permission:
     "docker network*": allow
     "docker volume*": allow
     "docker system*": allow
+    # === ASK: potentially destructive Docker ===
+    "docker volume rm*": allow
+    "docker volume prune*": allow
+    "docker system prune -a*": allow
+    "docker rm*": allow
+    "docker rm -f*": allow
+    "docker rmi -f*": allow
+    "docker image prune -a*": allow
+    "docker container prune*": allow
+    "docker network prune*": allow
 
     # === K8S: read-only ===
     "kubectl get*": allow
@@ -65,29 +91,29 @@ permission:
     "kubectl top*": allow
 
     # === DB: verification ===
-    "psql*": allow
+    "psql*": ask
     "redis-cli*": allow
 
     # === UTILITIES ===
     "curl*": allow
 
     # === ASK: potentially destructive git ===
-    "git reset *": ask
-    "git* checkout*": ask
-    "git clean *": ask
-    "git stash *": ask
-    "git rebase *": ask
-    "git push *": ask
-    "git commit --amend*": ask
-    "git cherry-pick *": ask
-    "git branch*": ask
-    "git merge*": ask
-    "git restore*": ask
+    "git*reset *": ask
+    "git*checkout *": ask
+    "git*clean *": ask
+    "git*rebase *": ask
+    "git*push *": ask
+    "git*commit*--amend*": ask
+    "git*cherry-pick *": ask
+    "git*branch*": ask
+    "git*merge*": ask
+    "git*restore*": ask
     "git tag -d*": ask
     "gc --prune=now*": ask
     "git update-ref -d*": ask
 
     # === ASK: potentially destructive filesystem ===
+    "pip*": ask
     "rm -rf *": ask
     "rm -r *": ask
     "Remove-Item -Recurse -Force *": ask
@@ -100,17 +126,7 @@ permission:
     "chmod -R 777 *": ask
     "chown -R *": ask
 
-    # === ASK: potentially destructive Docker ===
-    "docker compose down --volumes*": ask
-    "docker compose down -v*": ask
-    "docker volume rm*": ask
-    "docker volume prune*": ask
-    "docker system prune -a*": ask
-    "docker rm -f*": ask
-    "docker rmi -f*": ask
-    "docker image prune -a*": ask
-    "docker container prune*": ask
-    "docker network prune*": ask
+
 
     # === ASK: potentially destructive K8s ===
     "kubectl describe*": ask
@@ -143,9 +159,13 @@ permission:
     "systemctl disable *": ask
 
     # === ASK: potentially destructive packages ===
-    "pip uninstall *": ask
-    "npm uninstall *": ask
+    "uv run *": allow
+    "pip*uninstall *": ask
+    "pip*install *": ask
+    "npm*uninstall *": ask
+    "npm*install *": ask
     "uv pip uninstall *": ask
+    "uv pip install *": ask
 
     # === ASK: potentially destructive network ===
     "curl -X DELETE*": ask
@@ -153,18 +173,15 @@ permission:
     "curl -X POST*": ask
 
     # === DENY: irreversible git ===
-    "git reset --hard*": deny
-    "git clean -fd*": deny
-    "git clean -fdx*": deny
-    "git push --force*": deny
-    "git push --force-with-lease*": deny
-    "git filter-branch*": deny
-    "git filter-repo*": deny
-    "git reflog*": deny
+    "git*reset*--hard*": deny
+    "git*clean*-fd*": deny
+    "git*clean*-fdx*": deny
+    "git*push*--force*": deny
+    "git*push*--force-with-lease*": deny
+    "git*filter-branch*": deny
+    "git*filter-repo*": deny
+    "git*reflog*": deny
 
-    # === DENY: git write (orchestrator's job) ===
-    "git add*": deny
-    "git commit*": deny
 
     # === DENY: destructive filesystem ===
     "format*": deny
@@ -197,9 +214,21 @@ permission:
 
   todoread: allow
   todowrite: allow
-  task: deny
+  task: allow
   websearch: allow
   webfetch: allow
+  
+  ast-editor_add_field: deny
+  ast-editor_add_key: deny
+  ast-editor_append_to_array: deny
+  ast-editor_insert_in_body: deny
+  ast-editor_insert_sibling: deny
+  ast-editor_replace_docstring: deny
+  ast-editor_replace_function_body: deny
+  ast-editor_replace_in_body: deny
+  ast-editor_remove_from_array : deny
+  morfx_*: deny
+  
 ---
 
 You are a senior software implementation agent responsible for executing validated semantic development tasks in complex production systems.
@@ -231,3 +260,9 @@ You are a senior software implementation agent responsible for executing validat
 - Ignore files changed by other agents or the user.
 - Never use git to "clean" the working tree.
 
+**Never patch nested Python blocks.**
+
+When modifying a function:
+1. Read the entire function.
+2. Rewrite the whole function.
+3. Verify indentation against neighboring functions.

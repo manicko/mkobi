@@ -10,7 +10,7 @@ alwaysApply: false
 
 ## Goal
 
-Analyze the current project implementation, development plans, and existing documentation, then update documentation: `C:\py_dev\mkobi\docs` by adding only truly significant functionality that is currently missing from the documentation following instructions: `C:\py_dev\mkobi\docs\00-overview\doc-maintenance-rules.md`.
+Analyze the current project implementation, development plans, and existing documentation, then update documentation: `docs` by adding only truly significant functionality that is currently missing from the documentation following instructions: `docs/00-overview/doc-maintenance-rules.md`.
 
 ---
 
@@ -21,10 +21,10 @@ Analyze the current project implementation, development plans, and existing docu
 Review:
 
 * ## CRITICAL: documentation formatting requirements  
-  `C:\py_dev\mkobi\docs\00-overview\doc-maintenance-rules.md`
+  `docs/00-overview/doc-maintenance-rules.md`
 
 * Project documentation  
-  `C:\py_dev\mkobi\docs\*`
+  `docs/*`
 
 * Project architecture structure  
   `STRUCT.md`
@@ -39,9 +39,6 @@ Identify:
 ---
 
 ## Step 2. Analyze Development Tasks
-
-Review contents of:
-`C:\py_dev\mkobi\.ai\tasks\done\*`
 
 For each file:
 
@@ -115,9 +112,9 @@ Remove from `{feature_list}` everything that does not pass validation.
 
 For all validated items in `{feature_list}`, update the documentation in:
 
-`C:\py_dev\mkobi\docs\*`
+`docs/*`
 
-CRITICAL: STRICTLY FOLLOW REQUIREMENTS: C:\py_dev\mkobi\docs\00-overview\doc-maintenance-rules.md
+CRITICAL: STRICTLY FOLLOW REQUIREMENTS: docs/00-overview/doc-maintenance-rules.md
 
 ---
 

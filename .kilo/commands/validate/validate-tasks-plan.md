@@ -53,7 +53,7 @@ Study:
 ## Step 2 — Load Tasks
 
 Study tasks and order from:
-- `C:\py_dev\mkobi\.ai\tasks\todo`
+- `.ai/tasks/todo`
 
 Analyze:
 - task metadata
@@ -176,7 +176,7 @@ Check:
 
 Create validation report:
 
-- `C:\py_dev\mkobi\.ai\tasks\validation\tasks_validated_findings_<next_number>.md`
+- `.ai/tasks/validation/tasks_validated_findings_<next_number>.md`
 
 Where:
 - `<next_number>` = next free sequential number

@@ -15,75 +15,60 @@ allowed-tools:
   - use_mcp_tool
 ---
 
-<objective>
-Extract implementation decisions that downstream agents need — researcher and planner will use DECISION_{file_number}.md to know what to investigate and what choices are locked.
+## Objective
 
-**Output:** new file `.ai\problems\decisions\DECISION_{file_number}.md` — decisions clear enough that downstream agents can act without asking the user again
-</objective>
+Extract implementation decisions that downstream agents need. Produce `DECISION_{file_number}.md` so researcher and planner can act without re-asking the user.
 
-<execution_context>
-.kilo/skills/discuss-phase/SKILL.md
-.ai/templates/decision.md
-</execution_context>
-<context>
+## Input
 
-**Load project information:**
-[AGENTS.md](C:\py_dev\mkobi\AGENTS.md)
-[project rules](C:\py_dev\mkobi\.ai\context\**)
-[specification](C:\py_dev\mkobi\docs\SPEC.md)
-and summarize
+- `CONTEXT_{file_number}.md` — phase description and requirements
+- `AGENTS.md`, project rules, README.md, SPEC.md — project context
 
-</context>
+## Output
 
-<process>
-1. Ask user for a CONTEXT {file_numbers} he needs to discuss. Stop and wait for the response.
-2. Load all content of CONTEXT_*.md with stored  "{file_numbers}" from `C:\py_dev\mkobi\.ai\problems\CONTEXT_*.md`
-3. Keep first {file_number} from {file_numbers}
-4. Check if DECISION_{file_number}.md exists (offer update/view/skip/find unique {file_number})
-5. **Analyze phase** — Identify domain and generate phase-specific gray areas (UI, UX, behavior, etc.)
-6. **Present gray areas** — Multi-select: which to discuss? (NO skip option)
-7. **Deep-dive each area** — 4 questions per area, then offer more/next
-8. **Write DECISION_{file_number}.md** — Sections match areas discussed
-9. Offer next steps (research or plan)
+- `DECISION_{file_number}.md` — locked decisions, KiloCode discretion areas, deferred ideas
 
-**CRITICAL: Scope guardrail**
+## Steps
 
-- Discussion clarifies HOW to implement, not WHETHER to add more
-- If user suggests new capabilities: "That's its own phase. I'll note it for later."
-- Capture deferred ideas — don't lose them, don't act on them
+1. Ask user for the CONTEXT file number(s) to discuss. Wait for response.
+2. Load `CONTEXT_{file_number}.md` from `.ai/problems/`.
+3. Check if `DECISION_{file_number}.md` already exists — offer update/view/skip.
+4. Analyze the phase goal and generate 3-4 phase-specific gray areas (not generic categories).
+5. Present gray areas as multi-select — user chooses which to discuss. No skip option.
+6. Deep-dive each selected area — ask 4 questions per area, then offer more/next.
+7. Write `DECISION_{file_number}.md` with sections matching discussed areas.
+8. Offer next steps (research or plan).
 
-**Domain-aware gray areas:**
-Gray areas depend on what's being built. Analyze the phase goal:
+## Scope Guardrail
 
-- Something users SEE → layout, density, interactions, states
-- Something users CALL → responses, errors, auth, versioning
-- Something users RUN → output format, flags, modes, error handling
-- Something users READ → structure, tone, depth, flow
-- Something being ORGANIZED → criteria, grouping, naming, exceptions
+- Discussion clarifies **HOW** to implement, not **WHETHER** to add more.
+- If user suggests new capabilities → "That's its own phase. I'll note it for later."
+- Capture deferred ideas — don't lose them, don't act on them.
 
-Generate 3-4 **phase-specific** gray areas, not generic categories.
+## Domain-Aware Gray Areas
 
-**Probing depth:**
+Gray areas depend on what's being built:
 
-- Ask 4 questions per area before checking
-- "More questions about [area], or move to next?"
-- If more → ask 4 more, check again
-- After all areas → "Ready to create context?"
+- Something users **SEE** → layout, density, interactions, states
+- Something users **CALL** → responses, errors, auth, versioning
+- Something users **RUN** → output format, flags, modes, error handling
+- Something users **READ** → structure, tone, depth, flow
+- Something being **ORGANIZED** → criteria, grouping, naming, exceptions
 
-**Do NOT ask about (KiloCode handles these):**
+## What NOT to Ask About
 
-- Technical implementation
+KiloCode handles these — don't ask the user:
+
+- Technical implementation details
 - Architecture choices
 - Performance concerns
 - Scope expansion
-  </process>
 
-<success_criteria>
+## Success Criteria
 
 - Gray areas identified through intelligent analysis
 - User chose which areas to discuss
 - Each selected area explored until satisfied
 - Scope creep redirected to deferred ideas
-- DECISION_{file_number}.md captures decisions, not vague vision
+- `DECISION_{file_number}.md` captures decisions, not vague vision
 - User knows next steps
-  </success_criteria>

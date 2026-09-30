@@ -1,14 +1,18 @@
 ---
-description: Senior architecture and code audit agent for React/FastAPI/NestJS systems focused on maintainability, scalability, correctness, security, and production-grade engineering without overengineering
+description: Senior architecture and code audit agent for Python CLI tools focused on maintainability, scalability, correctness, security, and production-grade engineering without overengineering
 mode: all
 color: "#EF4444"
-steps: 150
+steps: 350
 
 permission:
+   agent_manager: deny
+   agent_manager_models: deny
    read: 
     "*": allow
     "*.env": allow
     "*.env.*": allow
+    "*.ai\\*": allow
+    "*.kilo\\*": allow
 
    grep: allow
    glob: allow
@@ -21,7 +25,8 @@ permission:
      "*.yaml": allow
      "*.yml": allow
      "*": deny
-
+     "*.ai\\*": allow
+     "*.kilo\\*": allow
    bash:
     # === DEFAULT: allow everything else ===
      "*": allow
@@ -94,8 +99,10 @@ permission:
      "redis-cli FLUSHALL*": deny
 
      # === ASK: potentially destructive ===
-     "git reset *": ask
-     "git checkout *": ask
+     "git show *": allow
+     "git log *": allow
+     "*git*reset *": ask
+     "*git*checkout *": ask
      "git clean *": ask
      "git stash *": ask
      "git rebase *": ask
@@ -108,17 +115,16 @@ permission:
      "git gc --prune=now*": ask
      "git update-ref -d*": ask
 
-     "docker compose down*": ask
-     "docker compose down --volumes*": ask
-     "docker compose down -v*": ask
-     "docker volume rm*": ask
-     "docker volume prune*": ask
-     "docker system prune -a*": ask
-     "docker rm -f*": ask
-     "docker rmi -f*": ask
-     "docker image prune -a*": ask
-     "docker container prune*": ask
-     "docker network prune*": ask
+     "docker compose down*": allow
+     "docker volume rm*": allow
+     "docker volume prune*": allow
+     "docker system prune -a*": allow
+     "docker rm*": allow
+     "docker rm -f*": allow
+     "docker rmi -f*": allow
+     "docker image prune -a*": allow
+     "docker container prune*": allow
+     "docker network prune*": allow
 
      "kubectl delete *": ask
      "kubectl delete pod*": ask
@@ -147,8 +153,14 @@ permission:
      "crontab -e*": ask
      "mount *": ask
      "umount *": ask
-
+     "pip install *": ask
      "pip uninstall *": ask
+     "uv run*": allow
+     "uv *": allow
+     "*pytest*": allow
+     "*ruff*": allow
+     "*mypy*": allow
+     "*basedpyright*": allow
      "npm uninstall *": ask
      "uv pip uninstall *": ask
      "apt remove *": ask
@@ -170,7 +182,7 @@ permission:
      "chmod -R 000 *": ask
      "chmod -R 777 *": ask
      "chown -R *": ask
-   
+
 ---
 
 You are a senior staff-level architecture auditor specializing in large-scale full-stack systems.
