@@ -2,7 +2,7 @@
 # Docker Compose for mkobi BI Dashboard System
 # Production configuration with multi-stage Dockerfile support
 # Usage:
-#   Production:  docker compose -f docker/docker-compose.yml up -d
+#   Production:  docker compose --env-file docker/.env.production -f docker/docker-compose.yml up -d
 #   Development: docker compose -f docker/docker-compose.yml -f docker/docker-compose.override.yml up -d
 #   Test:        docker compose -f docker/docker-compose.test.yml up -d
 # =============================================================================
@@ -59,7 +59,9 @@ services:
       target: prod
     command: ["alembic", "upgrade", "head"]
     environment:
-      ENV: ${ENV:-production}
+      # The production tier is pinned: this file is the production deployment
+      # definition and must not resolve to another tier through an env file.
+      ENV: production
       DATABASE__HOST: db
       DATABASE__PORT: 5432
       DATABASE__USER: postgres
@@ -92,14 +94,14 @@ services:
       db:
         condition: service_healthy
     environment:
-      ENV: ${ENV:-production}
+      # The production tier is pinned: this file is the production deployment
+      # definition and must not resolve to another tier through an env file.
+      ENV: production
       DATABASE__HOST: db
       DATABASE__PORT: 5432
       # Application role with limited privileges for runtime operations
       DATABASE__USER: mkobi_app
       DATABASE__PASSWORD: ${MKOBI_APP_PASSWORD:?MKOBI_APP_PASSWORD is required}
-      DATABASE__ADMIN_USER: postgres
-      DATABASE__ADMIN_PASSWORD: ${DATABASE__PASSWORD:?DATABASE__PASSWORD is required}
       DATABASE__DBNAME: bidb
       DATABASE__TEST_DBNAME: bidb_test
       # SECURITY: JWT__SECRET_KEY must be set in production.
@@ -120,6 +122,11 @@ services:
       # silently serving a permissive policy.
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173"]}
       LOGGING__LEVEL: ${LOGGING__LEVEL:-INFO}
+      # Security controls the production tier relies on; supplied with the
+      # production defaults docker/.env.production declares.
+      RATE_LIMITER_FAIL_CLOSED: ${RATE_LIMITER_FAIL_CLOSED:-true}
+      UPLOAD__MAX_FILE_SIZE_MB: ${UPLOAD__MAX_FILE_SIZE_MB:-100}
+      LOGGING__JSON_LOGGING: ${LOGGING__JSON_LOGGING:-true}
       # AUTO_MIGRATE removed - migrations handled by dedicated migrate service
     volumes:
       - app_data:/app/data
@@ -178,13 +185,13 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      ENV: ${ENV:-production}
+      # The production tier is pinned: this file is the production deployment
+      # definition and must not resolve to another tier through an env file.
+      ENV: production
       DATABASE__HOST: db
       DATABASE__PORT: 5432
       DATABASE__USER: mkobi_app
       DATABASE__PASSWORD: ${MKOBI_APP_PASSWORD:?MKOBI_APP_PASSWORD is required}
-      DATABASE__ADMIN_USER: postgres
-      DATABASE__ADMIN_PASSWORD: ${DATABASE__PASSWORD:?DATABASE__PASSWORD is required}
       DATABASE__DBNAME: bidb
       DATABASE__TEST_DBNAME: bidb_test
       # SECURITY: JWT__SECRET_KEY must be set in production.
@@ -196,6 +203,11 @@ services:
       UPLOAD__TEMP_DIR: /app/data/tmp_uploads
       LOGGING__LOG_FILE: /app/data/logs/app.log
       LOGGING__LEVEL: ${LOGGING__LEVEL:-INFO}
+      # Security controls the production tier relies on; supplied with the
+      # production defaults docker/.env.production declares.
+      RATE_LIMITER_FAIL_CLOSED: ${RATE_LIMITER_FAIL_CLOSED:-true}
+      UPLOAD__MAX_FILE_SIZE_MB: ${UPLOAD__MAX_FILE_SIZE_MB:-100}
+      LOGGING__JSON_LOGGING: ${LOGGING__JSON_LOGGING:-true}
       AUTO_MIGRATE: "false"
     volumes:
       - app_data:/app/data
