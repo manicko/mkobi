@@ -18,10 +18,9 @@ services:
     environment:
       POSTGRES_DB: bidb
       POSTGRES_USER: postgres
-      # NOTE: For local development, this defaults to 'postgres'.
-      # For production, explicitly set DATABASE__PASSWORD in your .env file.
-      # NOTE: ${VAR:?} enforces presence, not strength.
-      # The application validates credential strength at startup when ENV=production.
+      # NOTE: ${VAR:?} enforces presence only, not strength. The production tier is
+      # pinned in this file, so the application checks credential strength at startup
+      # and refuses weak, placeholder and empty values.
       POSTGRES_PASSWORD: ${DATABASE__PASSWORD:?DATABASE__PASSWORD is required}
       MKOBI_APP_PASSWORD: ${MKOBI_APP_PASSWORD:?MKOBI_APP_PASSWORD is required}
       # Initialize with builtin locale provider for immutable collation (no OS-dependent version changes).
@@ -65,8 +64,9 @@ services:
       DATABASE__HOST: db
       DATABASE__PORT: 5432
       DATABASE__USER: postgres
-      # NOTE: For local development, defaults to 'postgres'.
-      # For production, explicitly set DATABASE__PASSWORD and JWT__SECRET_KEY in your .env file.
+      # NOTE: ${VAR:?} enforces presence only, not strength. The production tier is
+      # pinned in this file, so the application checks credential strength at startup
+      # and refuses weak, placeholder and empty values.
       DATABASE__PASSWORD: ${DATABASE__PASSWORD:?DATABASE__PASSWORD is required}
       DATABASE__DBNAME: bidb
       DATABASE__TEST_DBNAME: bidb_test
