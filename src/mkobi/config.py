@@ -355,12 +355,18 @@ def _secret_field_env_names(settings_cls: type[BaseSettings]) -> frozenset[str]:
         frozenset[str]: Lower-cased environment names of secret-bearing fields.
 
     Raises:
-        TypeError: If a registry entry names an outer Settings field that no
-            longer points at the expected model class, so drift is loud.
+        TypeError: If a registry entry names an outer Settings field that does
+            not exist, or that no longer points at the expected model class, so
+            drift is loud.
     """
     delimiter = settings_cls.model_config.get("env_nested_delimiter", "__")
     names: set[str] = set()
     for outer, model, inner_fields in SECRET_FIELD_REGISTRY:
+        if outer not in settings_cls.model_fields:
+            raise TypeError(
+                f"Secret field registry names Settings.{outer}, which does not exist. "
+                "Update SECRET_FIELD_REGISTRY."
+            )
         outer_annotation = settings_cls.model_fields[outer].annotation
         if outer_annotation is not model:
             raise TypeError(

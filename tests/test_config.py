@@ -195,7 +195,15 @@ class TestSettingsDockerSecrets(TestSettingsBase):
         assert settings.redis.password == "redis-secret-from-file"
 
     def test_docker_secret_non_secret_base_is_ignored(self, tmp_path, monkeypatch):
-        """A *_FILE variable for a non-secret field is ignored, not read."""
+        """A *_FILE variable for a non-secret field is ignored, not read.
+
+        Documentation of the original reproduction: LOGGING__LOG_FILE is a
+        path-valued field, and pre-fix the source read the directory the empty
+        path resolved to. The assertion below is not by itself discriminating
+        (the pre-fix injection lands on the nonexistent inner key ``log`` and is
+        dropped by extra="ignore"), so the discriminating regression test is
+        ``test_docker_secret_non_secret_base_cannot_inject_into_list_field``.
+        """
         secret_file = tmp_path / "log_target"
         secret_file.write_text("must-not-be-read")
 
@@ -204,6 +212,40 @@ class TestSettingsDockerSecrets(TestSettingsBase):
         settings = Settings()
         # The path-valued field keeps the path it was given, not the file contents.
         assert settings.logging.log_file == str(secret_file)
+
+    def test_docker_secret_non_secret_base_cannot_inject_into_list_field(
+        self, tmp_path, monkeypatch
+    ):
+        """A non-secret *_FILE base must not abort startup on an unrelated field.
+
+        Pre-fix, UPLOAD__ALLOWED_EXTENSIONS_FILE injected the file's string
+        contents into the list-valued ``upload.allowed_extensions`` field and
+        raised ValidationError, aborting startup on a configuration point that
+        has nothing to do with secrets. Post-fix the variable is skipped and
+        Settings() constructs with the field at its normal value.
+        """
+        payload_file = tmp_path / "extensions"
+        payload_file.write_text("csv")
+
+        monkeypatch.setenv("UPLOAD__ALLOWED_EXTENSIONS_FILE", str(payload_file))
+        monkeypatch.delenv("UPLOAD__ALLOWED_EXTENSIONS", raising=False)
+
+        settings = Settings()
+        assert settings.upload.allowed_extensions == [
+            FileExtensionEnum.CSV_GZ,
+            FileExtensionEnum.CSV,
+        ]
+
+    def test_docker_source_skips_non_secret_base(self, tmp_path, monkeypatch):
+        """The source returns {} for a *_FILE whose base is not a secret field."""
+        from mkobi.config import SecretsFileSource
+
+        payload_file = tmp_path / "extensions"
+        payload_file.write_text("csv")
+        monkeypatch.setenv("UPLOAD__ALLOWED_EXTENSIONS_FILE", str(payload_file))
+        monkeypatch.setenv("LOGGING__LOG_FILE", str(tmp_path / "logs.txt"))
+
+        assert SecretsFileSource(Settings)() == {}
 
     def test_docker_secret_lowercase_variable_name_still_loads(self, tmp_path, monkeypatch):
         """A lower/mixed-case *_FILE name loads, per case_sensitive=False."""
