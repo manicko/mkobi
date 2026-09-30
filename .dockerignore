@@ -68,10 +68,14 @@ frontend/build/
 frontend/.eslintcache
 
 # Environment and secrets - NEVER include in Docker images
-.env
-.env.example
-.env.local
-.env.*.local
+# Exclude every env file at any depth, not only at the context root
+.env*
+**/.env*
+# Database dumps and the backup directory
+*.dump
+backups/
+# Internal audit and planning artefacts
+.ai/
 
 # Docker files (prevent recursive copy and reduce context)
 docker/Dockerfile
