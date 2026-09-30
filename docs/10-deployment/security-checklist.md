@@ -67,8 +67,10 @@ The development override adds `DATABASE__ADMIN_PASSWORD` to the same list.
 
 ### Required in Practice but Carrying a Default (`${VAR:-}`)
 
-The two names below carry a `:-` default, so the stack starts without them. One
-default is safe, the other is refused at startup:
+Both names below carry a `:-` default, so Compose never aborts interpolation on
+them. A `:-` default keeps the stack *starting* only when the defaulted value is
+itself acceptable, and these two differ: one default is safe, the other is refused
+at startup.
 
 | Variable | Compose default | Required In Production |
 | --- | --- | --- |

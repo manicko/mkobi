@@ -444,38 +444,19 @@ stack. One more name is required in practice: `CORS_ORIGINS`.
 #### `CORS_ORIGINS` Is Required in Practice
 
 The base compose file supplies `${CORS_ORIGINS:-["http://localhost:5173"]}` to all
-three Python services (`migrate`, `app` and `rq-worker`), so the stack starts even
-when you set nothing. But that default is a **placeholder origin**, and the
-production tier — which the base file pins for all three services — refuses
-placeholders outright while `Settings` is being constructed:
+three Python services (`migrate`, `app` and `rq-worker`), so interpolation never
+aborts on this name. A `:-` default keeps the stack *starting* only when the
+defaulted value is itself acceptable, and this default is a **placeholder origin**
+that the production tier — which the base file pins for all three services — refuses
+while `Settings` is being constructed. A production operator must therefore set
+`CORS_ORIGINS` explicitly, to real domains.
 
-```
-Placeholder CORS origins not allowed in production: ['http://localhost:5173']. Please set CORS_ORIGINS to your actual production domains.
-```
-
-The refused set is `http://localhost:3000`, `http://localhost:5173`,
-`https://example.com` and `https://your-domain.com`; the message names whichever are
-present. Set `CORS_ORIGINS` to your real domains, as a JSON array:
-
-```bash
-CORS_ORIGINS='["https://app.example.org"]'
-```
-
-Two things make this confusing when it happens:
-
-- **The refusal names CORS, not HTTP.** It is raised at settings construction in
-  every Python service, including `migrate` and `rq-worker`, neither of which serves
-  HTTP. A CORS error on those services means the setting is wrong, not that the
-  service needs origins.
-- **The shipped template does not set it.** `docker/.env.production` previously
-  carried `CORS_ORIGINS='["https://your-domain.com"]'`, which was itself one of the
-  refused placeholders. It is now commented out with guidance, so an operator who
-  copies the template must supply real domains; leaving it commented out is
-  equivalent to accepting the compose placeholder, which is also refused.
-
-The development override is unaffected: it defaults to
-`["http://localhost:3000"]` and runs at the `development` tier, where placeholders
-are allowed.
+The refused origins, the exact error message, the services it surfaces on, the
+`docker/.env.production` template note and a worked example are documented once, in
+the [Security Checklist](../10-deployment/security-checklist.md), under *Required in
+Practice but Carrying a Default*. The development override is unaffected: it
+defaults to `["http://localhost:3000"]` and runs at the `development` tier, where
+placeholders are allowed.
 
 > **Security Note:** `${VAR:?}` enforces presence only, not strength; strength is
 > checked by the production-gated predicates in `Settings` at startup. The base
