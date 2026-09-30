@@ -253,7 +253,7 @@ async def process_upload_with_session(
     # Enqueue job BEFORE commit for proper transaction atomicity
     # If enqueue fails, we rollback and clean up the moved file
     try:
-        await enqueue_processing_job(
+        queue_job_id = await enqueue_processing_job(
             file_path=str(final_file_path),
             dashboard_id=dashboard_id,
             task_id=log.id,
@@ -271,7 +271,8 @@ async def process_upload_with_session(
     await db.commit()
 
     logger.info(
-        "Task enqueued: task_id=%s, dashboard_id=%s, mode=%s, config=%s",
+        "Task enqueued: queue_job_id=%s, task_id=%s, dashboard_id=%s, mode=%s, config=%s",
+        queue_job_id,
         log.id,
         dashboard_id,
         mode,
@@ -351,7 +352,7 @@ async def enqueue_processing_job(
     task_id: UUID,
     mode: str = "overwrite",
     processing_config: dict[str, Any] | None = None,
-) -> None:
+) -> str:
     """Enqueue a background processing job.
 
     Args:
@@ -360,11 +361,14 @@ async def enqueue_processing_job(
         task_id: Processing log ID.
         mode: Upload mode (overwrite or append).
         processing_config: Processing configuration dictionary for transformations.
-    """
-    from mkobi.workers.data_worker import process_csv_background
 
-    await enqueue_job(
-        process_csv_background,
+    Returns:
+        str: The queue-assigned job ID returned by the submission mechanism.
+    """
+    from mkobi.workers.data_worker import process_csv_background_sync
+
+    return await enqueue_job(
+        process_csv_background_sync,
         file_path_str=file_path,
         dashboard_id_str=str(dashboard_id),
         task_id=str(task_id),

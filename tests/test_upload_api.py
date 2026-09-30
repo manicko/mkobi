@@ -8,7 +8,7 @@ from uuid import UUID
 import pytest
 from fastapi import status
 from httpx import AsyncClient
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from mkobi.core.security import hash_password, create_access_token
 from mkobi.db.models.dashboard import Dashboard
@@ -612,6 +612,101 @@ N,South,Product12,999999.99,249999.99,2023-01-14,999
         assert response.status_code == status.HTTP_404_NOT_FOUND
         data = response.json()
         assert "dashboard" in data.get("detail", "").lower()
+
+    async def test_upload_submits_job_with_correlated_task_id(
+        self,
+        authenticated_client: AsyncClient,
+        async_db_session,
+        test_user: dict,
+        test_dashboard: Dashboard,
+        csv_file: Path,
+    ) -> None:
+        """A successful upload submits a job whose id correlates to the response.
+
+        The submission seam is patched at the layering boundary
+        (mkobi.core.task_queue.get_rq_queue) so the real enqueue chain runs.
+        """
+        access_repo = AccessRepository()
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=test_user["id"],
+            dashboard_id=test_dashboard.id,
+            permission=DashboardPermission.EDIT,
+        )
+        await async_db_session.commit()
+
+        mock_queue = MagicMock()
+        mock_queue.enqueue.return_value = MagicMock(id="rq-job-correlated")
+
+        with patch("mkobi.core.task_queue.get_rq_queue", return_value=mock_queue):
+            with open(csv_file, "rb") as f:
+                response = await authenticated_client.post(
+                    f"/upload/{test_dashboard.id}",
+                    files={"file": ("test.csv", f, "text/csv")},
+                )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        data = response.json()
+        task_id = data["task_id"]
+
+        # The submission mechanism was invoked with the file path, dashboard and
+        # the task id that the response body reports.
+        mock_queue.enqueue.assert_called_once()
+        call = mock_queue.enqueue.call_args
+        assert call.args[0].__name__ == "process_csv_background_sync"
+        assert call.kwargs["dashboard_id_str"] == str(test_dashboard.id)
+        assert call.kwargs["task_id"] == str(task_id)
+        assert call.kwargs["file_path_str"].endswith(f"{task_id}.csv")
+
+    async def test_upload_submission_failure_is_rfc7807(
+        self,
+        authenticated_client: AsyncClient,
+        async_db_session,
+        test_user: dict,
+        test_dashboard: Dashboard,
+        csv_file: Path,
+    ) -> None:
+        """A forced submission failure returns RFC 7807 and rolls back.
+
+        The response carries the FILE_PROCESSING_ERROR code, the transaction is
+        rolled back, and no orphaned file is left in tmp_uploads.
+        """
+        from mkobi.config import get_config
+        from mkobi.models.enums import ErrorCode
+
+        access_repo = AccessRepository()
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=test_user["id"],
+            dashboard_id=test_dashboard.id,
+            permission=DashboardPermission.EDIT,
+        )
+        await async_db_session.commit()
+
+        upload_dir = Path(get_config().upload_temp_dir)
+        before = set(upload_dir.glob("*.csv*"))
+
+        mock_queue = MagicMock()
+        mock_queue.enqueue.side_effect = ConnectionError("redis unreachable")
+
+        with patch("mkobi.core.task_queue.get_rq_queue", return_value=mock_queue):
+            with open(csv_file, "rb") as f:
+                response = await authenticated_client.post(
+                    f"/upload/{test_dashboard.id}",
+                    files={"file": ("test.csv", f, "text/csv")},
+                )
+
+        assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+        body = response.json()
+        # Assert the code field, not the message text.
+        assert body["code"] == ErrorCode.FILE_PROCESSING_ERROR.value
+        assert body["detail"]
+
+        after = set(upload_dir.glob("*.csv*"))
+        assert after == before, (
+            f"Orphaned file left in tmp_uploads: {after - before}"
+        )
+
 
 
 class TestTempFileCleanup:

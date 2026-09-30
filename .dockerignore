@@ -79,11 +79,11 @@ backups/
 
 # Docker files (prevent recursive copy and reduce context)
 docker/Dockerfile
-docker/docker-compose.yml
-docker/docker-compose.override.yml
+# docker/docker-compose.yml and docker/docker-compose.override.yml are NOT
+# ignored: the Dockerfile test stage copies them so tests/test_config.py can
+# assert the rq-worker command and healthcheck wiring in both tiers.
 docker/docker-compose.test.yml
 docker/.dockerignore
-docker/docker-compose.*.yml
 
 # Database and migration files - INCLUDE alembic for runtime migrations
 # alembic/versions/ is needed for Alembic to detect migrations

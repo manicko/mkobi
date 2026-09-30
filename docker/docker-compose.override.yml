@@ -124,7 +124,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: prod
-    command: ["/app/.venv/bin/rqworker", "--url", "redis://redis:6379/0"]
+    command: ["/app/.venv/bin/python", "-m", "mkobi.rq_worker_wrapper"]
     depends_on:
       redis:
         condition: service_healthy
@@ -140,6 +140,11 @@ services:
       DATABASE__ADMIN_PASSWORD: ${DATABASE__ADMIN_PASSWORD:?DATABASE__ADMIN_PASSWORD must be set}
       DATABASE__DBNAME: bidb
       DATABASE__TEST_DBNAME: bidb_test
+      # Redis connection for consuming jobs from the queue the app produces to.
+      # Mirrors the app service; a mismatch makes the worker silent.
+      REDIS__HOST: redis
+      REDIS__PORT: "6379"
+      REDIS__DB: "0"
       JWT__ALGORITHM: HS256
       JWT__SECRET_KEY: ${JWT__SECRET_KEY:?JWT__SECRET_KEY must be set}
       ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME must be set}
@@ -152,8 +157,17 @@ services:
       - app_data:/app/data
     # Override production read_only for development (needs write access for processing)
     read_only: false
+    # Real worker signal in the dev tier: the registry check, not a Redis ping.
     healthcheck:
-      disable: true
+      test:
+        - "CMD"
+        - "/app/.venv/bin/python"
+        - "-c"
+        - "from mkobi.rq_worker_wrapper import main; main()"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   db:
     ports:

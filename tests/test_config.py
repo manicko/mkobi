@@ -1210,3 +1210,62 @@ class TestSecretsFileFieldNameWarning(TestSettingsBase):
         assert "upload__allowed_extensions" in all_names
         # A non-field name is absent.
         assert "logging__log" not in all_names
+
+
+class TestRqWorkerComposeWiring:
+    """The rq-worker service must run the wrapper module with a live signal.
+
+    These tests read docker/docker-compose.yml and docker/docker-compose.override.yml
+    directly. They pin that both tiers run the wrapper module as the worker
+    command (so the deployed entry point is the retrying wrapper, not a dead
+    one) and that neither tier's healthcheck is a Redis ping or disabled: the
+    healthcheck observes the worker, not the broker.
+    """
+
+    @staticmethod
+    def _compose_files() -> list:
+        from pathlib import Path
+
+        docker_dir = Path(__file__).resolve().parent.parent / "docker"
+        return [
+            docker_dir / "docker-compose.yml",
+            docker_dir / "docker-compose.override.yml",
+        ]
+
+    @staticmethod
+    def _rq_worker_block(text: str) -> str:
+        """Return the rq-worker service block from a compose file's text.
+
+        The block starts at the ``rq-worker:`` key and ends at the next
+        top-level service key (a line beginning with two spaces and a name).
+        """
+        lines = text.splitlines()
+        start = None
+        for index, line in enumerate(lines):
+            if line.rstrip() == "  rq-worker:":
+                start = index
+                break
+        assert start is not None, "rq-worker service not found"
+        block = [lines[start]]
+        for line in lines[start + 1:]:
+            if line.startswith("  ") and not line.startswith("    ") and line.strip():
+                break
+            block.append(line)
+        return "\n".join(block)
+
+    def test_worker_command_is_wrapper_module_in_both_tiers(self):
+        """The resolved worker command is the wrapper module, never rqworker."""
+        for compose_path in self._compose_files():
+            block = self._rq_worker_block(compose_path.read_text(encoding="utf-8"))
+            assert "mkobi.rq_worker_wrapper" in block, compose_path.name
+            assert "rqworker" not in block, compose_path.name
+
+    def test_worker_healthcheck_is_not_ping_or_disabled_in_both_tiers(self):
+        """The healthcheck is the wrapper check, not a ping and not disabled."""
+        for compose_path in self._compose_files():
+            block = self._rq_worker_block(compose_path.read_text(encoding="utf-8"))
+            assert "disable: true" not in block, compose_path.name
+            assert "Redis(" not in block, compose_path.name
+            assert "redis-cli" not in block, compose_path.name
+            assert "mkobi.rq_worker_wrapper" in block, compose_path.name
+

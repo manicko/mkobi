@@ -31,7 +31,6 @@ from mkobi.workers.data_worker import (
     start_stale_processing_cleanup_task,
     mark_orphaned_uploaded_logs_failed,
 )
-from mkobi.core.task_queue import get_task_queue
 from mkobi.db.session import dispose_engine
 
 # Get configuration and setup logging
@@ -103,9 +102,8 @@ async def lifespan(app: FastAPI) -> Any:
     )
     starter = DatabaseStarter(starter_config)
 
-    # Background task for stale processing cleanup and task queue worker
+    # Background task for stale processing cleanup
     cleanup_task: asyncio.Task[None] | None = None
-    queue_worker_task: asyncio.Task[None] | None = None
 
     try:
         logger.info("Initializing application...")
@@ -124,24 +122,6 @@ async def lifespan(app: FastAPI) -> Any:
             )
         )
         logger.info("Started stale processing cleanup background task")
-
-        # Start background task queue worker
-        queue = get_task_queue()
-
-        async def queue_worker() -> None:
-            """Continuously process tasks from the in-memory queue."""
-            while True:
-                try:
-                    await queue.process_next()
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.error("Queue worker error: %s", e, exc_info=True)
-                # Small sleep to prevent busy-waiting when queue is empty
-                await asyncio.sleep(0.5)
-
-        queue_worker_task = asyncio.create_task(queue_worker())
-        logger.info("Started task queue background worker")
 
         yield
     except DatabaseNotFoundError as e:
@@ -164,15 +144,6 @@ async def lifespan(app: FastAPI) -> Any:
             except asyncio.CancelledError:
                 pass
             logger.info("Stale processing cleanup task cancelled")
-
-        # Cancel background queue worker
-        if queue_worker_task is not None and not queue_worker_task.done():
-            queue_worker_task.cancel()
-            try:
-                await queue_worker_task
-            except asyncio.CancelledError:
-                pass
-            logger.info("Task queue worker cancelled")
 
         # Dispose the main application engine
         await dispose_engine()

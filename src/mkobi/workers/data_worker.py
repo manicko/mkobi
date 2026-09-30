@@ -848,8 +848,9 @@ async def process_csv_background(
 ) -> dict[str, Any]:
     """Background task entry point for CSV processing.
 
-    This function is called by the task queue (async) or RQ worker.
-    Uses asyncio.to_thread() for RQ compatibility.
+    This function is the async implementation of the CSV processing job. The
+    RQ worker invokes it through the synchronous ``process_csv_background_sync``
+    wrapper.
 
     Args:
         file_path_str: Path to CSV file as string.
@@ -893,6 +894,11 @@ def process_csv_background_sync(
     This function is called by RQ worker in a separate process.
     Runs the async implementation using asyncio.run().
 
+    The module-global async engine is disposed in a finally block so a failed
+    job still releases its connection pool. rq's default Worker forks a work
+    horse per job, and a pool created in the parent would otherwise survive
+    across os.fork and be shared unsafely between parent and child.
+
     Args:
         file_path_str: Path to CSV file as string.
         task_id: Task ID (UUID string).
@@ -903,15 +909,27 @@ def process_csv_background_sync(
     Returns:
         dict: Processing result.
     """
-    return asyncio.run(
-        process_csv_background(
-            file_path_str=file_path_str,
-            task_id=task_id,
-            dashboard_id_str=dashboard_id_str,
-            processing_config_dict=processing_config_dict,
-            mode=mode,
-        )
-    )
+    from mkobi.db.session import dispose_engine
+
+    async def _run_and_dispose() -> dict[str, Any]:
+        """Run the job on one loop, then dispose the engine on that same loop."""
+        try:
+            return await process_csv_background(
+                file_path_str=file_path_str,
+                task_id=task_id,
+                dashboard_id_str=dashboard_id_str,
+                processing_config_dict=processing_config_dict,
+                mode=mode,
+            )
+        finally:
+            # dispose_engine is async, so drive it from this sync wrapper. Running
+            # it in the same loop that ran the job (not in a second asyncio.run
+            # after the first loop closed) keeps the pooled connection bound to
+            # the loop that created it, so the release is clean on success and on
+            # failure alike.
+            await dispose_engine()
+
+    return asyncio.run(_run_and_dispose())
 
 
 async def start_stale_processing_cleanup_task(

@@ -1,11 +1,13 @@
 """Tests for RQ worker startup retry wrapper."""
 
+import inspect
 from unittest.mock import MagicMock
 
 import pytest
 
 from mkobi.rq_worker_wrapper import (
     check_redis_connection,
+    check_worker_registered,
     MAX_RETRIES,
     BASE_DELAY_SECONDS,
     start_rq_worker,
@@ -175,3 +177,104 @@ class TestStartRQWorker:
         # Verify the URL was constructed from config
         expected_url = "redis://confighost:6380/1"
         mock_check.assert_called_once_with(expected_url)
+
+
+class TestRegisteredJobCallable:
+    """The submission seam must point at the sync RQ callable, not the async one."""
+
+    def test_enqueue_processing_job_submits_sync_callable(self):
+        """The callable submitted is process_csv_background_sync, not the async one.
+
+        A worker can only execute a sync callable; submitting the async
+        ``process_csv_background`` would fail at execution time in the worker.
+        """
+        import mkobi.services.file_processing as fp
+
+        source = inspect.getsource(fp.enqueue_processing_job)
+        assert "process_csv_background_sync" in source
+        assert "process_csv_background(" not in source
+
+    def test_enqueue_job_kwargs_match_sync_callable_parameters(self):
+        """The kwargs submitted are exactly the sync callable's parameters.
+
+        A rename of a parameter would otherwise only surface as a
+        NoSuchFunctionError/signature error inside a worker log at 03:00.
+        """
+        from mkobi.workers.data_worker import process_csv_background_sync
+
+        expected = set(
+            inspect.signature(process_csv_background_sync).parameters.keys()
+        )
+        assert expected == {
+            "file_path_str",
+            "task_id",
+            "dashboard_id_str",
+            "processing_config_dict",
+            "mode",
+        }
+
+        import mkobi.services.file_processing as fp
+
+        source = inspect.getsource(fp.enqueue_processing_job)
+        for name in expected:
+            assert f"{name}=" in source
+
+
+class TestCheckWorkerRegistered:
+    """Unit tests for the worker-registry healthcheck."""
+
+    def _patch_connection(self, mocker, workers: dict[str, dict[str, str]]):
+        """Patch redis.Redis.from_url to serve a fixed registry.
+
+        Args:
+            mocker: pytest-mock fixture.
+            workers: Mapping of worker key to its redis hash (string values).
+        """
+        mock_connection = MagicMock()
+        mock_connection.smembers.return_value = {
+            key.encode() for key in workers
+        }
+
+        def hgetall(key):
+            raw = workers.get(key, {})
+            return {k.encode(): v.encode() for k, v in raw.items()}
+
+        mock_connection.hgetall.side_effect = hgetall
+        mocker.patch(
+            "mkobi.rq_worker_wrapper.redis.Redis.from_url",
+            return_value=mock_connection,
+        )
+        return mock_connection
+
+    def test_empty_worker_set_is_not_healthy(self, mocker):
+        """An empty registry fails the check."""
+        self._patch_connection(mocker, {})
+
+        assert check_worker_registered("default") is False
+
+    def test_worker_on_expected_queue_is_healthy(self, mocker):
+        """A live worker subscribed to the expected queue passes."""
+        self._patch_connection(
+            mocker,
+            {"rq:worker:abc": {"state": "idle", "queues": "default"}},
+        )
+
+        assert check_worker_registered("default") is True
+
+    def test_worker_on_different_queue_is_not_healthy(self, mocker):
+        """A live worker on another queue fails the check."""
+        self._patch_connection(
+            mocker,
+            {"rq:worker:abc": {"state": "idle", "queues": "other"}},
+        )
+
+        assert check_worker_registered("default") is False
+
+    def test_dead_worker_state_is_not_healthy(self, mocker):
+        """A worker hash whose state is not live fails the check."""
+        self._patch_connection(
+            mocker,
+            {"rq:worker:abc": {"state": "starting", "queues": "default"}},
+        )
+
+        assert check_worker_registered("default") is False

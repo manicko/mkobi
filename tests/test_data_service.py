@@ -88,7 +88,10 @@ class TestDataServiceIntegration:
 
         try:
             with patch("mkobi.services.data_service.check_dashboard_access", return_value=True):
-                with patch("mkobi.services.file_processing.enqueue_job"):
+                with patch(
+                    "mkobi.services.file_processing.enqueue_job",
+                    return_value="rq-job-1",
+                ) as mock_enqueue:
                     result = await data_service.process_upload(
                         file_path=tmp_path,
                         dashboard_id=test_dashboard.id,
@@ -98,6 +101,12 @@ class TestDataServiceIntegration:
                         mode=UploadMode.OVERWRITE,
                         db=async_db_session,
                     )
+
+            # The submission mechanism must actually have been invoked.
+            mock_enqueue.assert_called_once()
+            call_kwargs = mock_enqueue.call_args.kwargs
+            assert call_kwargs["dashboard_id_str"] == str(test_dashboard.id)
+            assert call_kwargs["task_id"] == str(result.task_id)
 
             # Verify response
             assert result.task_id is not None
@@ -127,7 +136,10 @@ class TestDataServiceIntegration:
             tmp_path = Path(tmp.name)
 
         try:
-            with patch("mkobi.services.file_processing.enqueue_job"):
+            with patch(
+                "mkobi.services.file_processing.enqueue_job",
+                return_value="rq-job-2",
+            ) as mock_enqueue:
                 result = await data_service.process_upload(
                     file_path=tmp_path,
                     dashboard_id=test_dashboard.id,
@@ -137,6 +149,8 @@ class TestDataServiceIntegration:
                     db=async_db_session,
                 )
 
+            mock_enqueue.assert_called_once()
+            assert mock_enqueue.call_args.kwargs["task_id"] == str(result.task_id)
             assert result.status == ProcessingStatusEnum.UPLOADED
 
             # Verify log exists in database (not mock assertion)
@@ -188,7 +202,10 @@ class TestDataServiceIntegration:
 
         try:
             with patch("mkobi.services.data_service.check_dashboard_access", return_value=True):
-                with patch("mkobi.services.file_processing.enqueue_job"):
+                with patch(
+                    "mkobi.services.file_processing.enqueue_job",
+                    return_value="rq-job-3",
+                ) as mock_enqueue:
                     result = await data_service.process_upload(
                         file_path=tmp_path,
                         dashboard_id=test_dashboard.id,
@@ -198,6 +215,8 @@ class TestDataServiceIntegration:
                         db=async_db_session,
                     )
 
+            mock_enqueue.assert_called_once()
+            assert mock_enqueue.call_args.kwargs["task_id"] == str(result.task_id)
             assert result.status == ProcessingStatusEnum.UPLOADED
 
             # Verify log was created with correct status in database
@@ -317,11 +336,17 @@ class TestDataServiceIntegration:
 
         with patch("mkobi.services.data_service.check_dashboard_access", return_value=True):
             with patch("mkobi.services.data_service.find_task_file", return_value="/tmp/test.csv"):
-                with patch("mkobi.services.data_service.enqueue_processing_job"):
+                with patch(
+                    "mkobi.services.data_service.enqueue_processing_job",
+                    return_value="rq-job-trigger-1",
+                ) as mock_enqueue:
                     result = await data_service.trigger_processing(
                         task_id, test_dashboard.id, uuid4(), db=async_db_session,
                     )
 
+        mock_enqueue.assert_called_once()
+        assert mock_enqueue.call_args.kwargs["task_id"] == task_id
+        assert "rq-job-trigger-1" in result.message
         assert result.task_id == task_id
         assert result.status == ProcessingStatusEnum.PROCESSING
 
@@ -421,7 +446,10 @@ class TestProcessingStatusLifecycleIntegration:
 
         with patch("mkobi.services.data_service.check_dashboard_access", return_value=True):
             with patch("mkobi.services.data_service.find_task_file", return_value="/tmp/test.csv"):
-                with patch("mkobi.services.data_service.enqueue_processing_job"):
+                with patch(
+                    "mkobi.services.data_service.enqueue_processing_job",
+                    return_value="rq-job-status-1",
+                ) as mock_enqueue:
                     result = await data_service.trigger_processing(
                         task_id=task_id,
                         dashboard_id=dashboard.id,
@@ -429,6 +457,7 @@ class TestProcessingStatusLifecycleIntegration:
                         db=async_db_session,
                     )
 
+        mock_enqueue.assert_called_once()
         assert result.status == ProcessingStatusEnum.PROCESSING
 
         # Verify status was updated in database (not mock assertion)
@@ -453,7 +482,10 @@ class TestProcessingStatusLifecycleIntegration:
 
         with patch("mkobi.services.data_service.check_dashboard_access", return_value=True):
             with patch("mkobi.services.data_service.find_task_file", return_value="/tmp/test.csv"):
-                with patch("mkobi.services.data_service.enqueue_processing_job"):
+                with patch(
+                    "mkobi.services.data_service.enqueue_processing_job",
+                    return_value="rq-job-reprocess-1",
+                ) as mock_enqueue:
                     result = await data_service.trigger_processing(
                         task_id=log.id,
                         dashboard_id=dashboard.id,
@@ -461,6 +493,7 @@ class TestProcessingStatusLifecycleIntegration:
                         db=async_db_session,
                     )
 
+        mock_enqueue.assert_called_once()
         # Current behavior: status is updated to PROCESSING
         assert result.status == ProcessingStatusEnum.PROCESSING
 

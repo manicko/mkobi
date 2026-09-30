@@ -140,6 +140,10 @@ COPY tests/ ./tests/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
+# Compose files are asserted by tests/test_config.py (worker command and
+# healthcheck wiring), so the test image carries them for inspection.
+COPY docker/docker-compose.yml docker/docker-compose.override.yml ./docker/
+
 RUN mkdir -p /app/data/uploads /app/data/logs /app/data/tmp_uploads && \
     chown -R app:app /app/data
 

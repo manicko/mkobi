@@ -283,7 +283,7 @@ class DataService(IDataService):
         )
         await db.commit()
         try:
-            await enqueue_processing_job(
+            queue_job_id = await enqueue_processing_job(
                 file_path=file_path, dashboard_id=dashboard_id,
                 task_id=task_id, mode="overwrite",
                 processing_config=processing_config,
@@ -297,8 +297,8 @@ class DataService(IDataService):
             await db.commit()
             raise
         logger.info(
-            "Processing triggered: task_id=%s, dashboard_id=%s, config=%s",
-            task_id, dashboard_id,
+            "Processing triggered: task_id=%s, queue_job_id=%s, dashboard_id=%s, config=%s",
+            task_id, queue_job_id, dashboard_id,
             "present" if processing_config else "none",
         )
         return ProcessingStatusResponse(
@@ -307,7 +307,7 @@ class DataService(IDataService):
             dashboard_id=dashboard_id,
             status=ProcessingStatus.PROCESSING,
             progress=0,
-            message="Processing triggered",
+            message=f"Processing triggered (queue_job_id={queue_job_id})",
         )
 
     async def get_processing_status(
