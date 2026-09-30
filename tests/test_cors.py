@@ -6,6 +6,32 @@ from httpx import AsyncClient, ASGITransport
 from mkobi.app import create_app
 
 
+class TestCreateAppMetadata:
+    """create_app must take the application title and version from settings."""
+
+    def test_app_metadata_comes_from_settings(self, monkeypatch) -> None:
+        """The FastAPI title and version are transferred from config.app.
+
+        Without this wiring the values silently revert to the AppSettings field
+        defaults, which happen to equal the literals they replaced, so only an
+        override can tell the transfer apart from a hard-coded literal.
+        """
+        import os
+
+        os.environ.setdefault("ENV", "test")
+        monkeypatch.setenv("JWT__SECRET_KEY", "test_secret_key_change_in_production")
+        monkeypatch.setenv("APP__NAME", "mkobi-from-settings")
+        monkeypatch.setenv("APP__VERSION", "9.9.9")
+
+        from mkobi.config import clear_config_cache
+
+        clear_config_cache()
+
+        application = create_app()
+        assert application.title == "mkobi-from-settings"
+        assert application.version == "9.9.9"
+
+
 class TestCORSPreflight:
     """Tests for CORS preflight request handling."""
 
