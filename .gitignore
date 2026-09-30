@@ -248,3 +248,7 @@ PRODUCTION_CHECKLIST.md
 Pydantic TASKS.md
 TASK_TEMPLATE.md
 TASKS_TEMPLATE.md
+
+# PowerShell mis-quoted redirection artifacts and scratch files
+$null
+backups/
