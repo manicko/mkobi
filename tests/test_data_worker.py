@@ -20,8 +20,10 @@ from mkobi.core.reconciler_lease import (
     ReconcilerLease,
     ReconcilerStatus,
 )
+from mkobi.db.advisory_lock import LOCK_TIMEOUT_SQLSTATE
 from mkobi.utils.exceptions import AppException, ErrorCode
 from mkobi.workers.data_worker import (
+    _map_processing_error_to_code,
     _update_processing_log_status,
     cleanup_stale_processing_logs,
     mark_orphaned_uploaded_logs_failed,
@@ -29,6 +31,7 @@ from mkobi.workers.data_worker import (
     _store_aggregates,
     _validate_processing_config,
 )
+from sqlalchemy.exc import DBAPIError
 
 
 class FakeAsyncRedis:
@@ -598,6 +601,30 @@ class TestDataWorker:
         count = await mark_orphaned_uploaded_logs_failed(session=mock_session)
 
         assert count == 0
+
+
+# --- _map_processing_error_to_code tests ---
+
+
+class TestProcessingErrorClassification:
+    """Classification of processing failures by the worker's error mapper."""
+
+    @staticmethod
+    def _dbapi_error(sqlstate: str) -> DBAPIError:
+        """Build a DBAPIError whose driver error carries ``sqlstate``."""
+        orig = MagicMock()
+        orig.sqlstate = sqlstate
+        return DBAPIError("stmt", {}, orig, connection_invalidated=False)
+
+    def test_lock_timeout_maps_to_processing_in_progress(self):
+        """A contended rebuild (55P03) is reported as in-progress, not failed."""
+        error = self._dbapi_error(LOCK_TIMEOUT_SQLSTATE)
+        assert _map_processing_error_to_code(error) == ErrorCode.PROCESSING_IN_PROGRESS.value
+
+    def test_other_dbapi_error_still_maps_to_processing_failed(self):
+        """Another sqlstate is untouched: the new branch is narrow."""
+        error = self._dbapi_error("23505")
+        assert _map_processing_error_to_code(error) == ErrorCode.PROCESSING_FAILED.value
 
 
 # --- _validate_processing_config tests ---

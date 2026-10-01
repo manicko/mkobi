@@ -225,6 +225,12 @@ class DatabaseSettings(BaseModel):
     # Admin credentials for database administration operations (test DB creation)
     admin_user: str = "postgres"
     admin_password: str | None = None
+    # Transaction-scoped bound on the aggregate-rebuild advisory-lock wait
+    # (DATABASE__LOCK_TIMEOUT_MS). 180 000 ms is comfortably above a 100 MB upload
+    # plus aggregation, and - the binding reason - below the 30-minute
+    # stale_processing_timeout_minutes backstop: a lock wait that outlives the
+    # mechanism meant to clean up after it is not a bound at all.
+    lock_timeout_ms: int = 180_000
 
     model_config = {"extra": "ignore"}
 

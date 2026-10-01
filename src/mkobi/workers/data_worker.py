@@ -38,6 +38,7 @@ from mkobi.models.enums import (
 )
 
 from mkobi.utils.exceptions import AppException
+from mkobi.db.advisory_lock import acquire_dashboard_rebuild_lock, is_lock_timeout_error
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,9 @@ def _map_processing_error_to_code(error: Exception) -> str:
     """Map processing exception to ErrorCode string.
 
     Analyzes exception type and message to determine appropriate error code
-    for RFC 7807 compliant error reporting.
+    for RFC 7807 compliant error reporting. A rebuild that contended for the
+    dashboard's exclusion and timed out is reported as in-progress rather than
+    failed.
 
     Args:
         error: The exception that occurred during processing.
@@ -57,6 +60,11 @@ def _map_processing_error_to_code(error: Exception) -> str:
     Returns:
         str: Error code string for error classification.
     """
+    # Must come first: classification must not depend on the driver's message text,
+    # and "another rebuild holds this dashboard" is in-progress, not failed.
+    if is_lock_timeout_error(error):
+        return str(ErrorCode.PROCESSING_IN_PROGRESS.value)
+
     error_msg = str(error).lower()
 
     # File not found errors
@@ -601,6 +609,16 @@ async def _process_csv_file_async(
         try:
             async with get_session() as session:
                 async with session.begin():
+                    # The exclusion must be taken inside this block. SQLAlchemy
+                    # autobegins, so these two statements cannot move above
+                    # session.begin() without raising InvalidRequestError. The
+                    # lock_timeout is transaction-scoped precisely so it does not
+                    # outlive the block, and the compensation handler below runs
+                    # after this block has rolled back - so the lock is already
+                    # gone by the time the FAILED row is written on a fresh session.
+                    await acquire_dashboard_rebuild_lock(
+                        session, dashboard_id, task_id=task_id
+                    )
                     return await _run_with_transaction(session)
         except Exception as e:
             error_msg = str(e)
