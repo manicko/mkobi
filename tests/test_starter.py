@@ -20,7 +20,13 @@ os.environ.setdefault("JWT__SECRET_KEY", "test_secret_key_change_in_production")
 os.environ.setdefault("ADMIN_USERNAME", "test_admin")
 os.environ.setdefault("ADMIN_PASSWORD", "StrongT3stP@ss!")
 
-from mkobi.db.starter import DatabaseStarter, DatabaseStarterConfig  # noqa: E402
+from mkobi.db import starter as starter_module  # noqa: E402
+from mkobi.db.starter import (  # noqa: E402
+    DatabaseStarter,
+    DatabaseStarterConfig,
+    UnsafeTestDatabaseRecreationError,
+    main,
+)
 from mkobi.models.enums import EnvironmentEnum  # noqa: E402
 
 
@@ -151,3 +157,216 @@ class TestEnsureAdminUserPlaceholderCheck:
             "Admin password is a known placeholder value" in record.getMessage()
             for record in captured
         )
+
+
+class _RecordingConnection:
+    """Fake connection that records the statements issued against it."""
+
+    def __init__(self, recorder: list[str]) -> None:
+        self._recorder = recorder
+        from sqlalchemy.dialects import postgresql
+
+        self.dialect = postgresql.dialect()
+
+    async def execute(self, statement, params=None):
+        try:
+            rendered = str(statement.compile(dialect=self.dialect))
+        except Exception:
+            rendered = repr(statement)
+        self._recorder.append(rendered)
+        return None
+
+
+class _RecordingConnectContext:
+    """Async context manager yielding a recording connection."""
+
+    def __init__(self, recorder: list[str]) -> None:
+        self._recorder = recorder
+
+    async def __aenter__(self) -> _RecordingConnection:
+        return _RecordingConnection(self._recorder)
+
+    async def __aexit__(self, *exc_info) -> bool:
+        return False
+
+
+class _RecordingEngine:
+    """Fake async engine whose connections record every statement."""
+
+    def __init__(self, recorder: list[str]) -> None:
+        self._recorder = recorder
+
+    def connect(self) -> _RecordingConnectContext:
+        return _RecordingConnectContext(self._recorder)
+
+    async def dispose(self) -> None:
+        return None
+
+
+class _RecordingEngineFactory:
+    """Callable standing in for create_async_engine, recording every call."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.statements: list[str] = []
+
+    def __call__(self, url, **kwargs) -> _RecordingEngine:
+        self.calls.append(str(url))
+        return _RecordingEngine(self.statements)
+
+
+async def _noop_apply_migrations(self, db_url: str) -> None:
+    """Stand-in for migration application so no Alembic run is required."""
+    return None
+
+
+_TEST_DB_URL = "postgresql+asyncpg://mkobi_app:pw@localhost:5434/bidb_test"
+_TEST_ADMIN_URL = "postgresql+asyncpg://postgres:pw@localhost:5434/postgres"
+
+
+class _ConfiguredEnvironment:
+    """Minimal stand-in exposing only the configured application environment."""
+
+    def __init__(self, environment: EnvironmentEnum) -> None:
+        self.environment = environment
+
+
+def _pin_configured_env(monkeypatch, environment: EnvironmentEnum) -> None:
+    """Pin the configured application environment seen by the starter module."""
+    monkeypatch.setattr(
+        starter_module, "get_config", lambda: _ConfiguredEnvironment(environment)
+    )
+
+
+class TestRecreateTestDatabaseGuards:
+    """Tests for the destructive-recreation guards in recreate_test_database()."""
+
+    def test_recreates_guarded_test_database(self, monkeypatch):
+        """A test-tier, test-named database is recreated successfully.
+
+        This is the positive path: it fails if either guard is over-tight. It
+        relies on the configured environment being the test tier, which is how
+        the session-scoped setup_test_database fixture (tests/conftest.py)
+        calls this function.
+        """
+        factory = _RecordingEngineFactory()
+        monkeypatch.setattr(starter_module, "create_async_engine", factory)
+        monkeypatch.setattr(DatabaseStarter, "_apply_migrations", _noop_apply_migrations)
+
+        starter = DatabaseStarter(
+            DatabaseStarterConfig(
+                test_database_url=_TEST_DB_URL,
+                test_admin_database_url=_TEST_ADMIN_URL,
+                recreate_test_db=True,
+            )
+        )
+
+        import asyncio
+
+        asyncio.run(starter.recreate_test_database())
+
+        # The destructive path ran: the admin engine was created and the
+        # terminate/drop/create statements were issued.
+        assert factory.calls, "recreation must create an admin engine"
+        assert any(
+            "pg_terminate_backend" in statement for statement in factory.statements
+        )
+        assert any(
+            "DROP DATABASE" in statement or "CREATE DATABASE" in statement
+            for statement in factory.statements
+        )
+
+    def test_refuses_production_tier(self, monkeypatch):
+        """A production tier refuses before any statement is issued."""
+        factory = _RecordingEngineFactory()
+        monkeypatch.setattr(starter_module, "create_async_engine", factory)
+        _pin_configured_env(monkeypatch, EnvironmentEnum.PRODUCTION)
+
+        starter = DatabaseStarter(
+            DatabaseStarterConfig(
+                test_database_url=_TEST_DB_URL,
+                test_admin_database_url=_TEST_ADMIN_URL,
+                recreate_test_db=True,
+            )
+        )
+
+        import asyncio
+
+        with pytest.raises(UnsafeTestDatabaseRecreationError, match="not 'test'"):
+            asyncio.run(starter.recreate_test_database())
+
+        # The refusal happened BEFORE any target-database statement: no engine
+        # was created and nothing was issued. Asserting only the exception would
+        # also pass if the drop ran and the guard fired afterwards.
+        assert factory.calls == []
+        assert factory.statements == []
+
+    def test_refuses_non_test_database_name(self, monkeypatch):
+        """A test tier pointed at a non-test name still refuses.
+
+        This is the misconfigured-name check that would have prevented the
+        finding.
+        """
+        factory = _RecordingEngineFactory()
+        monkeypatch.setattr(starter_module, "create_async_engine", factory)
+        _pin_configured_env(monkeypatch, EnvironmentEnum.TEST)
+
+        starter = DatabaseStarter(
+            DatabaseStarterConfig(
+                test_database_url="postgresql+asyncpg://mkobi_app:pw@localhost:5434/bidb",
+                test_admin_database_url=_TEST_ADMIN_URL,
+                recreate_test_db=True,
+            )
+        )
+
+        import asyncio
+
+        with pytest.raises(UnsafeTestDatabaseRecreationError, match="does not match"):
+            asyncio.run(starter.recreate_test_database())
+
+        assert factory.calls == []
+        assert factory.statements == []
+
+    @pytest.mark.parametrize("db_name", ["bidb_test", "bidb_test_gw0", "bidb_test_w1"])
+    def test_accepts_convention_names(self, monkeypatch, db_name):
+        """Worker-isolated names from conftest's convention are accepted."""
+        factory = _RecordingEngineFactory()
+        monkeypatch.setattr(starter_module, "create_async_engine", factory)
+        monkeypatch.setattr(DatabaseStarter, "_apply_migrations", _noop_apply_migrations)
+        _pin_configured_env(monkeypatch, EnvironmentEnum.TEST)
+
+        starter = DatabaseStarter(
+            DatabaseStarterConfig(
+                test_database_url=f"postgresql+asyncpg://mkobi_app:pw@localhost:5434/{db_name}",
+                test_admin_database_url=_TEST_ADMIN_URL,
+                recreate_test_db=True,
+            )
+        )
+
+        import asyncio
+
+        asyncio.run(starter.recreate_test_database())
+
+        assert factory.calls, "a convention-matching name must not be refused"
+
+
+class TestRecreateTestDatabaseCliGuard:
+    """Tests that the --recreate-test-db CLI path is guarded too."""
+
+    def test_cli_refuses_production_tier(self, monkeypatch):
+        """main() refuses on a production tier instead of dropping a database."""
+        factory = _RecordingEngineFactory()
+        monkeypatch.setattr(starter_module, "create_async_engine", factory)
+        # The CLI reads the configured tier through get_config(); pin it to a
+        # production stub so no real production settings are required.
+        _pin_configured_env(monkeypatch, EnvironmentEnum.PRODUCTION)
+        monkeypatch.setattr(
+            "sys.argv", ["mkobi.db.starter", "--recreate-test-db"]
+        )
+
+        with pytest.raises(UnsafeTestDatabaseRecreationError, match="not 'test'"):
+            main()
+
+        # The CLI path must refuse before reaching any destructive call.
+        assert factory.calls == []
+        assert factory.statements == []

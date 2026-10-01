@@ -44,6 +44,20 @@ class SchemaNotFoundError(Exception):
     """Database schema not found."""
 
 
+class UnsafeTestDatabaseRecreationError(Exception):
+    """Refusal to recreate a database that is not a guarded test database.
+
+    Raised when destructive recreation is requested outside the test tier or
+    against a name that does not match the test-database naming convention.
+    """
+
+
+# Test database naming convention shared with tests/conftest.py: the base name
+# is 'bidb_test' and pytest-xdist workers append a '_<worker_id>' suffix, e.g.
+# 'bidb_test_gw0'. Recreation is refused unless the target name matches.
+TEST_DATABASE_NAME_PATTERN = re.compile(r"^bidb_test(_[A-Za-z0-9]+)?$")
+
+
 class DatabaseStarterConfig:
     """Database starter configuration."""
 
@@ -191,22 +205,61 @@ class DatabaseStarter:
         logger.info("Database initialization completed successfully")
 
     async def recreate_test_database(self) -> None:
-        """Recreate test database from scratch."""
+        """Recreate test database from scratch.
+
+        Destructive operation: drops and recreates the configured test
+        database. Guarded by two independent checks that both run before any
+        statement is issued against the target database:
+
+        1. Environment gate - refuses unless the configured environment is test.
+        2. Name gate - refuses unless the target name matches the test-database
+           naming convention.
+
+        The ``recreate_test_db`` flag may select recreation within a test tier,
+        but it may not authorise recreation in a production tier.
+
+        Raises:
+            UnsafeTestDatabaseRecreationError: If either guard refuses.
+        """
+        # Environment gate (coarse): the flag may select recreation within the
+        # test tier, but it must never authorise it elsewhere. The configured
+        # application environment is the authoritative process tier; the
+        # injected starter env is only a convenience copy and is not trusted
+        # here, so a test-tier process cannot be tricked into a production drop
+        # by an injected env value.
+        configured_env = get_config().environment
+        if configured_env != EnvironmentEnum.TEST:
+            raise UnsafeTestDatabaseRecreationError(
+                "Refusing to recreate the test database: configured environment "
+                f"is '{configured_env.value}', not '{EnvironmentEnum.TEST.value}'. "
+                "Set ENV=test to allow destructive test-database recreation."
+            )
+
         test_url = self._config.test_database_url or get_config().test_database_url
         admin_url = self._config.test_admin_database_url or get_config().test_admin_database_url
         if not test_url:
             logger.warning("Test database URL not configured, skipping")
             return
 
-        logger.info("Recreating test database...")
-
-        # Parse the test URL to get the database name
+        # Parse the test URL to get the database name.
         parsed_url = make_url(test_url)
         db_name = parsed_url.database
 
-        # Validate database name against safe pattern to prevent SQL injection
-        if not db_name or not re.match(r"^[a-zA-Z0-9_]+$", db_name):
+        # Name gate (fine): stops a misconfigured environment tier from
+        # targeting a non-test database.
+        if not db_name or not TEST_DATABASE_NAME_PATTERN.match(str(db_name)):
+            raise UnsafeTestDatabaseRecreationError(
+                "Refusing to recreate database "
+                f"'{db_name}': name does not match the test-database "
+                f"convention '{TEST_DATABASE_NAME_PATTERN.pattern}'. "
+                "Rename the database to a test name or set the test tier explicitly."
+            )
+
+        # Validate database name against safe pattern to prevent SQL injection.
+        if not re.match(r"^[a-zA-Z0-9_]+$", str(db_name)):
             raise ValueError(f"Invalid database name: {db_name}")
+
+        logger.info("Recreating test database...")
 
         # Use admin URL for database creation (requires superuser privileges)
         if not admin_url:
@@ -277,6 +330,7 @@ class DatabaseStarter:
                     await conn.execute(text("GRANT USAGE, CREATE ON SCHEMA public TO mkobi_app"))
                     # Grant table and sequence privileges on existing objects
                     await conn.execute(text("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO mkobi_app"))
+                    # Grant USAGE on all sequences in the schema
                     await conn.execute(text("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO mkobi_app"))
                     # Set default privileges for future objects
                     await conn.execute(text("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO mkobi_app"))
