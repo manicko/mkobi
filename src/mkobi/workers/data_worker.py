@@ -957,8 +957,10 @@ async def _sleep_with_lease_renewal(
     failover fast), so renewing only immediately before a sweep would let the
     lease lapse between ticks. This sleeps in slices no longer than a third of
     the TTL and renews each slice, so a holder never loses ownership while idle.
-    A renewal failure is reported but never raises: the next slice keeps trying,
-    and the caller's sweep decision is unaffected.
+    A renewal failure is reported but never raises and never shortens the sleep:
+    every slice is awaited, so a failing renewal cannot turn this into a
+    zero-delay spin. The caller decides what to do with a failed renewal
+    (``renew_or_reelect`` resolves ownership) on the next tick.
 
     Args:
         lease: The holder's lease.
@@ -1026,23 +1028,28 @@ async def start_stale_processing_cleanup_task(
             if lease is not None:
                 if holding:
                     # Renew inside the existing try/except so no renewal failure
-                    # can escape into a dead task. A failed renewal never gates
-                    # the sweep: demote to unprotected and keep sweeping, and
-                    # retry the renewal on the next tick. Ownership is not
-                    # dropped here - a replica that still believes it holds the
-                    # lease keeps sweeping, which is a benign split-brain for an
-                    # idempotent statement and strictly better than stopping.
-                    renewed = await lease.renew()
-                    if status is not None:
-                        status.lease_state = (
-                            ReconcilerLeaseState.HOLDER
-                            if renewed
-                            else ReconcilerLeaseState.UNPROTECTED
+                    # can escape into a dead task. A failed renewal does not gate
+                    # the sweep, but it is also not ignored: ``renew_or_reelect``
+                    # resolves whether this replica still owns the lease, so a
+                    # replica whose lease lapsed and was taken by another goes
+                    # back through the election instead of believing it is still
+                    # the holder forever.
+                    lease_state = await lease.renew_or_reelect()
+                    if lease_state == ReconcilerLeaseState.NOT_HOLDER:
+                        holding = False
+                        if status is not None:
+                            status.lease_state = ReconcilerLeaseState.NOT_HOLDER
+                        logger.critical(
+                            "Reconciler lease lost to another replica; returning to election"
                         )
-                    if not renewed:
+                    elif lease_state == ReconcilerLeaseState.UNPROTECTED:
+                        if status is not None:
+                            status.lease_state = ReconcilerLeaseState.UNPROTECTED
                         logger.critical(
                             "Reconciler lease renewal failed; continuing to sweep unprotected"
                         )
+                    elif status is not None:
+                        status.lease_state = ReconcilerLeaseState.HOLDER
                 else:
                     outcome = await lease.acquire()
                     if outcome == LeaseAcquisitionResult.NOT_ACQUIRED:

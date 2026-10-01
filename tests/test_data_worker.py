@@ -59,6 +59,10 @@ class FakeAsyncRedis:
             self._ttls[key] = ex
         return True
 
+    async def get(self, key):
+        self._check()
+        return self._data.get(key)
+
     async def eval(self, script, numkeys, *args):
         self._check()
         key, token = args[0], args[1]
@@ -264,6 +268,48 @@ class TestReconcilerLoop:
                 assert status.lease_state == ReconcilerLeaseState.UNPROTECTED
             finally:
                 await self._stop(task)
+
+    async def test_lost_lease_returns_to_election_and_stops_sweeping(
+        self, status, sweep_recorder
+    ):
+        """After the lease is taken by another replica, the loop re-elects and stops.
+
+        Regression guard for the never-re-entering latch. The lease is held, then
+        a foreign replica replaces the key and this replica's renewal fails
+        (``renew`` -> False). The loop must resolve whether it still owns the
+        lease: since it does not, it must stop sweeping and report ``NOT_HOLDER``
+        instead of sweeping unprotected forever while believing it is the holder.
+        """
+        client = FakeAsyncRedis()
+        lease = ReconcilerLease(client)
+        assert await lease.acquire() == LeaseAcquisitionResult.ACQUIRED
+
+        task = asyncio.create_task(
+            start_stale_processing_cleanup_task(
+                interval_seconds=0, lease=lease, status=status
+            )
+        )
+        try:
+            # Let it take at least one real tick as the holder.
+            assert await self._run_until(lambda: bool(sweep_recorder))
+
+            # Another replica now owns the key, and this replica's renew fails.
+            client._data[LEASE_KEY] = "foreign-token"
+            with patch.object(lease, "renew", new=AsyncMock(return_value=False)):
+                assert await self._run_until(
+                    lambda: status.lease_state == ReconcilerLeaseState.NOT_HOLDER
+                ), "the loop must detect that it lost the lease"
+                assert status.lease_state == ReconcilerLeaseState.NOT_HOLDER
+                assert not lease.is_holder
+                # From the moment it detected the loss it must stop sweeping.
+                settled_sweeps = len(sweep_recorder)
+                await self._run_for(40)
+                assert len(sweep_recorder) == settled_sweeps, (
+                    "a replica that lost the lease must stop sweeping"
+                )
+                assert not task.done()
+        finally:
+            await self._stop(task)
 
     async def test_zero_row_tick_still_updates_last_success(
         self, status, sweep_recorder

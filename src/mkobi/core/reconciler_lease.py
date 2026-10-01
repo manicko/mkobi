@@ -98,8 +98,10 @@ class ReconcilerLease:
     The instance owns one long-lived async Redis client, mirroring the
     ``functools.cache``d ``get_rq_queue`` precedent for holding a single
     Redis-backed resource per process. The client is created via
-    ``get_async_redis_client`` (which is not itself cached) and must be
-    ``aclose()``d by the caller.
+    ``get_async_redis_client`` (which is not itself cached) and is closed
+    through this lease's ``aclose()``, so the resource has exactly one owner and
+    one close path. ``lifespan`` calls ``lease.aclose()`` rather than closing the
+    client directly.
     """
 
     def __init__(
@@ -136,6 +138,61 @@ class ReconcilerLease:
             return LeaseAcquisitionResult.ACQUIRED
         self._token = None
         return LeaseAcquisitionResult.NOT_ACQUIRED
+
+    async def renew_or_reelect(self) -> ReconcilerLeaseState:
+        """Renew this replica's lease, re-electing when ownership was lost.
+
+        ``renew`` alone cannot tell "we still hold it but Redis hiccuped" from
+        "our lease lapsed and another replica took it": both return ``False``.
+        Leaving the caller believing it is still the holder forever is wrong, and
+        blindly re-acquiring with ``SET NX`` would strand a replica that still
+        owns its own unexpired key (NX cannot replace its own key). This method
+        resolves the ambiguity on the failure path with one cheap ownership probe
+        so the caller learns the true state.
+
+        Returns:
+            ReconcilerLeaseState: ``HOLDER`` when the renewal succeeded or the
+                replica re-elected itself; ``UNPROTECTED`` when it still holds
+                the lease by token but could not prove it (a Redis hiccup) or
+                Redis was unreachable (fail open); ``NOT_HOLDER`` when the lease
+                is provably owned by another replica, so the caller must stop
+                sweeping.
+        """
+        if await self.renew():
+            return ReconcilerLeaseState.HOLDER
+
+        if self._token is None:
+            return ReconcilerLeaseState.NOT_HOLDER
+
+        # SET NX: wins when our lease had lapsed and nobody else took it yet.
+        token = secrets.token_urlsafe(32)
+        try:
+            acquired = await asyncio.wait_for(
+                self._client.set(
+                    LEASE_KEY, token, nx=True, ex=self._ttl_seconds
+                ),
+                timeout=ACQUIRE_TIMEOUT_SECONDS,
+            )
+        except (RedisError, OSError, TimeoutError):
+            # Cannot reach Redis: fail open, keep sweeping with the old token.
+            return ReconcilerLeaseState.UNPROTECTED
+        if acquired:
+            self._token = token
+            return ReconcilerLeaseState.HOLDER
+
+        # NX lost because the key exists. Probe whether it is still ours.
+        try:
+            current = await asyncio.wait_for(
+                self._client.get(LEASE_KEY),
+                timeout=ACQUIRE_TIMEOUT_SECONDS,
+            )
+        except (RedisError, OSError, TimeoutError):
+            return ReconcilerLeaseState.UNPROTECTED
+        current_token = current.decode() if isinstance(current, bytes) else current
+        if current_token == self._token:
+            return ReconcilerLeaseState.UNPROTECTED
+        self._token = None
+        return ReconcilerLeaseState.NOT_HOLDER
 
     async def renew(self) -> bool:
         """Extend this replica's lease if (and only if) it still holds it.
