@@ -219,15 +219,15 @@ function Invoke-TestShell {
 # ---------------------------------------------------------------------------
 
 function Invoke-Lint {
-    docker compose @DevCompose run --rm --no-deps app ruff check src/ tests/
+    docker compose @DevCompose run --rm --no-deps app ruff check src/ tests/ alembic/env.py
 }
 
 function Invoke-Format {
-    docker compose @DevCompose run --rm --no-deps app ruff check --fix src/ tests/
+    docker compose @DevCompose run --rm --no-deps app ruff check --fix src/ tests/ alembic/env.py
 }
 
 function Invoke-Typecheck {
-    docker compose @DevCompose run --rm --no-deps app mypy src/
+    docker compose @DevCompose run --rm --no-deps app mypy src/ alembic/env.py
 }
 
 function Invoke-FeLint {
