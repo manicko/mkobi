@@ -3,6 +3,13 @@
 Asynchronous database initialization and migration management.
 Automatically checks database state on FastAPI startup
 and applies Alembic migrations according to the environment.
+
+Privilege sources differ by tier. The main (development and production)
+database's role privileges are granted by the Docker init scripts under
+``docker/init-scripts/``, which run once when the PostgreSQL data volume is
+first initialised. This module grants nothing on the main database; the
+``mkobi_app`` grants issued here apply only to a test database this module
+has just recreated, whose volume does not go through those scripts.
 """
 
 import asyncio
@@ -341,7 +348,12 @@ class DatabaseStarter:
                     DDL("GRANT CONNECT ON DATABASE %(name)s TO mkobi_app", context={"name": quoted_db_name})
                 )
 
-            # Connect to the new DB to grant schema privileges
+            # Connect to the new DB to grant schema privileges. The engine is
+            # created AUTOCOMMIT so the GRANTs would otherwise commit one by
+            # one; only these five are wrapped in an explicit transaction so a
+            # half-applied privilege set cannot survive. The GRANTs are DDL/DCL
+            # and therefore transactional in PostgreSQL, so the explicit
+            # begin() is what makes the set atomic.
             test_admin_url = urlunparse((
                 parsed_admin.scheme,
                 parsed_admin.netloc,
@@ -351,15 +363,22 @@ class DatabaseStarter:
             test_admin_engine = create_async_engine(test_admin_url, isolation_level="AUTOCOMMIT")
             try:
                 async with test_admin_engine.connect() as conn:
-                    # Grant schema privileges
-                    await conn.execute(text("GRANT USAGE, CREATE ON SCHEMA public TO mkobi_app"))
-                    # Grant table and sequence privileges on existing objects
-                    await conn.execute(text("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO mkobi_app"))
-                    # Grant USAGE on all sequences in the schema
-                    await conn.execute(text("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO mkobi_app"))
-                    # Set default privileges for future objects
-                    await conn.execute(text("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO mkobi_app"))
-                    await conn.execute(text("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE ON SEQUENCES TO mkobi_app"))
+                    # One explicit transaction around the five grants: they
+                    # either all commit or all roll back, so a partial
+                    # application cannot surface later as a permission error
+                    # whose only trace is a log line. The AUTOCOMMIT isolation
+                    # above governs statements issued outside this block; the
+                    # block itself is a real BEGIN ... COMMIT.
+                    async with conn.begin():
+                        # Grant schema privileges
+                        await conn.execute(text("GRANT USAGE, CREATE ON SCHEMA public TO mkobi_app"))
+                        # Grant table and sequence privileges on existing objects
+                        await conn.execute(text("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO mkobi_app"))
+                        # Grant USAGE on all sequences in the schema
+                        await conn.execute(text("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO mkobi_app"))
+                        # Set default privileges for future objects
+                        await conn.execute(text("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO mkobi_app"))
+                        await conn.execute(text("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE ON SEQUENCES TO mkobi_app"))
             finally:
                 await test_admin_engine.dispose()
 

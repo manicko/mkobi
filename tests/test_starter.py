@@ -159,14 +159,53 @@ class TestEnsureAdminUserPlaceholderCheck:
         )
 
 
-class _RecordingConnection:
-    """Fake connection that records the statements issued against it."""
+class _RecordingTransaction:
+    """Fake transaction context manager recording begin()/commit-ish entry.
 
-    def __init__(self, recorder: list[str]) -> None:
+    Boundaries are appended to the shared statement log with a marker prefix so
+    their position relative to statements is preserved; they are also collected
+    separately for a cheap count assertion.
+    """
+
+    _BEGIN_MARKER = "\x00BEGIN"
+    _END_MARKER = "\x00END"
+
+    def __init__(
+        self,
+        recorder: list[str],
+        boundaries: list[tuple[str, str]],
+    ) -> None:
         self._recorder = recorder
+        self._boundaries = boundaries
+
+    async def __aenter__(self) -> "_RecordingTransaction":
+        self._recorder.append(self._BEGIN_MARKER)
+        self._boundaries.append(("begin", ""))
+        return self
+
+    async def __aexit__(self, *exc_info) -> bool:
+        self._recorder.append(self._END_MARKER)
+        self._boundaries.append(("end", ""))
+        return False
+
+
+class _RecordingConnection:
+    """Fake connection that records the statements issued against it.
+
+    It also records explicit ``begin()`` transaction boundaries, so a test can
+    distinguish grants issued inside one transaction from grants issued on an
+    autocommit connection.
+    """
+
+    def __init__(self, recorder: list[str], boundaries: list[tuple[str, str]]) -> None:
+        self._recorder = recorder
+        self._boundaries = boundaries
         from sqlalchemy.dialects import postgresql
 
         self.dialect = postgresql.dialect()
+
+    def begin(self) -> _RecordingTransaction:
+        return _RecordingTransaction(self._recorder, self._boundaries)
 
     async def execute(self, statement, params=None):
         try:
@@ -180,11 +219,16 @@ class _RecordingConnection:
 class _RecordingConnectContext:
     """Async context manager yielding a recording connection."""
 
-    def __init__(self, recorder: list[str]) -> None:
+    def __init__(
+        self,
+        recorder: list[str],
+        boundaries: list[tuple[str, str]],
+    ) -> None:
         self._recorder = recorder
+        self._boundaries = boundaries
 
     async def __aenter__(self) -> _RecordingConnection:
-        return _RecordingConnection(self._recorder)
+        return _RecordingConnection(self._recorder, self._boundaries)
 
     async def __aexit__(self, *exc_info) -> bool:
         return False
@@ -193,11 +237,16 @@ class _RecordingConnectContext:
 class _RecordingEngine:
     """Fake async engine whose connections record every statement."""
 
-    def __init__(self, recorder: list[str]) -> None:
+    def __init__(
+        self,
+        recorder: list[str],
+        boundaries: list[tuple[str, str]],
+    ) -> None:
         self._recorder = recorder
+        self._boundaries = boundaries
 
     def connect(self) -> _RecordingConnectContext:
-        return _RecordingConnectContext(self._recorder)
+        return _RecordingConnectContext(self._recorder, self._boundaries)
 
     async def dispose(self) -> None:
         return None
@@ -209,10 +258,15 @@ class _RecordingEngineFactory:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.statements: list[str] = []
+        # Explicit transaction boundaries opened on any recording connection,
+        # in order, as (event, "") pairs where event is "begin" or "end".
+        self.boundaries: list[tuple[str, str]] = []
+        self.engine_kwargs: list[dict] = []
 
     def __call__(self, url, **kwargs) -> _RecordingEngine:
         self.calls.append(str(url))
-        return _RecordingEngine(self.statements)
+        self.engine_kwargs.append(dict(kwargs))
+        return _RecordingEngine(self.statements, self.boundaries)
 
 
 async def _noop_apply_migrations(self, db_url: str) -> None:
@@ -275,6 +329,63 @@ class TestRecreateTestDatabaseGuards:
             "DROP DATABASE" in statement or "CREATE DATABASE" in statement
             for statement in factory.statements
         )
+
+    def test_grants_are_issued_inside_one_transaction(self, monkeypatch):
+        """The five grants are wrapped in one explicit transaction.
+
+        The connection stays AUTOCOMMIT (the DROP/CREATE before it cannot run
+        inside a transaction), so the only BEGIN/COMMIT around the grants is
+        the explicit ``conn.begin()`` block. Asserting both the boundary and
+        the grants' positions inside it distinguishes this from a regression
+        that issues the grants on the autocommit connection.
+        """
+        factory = _RecordingEngineFactory()
+        monkeypatch.setattr(starter_module, "create_async_engine", factory)
+        monkeypatch.setattr(DatabaseStarter, "_apply_migrations", _noop_apply_migrations)
+
+        starter = DatabaseStarter(
+            DatabaseStarterConfig(
+                test_database_url=_TEST_DB_URL,
+                test_admin_database_url=_TEST_ADMIN_URL,
+                recreate_test_db=True,
+            )
+        )
+
+        import asyncio
+
+        asyncio.run(starter.recreate_test_database())
+
+        # The grant engine is the second engine created, and it is the
+        # AUTOCOMMIT engine the grants run on.
+        assert len(factory.engine_kwargs) >= 2
+        assert factory.engine_kwargs[-1].get("isolation_level") == "AUTOCOMMIT"
+
+        # Exactly one explicit transaction is opened, and the five grants are
+        # all issued between its begin and end.
+        assert factory.boundaries == [("begin", ""), ("end", "")], factory.boundaries
+
+        begin_idx = factory.statements.index(_RecordingTransaction._BEGIN_MARKER)
+        end_idx = factory.statements.index(_RecordingTransaction._END_MARKER)
+        assert begin_idx < end_idx
+
+        # The five privilege statements this path owns are exactly the ones
+        # issued inside the transaction. GRANT CONNECT ON DATABASE is issued
+        # earlier on the autocommit admin engine and is deliberately outside
+        # this boundary, so it must not be counted here.
+        grants_inside = [
+            s
+            for s in factory.statements[begin_idx + 1 : end_idx]
+            if "TO mkobi_app" in s
+        ]
+        assert len(grants_inside) == 5, grants_inside
+
+        # No mkobi_app grant on the schema engine sits outside the boundary.
+        outside = [
+            s
+            for s in factory.statements[:begin_idx] + factory.statements[end_idx + 1 :]
+            if "SCHEMA public" in s and "TO mkobi_app" in s
+        ]
+        assert outside == [], outside
 
     def test_refuses_production_tier(self, monkeypatch):
         """A production tier refuses before any statement is issued."""

@@ -226,6 +226,17 @@ In development, default credentials are permitted but a warning is logged.
   [Docker Guide](../11-guides/docker.md#required-variables).
 - `${DATABASE__PASSWORD:?...}` is required by `db` and `migrate`; `app` and `rq-worker`
   require `${MKOBI_APP_PASSWORD:?...}` instead.
+- **Where `mkobi_app`'s privileges come from depends on the tier.** The main
+  (development and production) database is granted its schema, table and sequence
+  privileges by the Docker init scripts under `docker/init-scripts/`, which run
+  once when the PostgreSQL data volume is first initialised; nothing in the
+  application grants them. The test database recreated by
+  `db/starter.py::recreate_test_database` does not go through those scripts, so
+  that function grants `mkobi_app` the equivalent set itself — the five grants are
+  applied inside one explicit transaction, so a partial grant set cannot survive.
+  The two sources are deliberately separate: init scripts own the main database,
+  the starter owns the recreated test database, and neither grants on the other's
+  behalf.
 
 ### CORS Origins
 
