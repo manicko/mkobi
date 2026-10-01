@@ -102,6 +102,25 @@ class IAuthService(abc.ABC):
         """Get user by email."""
         pass
 
+    @abc.abstractmethod
+    async def approve_registration_request(
+        self,
+        request_id: UUID,
+        admin_user_id: UUID,
+        db: AsyncSession,
+    ) -> dict[str, Any] | None:
+        """Approve a pending registration request.
+
+        Creates the user, sets the force-password-change flag, marks the request
+        approved, commits, and only then stores the temporary password so the
+        credential never becomes durable before the user exists.
+
+        Returns:
+            dict with user_id and retrieval_token on success.
+            None if the request does not exist.
+        """
+        pass
+
 
 class IUserService(abc.ABC):
     """User service interface."""

@@ -2,7 +2,7 @@
 
 import logging
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +18,7 @@ from mkobi.api.deps import (
 )
 from mkobi.api.schemas.responses import admin_responses
 from mkobi.interfaces import IUserService
-from mkobi.models.enums import ErrorCode, RegistrationStatus, UserRole
+from mkobi.models.enums import ErrorCode, RegistrationStatus
 from mkobi.utils.exceptions import AppException
 from mkobi.models.user import UserRead, UserUpdateRequest, UserUpdateActiveRequest
 from mkobi.models.auth import RegistrationRequestItem, SuccessResponse
@@ -282,12 +282,12 @@ async def approve_registration_request_admin_endpoint(
     db: AsyncSession = Depends(get_db_dependency),
     auth_service: AuthService = Depends(get_auth_service),
     repo: Any = Depends(get_registration_request_repository),
-    temp_password_store: TempPasswordStore = Depends(get_temp_password_store),
 ) -> dict[str, Any]:
     """Approve registration request (admin endpoint)."""
     logger.info("Admin: approving registration request: id=%s", request_id)
     try:
-        # Get the request
+        # Existence check distinguishes a missing request from a non-pending one,
+        # preserving the endpoint's NOT_FOUND vs DUPLICATE_RESOURCE mapping.
         req = await repo.get_by_id(request_id, db)
         if not req:
             raise AppException(
@@ -302,42 +302,22 @@ async def approve_registration_request_admin_endpoint(
                 detail=f"Request already {req.status}",
             )
 
-        # Create user with random temporary password
-        temp_password = auth_service._generate_temp_password()
-        user = await auth_service.create_user(
-            email=req.email,
-            password=temp_password,
-            role=UserRole.VIEWER,
-            db=db,
-        )
-
-        # Set force_password_change flag - user must change temp password on first login
-        await auth_service.user_repo.update(
-            user.id, db, force_password_change=True,
-        )
-
-        # Generate retrieval token and store temp password in Redis
-        retrieval_token = str(uuid4())
-        await temp_password_store.store(retrieval_token, temp_password)
-
-        # Update request status
-        await repo.update_status(
+        # The service owns the create -> flag -> status -> commit -> Redis write sequence.
+        result = await auth_service.approve_registration_request(
             request_id=request_id,
-            status=RegistrationStatus.APPROVED,
+            admin_user_id=admin_user.id,
             db=db,
-            reviewed_by=admin_user.id,
         )
-        await db.commit()
+        if result is None:
+            raise AppException(
+                code=ErrorCode.DUPLICATE_RESOURCE,
+                detail=f"Request already {req.status}",
+            )
 
-        return {
-            "message": "Registration request approved",
-            "user_id": str(user.id),
-            "retrieval_token": retrieval_token,
-        }
+        return result
     except AppException:
         raise
     except Exception as e:
-        await db.rollback()
         logger.error("Error approving registration request: %s", e)
         raise AppException(
             code=ErrorCode.INTERNAL_ERROR,

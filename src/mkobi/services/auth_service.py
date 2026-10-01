@@ -545,9 +545,13 @@ class AuthService(IAuthService):
     ) -> dict[str, Any] | None:
         """Admin-triggered password reset.
 
-        Generates temp password, hashes it, saves to user record,
-        sets force_password_change flag, stores temp password in Redis
-        and returns retrieval token for later retrieval.
+        Generates a temp password, hashes it, saves it to the user record, sets
+        the force_password_change flag, commits, and only then stores the temp
+        password in Redis so the credential is never durable before the commit
+        that makes it valid.
+
+        The store fails open by design, so a non-raising call is not proof that
+        the credential is retrievable; it is logged by the store only.
 
         Returns:
             dict with message, user_id, retrieval_token on success.
@@ -578,10 +582,6 @@ class AuthService(IAuthService):
         validate_password_or_raise(temp_password)
         password_hash = hash_password(temp_password)
 
-        retrieval_token = str(uuid4())
-        if self.temp_password_store is not None:
-            await self.temp_password_store.store(retrieval_token, temp_password)
-
         await self.user_repo.update(
             user_id, db,
             password_hash=password_hash,
@@ -589,11 +589,91 @@ class AuthService(IAuthService):
         )
         await db.commit()
 
+        # Durable side effect placed after the commit on purpose: only now is
+        # the credential tied to a committed user record.
+        retrieval_token = str(uuid4())
+        if self.temp_password_store is not None:
+            await self.temp_password_store.store(retrieval_token, temp_password)
+
         logger.info(
             "Password reset successful: user_id=%s, token=%s...", user_id, retrieval_token[:8],
         )
         return {
             "message": "Password reset successfully",
             "user_id": str(user_id),
+            "retrieval_token": retrieval_token,
+        }
+
+    async def approve_registration_request(
+        self,
+        request_id: UUID,
+        admin_user_id: UUID,
+        db: AsyncSession,
+    ) -> dict[str, Any] | None:
+        """Approve a pending registration request and provision the user.
+
+        Owns the whole transaction: create the user, set the
+        force_password_change flag, mark the request approved, commit, and only
+        then hand the temporary password to the store. The store is a
+        non-transactional side effect, so it must run after the commit that
+        makes the user real; a failure after the commit leaves an existing user
+        with a not-yet-retrievable credential (recoverable) instead of a live
+        retrieval token pointing at a user who does not exist.
+
+        The store fails open by design, so a non-raising call is not proof that
+        the credential is retrievable; it is logged by the store only.
+
+        Returns:
+            dict with message, user_id and retrieval_token on success.
+            None if the registration request does not exist.
+        """
+        logger.info(
+            "Approving registration request: id=%s, admin_id=%s",
+            request_id, admin_user_id,
+        )
+
+        req = await self.reg_request_repo.get_by_id(request_id, db=db)
+        if req is None:
+            logger.warning("Registration request not found: %s", request_id)
+            return None
+
+        if req.status != RegistrationStatus.PENDING:
+            logger.warning(
+                "Registration request already %s: id=%s", req.status, request_id,
+            )
+            return None
+
+        temp_password = self._generate_temp_password()
+        user = await self.create_user(
+            email=req.email,
+            password=temp_password,
+            role=UserRole.VIEWER,
+            db=db,
+        )
+
+        # User must change the temporary password on first login.
+        await self.user_repo.update(user.id, db, force_password_change=True)
+
+        await self.reg_request_repo.update_status(
+            request_id=request_id,
+            status=RegistrationStatus.APPROVED,
+            db=db,
+            reviewed_by=admin_user_id,
+        )
+        await db.commit()
+
+        # Durable side effect placed after the commit on purpose: only now is
+        # the credential tied to a user that exists.
+        retrieval_token = str(uuid4())
+        if self.temp_password_store is not None:
+            await self.temp_password_store.store(retrieval_token, temp_password)
+
+        logger.info(
+            "Registration request approved: id=%s, user_id=%s",
+            request_id, user.id,
+        )
+        return {
+            "message": "Registration request approved",
+            "user_id": str(user.id),
             "retrieval_token": retrieval_token,
         }

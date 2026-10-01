@@ -5,6 +5,8 @@ from uuid import uuid4
 
 import pytest
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from mkobi.core.security import hash_password
 from mkobi.models.enums import RegistrationStatus, UserRole
 from mkobi.models.user import UserRead
@@ -604,3 +606,377 @@ class TestAuthService:
         # With 62 possible chars and 16 positions, we expect all to be unique
         unique_passwords = set(passwords)
         assert len(unique_passwords) > 90  # Allow some collision tolerance
+
+    # --- approve_registration_request tests ---
+
+    def _make_pending_request(self, email: str = "approve@example.com"):
+        """Build a pending registration request double."""
+        req = MagicMock()
+        req.status = RegistrationStatus.PENDING
+        req.email = email
+        return req
+
+    async def test_approve_registration_request_commit_precedes_store(
+        self, mock_user_repo, mock_reg_request_repo
+    ):
+        """The commit must happen before the temporary password reaches the store.
+
+        This is an ordering assertion about two collaborators: the session that
+        records the commit and the store that records its write must be invoked
+        in that order. It pins TOPO-006's fix.
+        """
+        order: list[str] = []
+
+        mock_reg_request_repo.get_by_id = AsyncMock(return_value=self._make_pending_request())
+        mock_reg_request_repo.update_status = AsyncMock()
+
+        created = MagicMock(
+            id=uuid4(),
+            email="approve@example.com",
+            role=UserRole.VIEWER,
+            is_active=True,
+            password_hash=hash_password("TempPass123!"),
+        )
+        mock_user_repo.get_by_email = AsyncMock(return_value=None)
+        mock_user_repo.create = AsyncMock(return_value=created)
+        mock_user_repo.update = AsyncMock()
+
+        db = AsyncMock(spec=AsyncSession)
+
+        async def _commit() -> None:
+            order.append("commit")
+
+        db.commit = AsyncMock(side_effect=_commit)
+
+        store = AsyncMock()
+        store.store = AsyncMock(side_effect=lambda *a, **k: order.append("store"))
+
+        auth_service = AuthService(
+            mock_user_repo, mock_reg_request_repo, temp_password_store=store
+        )
+
+        result = await auth_service.approve_registration_request(
+            request_id=uuid4(), admin_user_id=uuid4(), db=db
+        )
+
+        assert result is not None
+        # The credential must never be stored before a commit has made the user durable.
+        assert order.index("store") > order.index("commit")
+        assert order[-1] == "store"
+
+    async def test_approve_registration_request_failed_commit_leaves_no_credential(
+        self, mock_user_repo, mock_reg_request_repo
+    ):
+        """A failed commit must not leave a retrievable credential behind.
+
+        The store is a durable, non-transactional write; if the commit that
+        makes the user real fails, the store must never be called.
+        """
+        mock_reg_request_repo.get_by_id = AsyncMock(return_value=self._make_pending_request())
+        mock_reg_request_repo.update_status = AsyncMock()
+
+        mock_user_repo.get_by_email = AsyncMock(return_value=None)
+        mock_user_repo.create = AsyncMock(
+            return_value=MagicMock(
+                id=uuid4(),
+                email="approve@example.com",
+                role=UserRole.VIEWER,
+                is_active=True,
+                password_hash=hash_password("TempPass123!"),
+            )
+        )
+        mock_user_repo.update = AsyncMock()
+
+        db = AsyncMock(spec=AsyncSession)
+        # register_user commits the created user; the final commit (status +
+        # flag) is the one whose failure must prevent the credential write.
+        call_state = {"n": 0}
+
+        async def _commit() -> None:
+            call_state["n"] += 1
+            if call_state["n"] >= 2:
+                raise RuntimeError("commit failed")
+
+        db.commit = AsyncMock(side_effect=_commit)
+
+        store = AsyncMock()
+        auth_service = AuthService(
+            mock_user_repo, mock_reg_request_repo, temp_password_store=store
+        )
+
+        with pytest.raises(RuntimeError, match="commit failed"):
+            await auth_service.approve_registration_request(
+                request_id=uuid4(), admin_user_id=uuid4(), db=db
+            )
+
+        store.store.assert_not_called()
+
+    async def test_approve_registration_request_store_failure_after_commit_keeps_user(
+        self, mock_user_repo, mock_reg_request_repo
+    ):
+        """A store failure after a successful commit must not roll back the user.
+
+        The store fails open by design, so the service must not treat its
+        success as guaranteed, nor let its failure undo the committed user.
+        """
+        mock_reg_request_repo.get_by_id = AsyncMock(return_value=self._make_pending_request())
+        mock_reg_request_repo.update_status = AsyncMock()
+
+        mock_user_repo.get_by_email = AsyncMock(return_value=None)
+        mock_user_repo.create = AsyncMock(
+            return_value=MagicMock(
+                id=uuid4(),
+                email="approve@example.com",
+                role=UserRole.VIEWER,
+                is_active=True,
+                password_hash=hash_password("TempPass123!"),
+            )
+        )
+        mock_user_repo.update = AsyncMock()
+
+        db = AsyncMock(spec=AsyncSession)
+        db.commit = AsyncMock()
+
+        # Mirrors TempPasswordStore.store's fail-open contract: log and return.
+        store = AsyncMock()
+        store.store = AsyncMock(return_value=None)
+
+        auth_service = AuthService(
+            mock_user_repo, mock_reg_request_repo, temp_password_store=store
+        )
+
+        result = await auth_service.approve_registration_request(
+            request_id=uuid4(), admin_user_id=uuid4(), db=db
+        )
+
+        assert result is not None
+        assert "user_id" in result
+        assert "retrieval_token" in result
+        mock_user_repo.create.assert_called_once()
+        db.commit.assert_called()
+        store.store.assert_called_once()
+
+    async def test_approve_registration_request_nonexistent_returns_none(
+        self, mock_user_repo, mock_reg_request_repo
+    ):
+        """A missing request returns None and performs no writes."""
+        mock_reg_request_repo.get_by_id = AsyncMock(return_value=None)
+        db = AsyncMock(spec=AsyncSession)
+        store = AsyncMock()
+        auth_service = AuthService(
+            mock_user_repo, mock_reg_request_repo, temp_password_store=store
+        )
+
+        result = await auth_service.approve_registration_request(
+            request_id=uuid4(), admin_user_id=uuid4(), db=db
+        )
+
+        assert result is None
+        mock_user_repo.create.assert_not_called()
+        db.commit.assert_not_called()
+        store.store.assert_not_called()
+
+    # --- interface conformance ---
+
+    async def test_auth_service_implements_iauth_service(
+        self, auth_service
+    ):
+        """AuthService must be a complete IAuthService implementation.
+
+        A method added to the ABC but missed on the class is caught here.
+        """
+        from mkobi.interfaces.service_interfaces import IAuthService
+
+        assert isinstance(auth_service, IAuthService)
+        assert not getattr(auth_service, "__abstractmethods__", frozenset())
+
+    # --- reset_password_admin ordering ---
+
+    async def test_reset_password_admin_commit_precedes_store(
+        self, mock_user_repo, mock_reg_request_repo
+    ):
+        """reset_password_admin must order commit before the Redis write too."""
+        order: list[str] = []
+
+        target_user_id = uuid4()
+        mock_user = MagicMock()
+        mock_user.id = target_user_id
+        mock_user_repo.get_with_hash = AsyncMock(return_value=mock_user)
+
+        async def _update(*_a, **_k):
+            order.append("update")
+
+        mock_user_repo.update = AsyncMock(side_effect=_update)
+
+        db = AsyncMock(spec=AsyncSession)
+
+        async def _commit() -> None:
+            order.append("commit")
+
+        db.commit = AsyncMock(side_effect=_commit)
+
+        store = AsyncMock()
+        store.store = AsyncMock(side_effect=lambda *a, **k: order.append("store"))
+
+        auth_service = AuthService(
+            mock_user_repo, mock_reg_request_repo, temp_password_store=store
+        )
+
+        result = await auth_service.reset_password_admin(
+            user_id=target_user_id,
+            admin_user_id=uuid4(),
+            db=db,
+        )
+
+        assert result is not None
+        assert order == ["update", "commit", "store"]
+
+
+class TestApproveRegistrationRouteOrdering:
+    """Route-level assertions for the corrected approval sequence."""
+
+    @pytest.fixture
+    def mock_user_repo(self):
+        """Create a mock user repository."""
+        mock = AsyncMock()
+        mock.get_by_email.return_value = None
+        return mock
+
+    @pytest.fixture
+    def mock_reg_request_repo(self):
+        """Create a mock registration request repository."""
+        return AsyncMock()
+
+    async def _seed_request(self, db_session):
+        """Persist a pending registration request and return its id."""
+        from mkobi.db.repositories.registration_request_repo import (
+            RegistrationRequestRepository,
+        )
+
+        repo = RegistrationRequestRepository()
+        req = await repo.create(
+            email=f"route_approve_{uuid4().hex[:8]}@example.com",
+            ip="127.0.0.1",
+            db=db_session,
+        )
+        await db_session.commit()
+        return req.id
+
+    async def test_failed_commit_returns_rfc7807_and_no_credential(
+        self, async_client, async_db_session, test_user, mock_user_repo, mock_reg_request_repo
+    ):
+        """A commit failure yields the documented error and never stores a credential."""
+        from mkobi.api.deps import (
+            get_auth_service,
+            get_registration_request_repository,
+        )
+        from mkobi.main import app
+
+        request_id = await self._seed_request(async_db_session)
+
+        mock_reg_request_repo.get_by_id = AsyncMock(
+            return_value=MagicMock(
+                status=RegistrationStatus.PENDING, email="route_approve@example.com"
+            )
+        )
+        mock_reg_request_repo.update_status = AsyncMock()
+        mock_user_repo.get_by_email = AsyncMock(return_value=None)
+        mock_user_repo.create = AsyncMock(
+            return_value=MagicMock(
+                id=uuid4(),
+                email="route_approve@example.com",
+                role=UserRole.VIEWER,
+                is_active=True,
+                password_hash=hash_password("TempPass123!"),
+            )
+        )
+        mock_user_repo.update = AsyncMock()
+
+        store = AsyncMock()
+        failing_service = AuthService(
+            mock_user_repo, mock_reg_request_repo, temp_password_store=store
+        )
+        # register_user performs the first commit; the final commit (flag +
+        # status) is the one forced to fail here.
+        original_commit = async_db_session.commit
+        commit_state = {"n": 0}
+
+        async def _commit() -> None:
+            commit_state["n"] += 1
+            if commit_state["n"] >= 2:
+                raise RuntimeError("commit failed")
+            await original_commit()
+
+        async_db_session.commit = _commit
+
+        app.dependency_overrides[get_registration_request_repository] = (
+            lambda: mock_reg_request_repo
+        )
+        app.dependency_overrides[get_auth_service] = lambda: failing_service
+
+        try:
+            response = await async_client.post(
+                f"/admin/registration-requests/{request_id}/approve",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+            )
+        finally:
+            async_db_session.commit = original_commit
+
+        assert response.status_code == 500
+        assert response.json()["code"] == "INTERNAL_ERROR"
+        store.store.assert_not_called()
+
+    async def test_store_failure_after_commit_returns_success(
+        self, async_client, async_db_session, test_user, mock_user_repo, mock_reg_request_repo
+    ):
+        """A fail-open store after a successful commit must not turn the endpoint into a 500."""
+        from mkobi.api.deps import (
+            get_auth_service,
+            get_registration_request_repository,
+        )
+        from mkobi.main import app
+
+        request_id = await self._seed_request(async_db_session)
+
+        mock_reg_request_repo.get_by_id = AsyncMock(
+            return_value=MagicMock(
+                status=RegistrationStatus.PENDING, email="route_approve@example.com"
+            )
+        )
+        mock_reg_request_repo.update_status = AsyncMock()
+        mock_user_repo.get_by_email = AsyncMock(return_value=None)
+        mock_user_repo.create = AsyncMock(
+            return_value=MagicMock(
+                id=uuid4(),
+                email="route_approve@example.com",
+                role=UserRole.VIEWER,
+                is_active=True,
+                password_hash=hash_password("TempPass123!"),
+            )
+        )
+        mock_user_repo.update = AsyncMock()
+
+        # Mirrors TempPasswordStore.store's fail-open contract.
+        store = AsyncMock()
+        store.store = AsyncMock(return_value=None)
+
+        service = AuthService(
+            mock_user_repo, mock_reg_request_repo, temp_password_store=store
+        )
+
+        app.dependency_overrides[get_registration_request_repository] = (
+            lambda: mock_reg_request_repo
+        )
+        app.dependency_overrides[get_auth_service] = lambda: service
+
+        response = await async_client.post(
+            f"/admin/registration-requests/{request_id}/approve",
+            headers={"Authorization": f"Bearer {test_user['token']}"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["message"] == "Registration request approved"
+        assert "user_id" in body
+        assert "retrieval_token" in body
+        store.store.assert_called_once()
