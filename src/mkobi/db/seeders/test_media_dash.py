@@ -1,14 +1,15 @@
 """Seeder for test_media_dash dashboard.
 
 Creates a test dashboard with graphs, filters, and processing config.
-Idempotent - can be re-run without creating duplicates or breaking other dashboards.
+Idempotent - can be re-run without creating duplicates, and never removes
+graphs or their uploaded data.
 Safe for parallel xdist execution with ON CONFLICT patterns.
 """
 
 import logging
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -124,9 +125,6 @@ async def ensure_test_media_dash(db: AsyncSession | None = None) -> dict[str, An
         filter2_id = (await db.execute(upsert_filter2)).scalar_one()
 
         result["filter_ids"] = [str(filter1_id), str(filter2_id)]
-
-        # Delete existing graphs for this dashboard (idempotent - ensures clean state)
-        await db.execute(delete(Graph).where(Graph.dashboard_id == dashboard_id))
 
         # Insert graph for Monthly TVR by Brand
         insert_graph = pg_insert(Graph).values(

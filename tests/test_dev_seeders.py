@@ -77,6 +77,40 @@ async def test_ensure_test_media_dash_is_idempotent(async_db_session):
     assert len(filters) == 2  # Should be exactly 2 unique filters
 
 
+async def test_ensure_test_media_dash_preserves_uploaded_data(async_db_session):
+    """Test that re-running the seeder keeps aggregated data for seeded graphs.
+
+    Uploaded data cascades from graphs, so a seeder run must never remove
+    graphs that already hold data.
+    """
+    from mkobi.db.seeders.test_media_dash import ensure_test_media_dash
+    from mkobi.db.models import AggregatedData, Graph
+
+    result1 = await ensure_test_media_dash(db=async_db_session)
+    graph_id = result1["graph_ids"][0]
+
+    async_db_session.add(
+        AggregatedData(
+            dashboard_id=result1["dashboard_id"],
+            graph_id=graph_id,
+            dims={"brand": "acme"},
+            metrics={"tvr_sum": 1.5},
+        )
+    )
+    await async_db_session.flush()
+
+    result2 = await ensure_test_media_dash(db=async_db_session)
+    assert result2["action"] == "updated"
+
+    data_stmt = select(AggregatedData).where(AggregatedData.graph_id == graph_id)
+    rows = (await async_db_session.execute(data_stmt)).scalars().all()
+    assert len(rows) == 1
+
+    graph_stmt = select(Graph).where(Graph.dashboard_id == result1["dashboard_id"])
+    graphs = (await async_db_session.execute(graph_stmt)).scalars().all()
+    assert len(graphs) == 2
+
+
 async def test_development_seeders_runs_on_startup(async_test_engine):
     """Test that run_dev_seeders can be called successfully."""
     from mkobi.db.dev_seeders import run_dev_seeders
