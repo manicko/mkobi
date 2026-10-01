@@ -9,6 +9,12 @@ from mkobi.db.base import Base
 
 logger = logging.getLogger(__name__)
 
+# Every pooled connection is validated before use. Only True is correct: a
+# connection killed invisibly by a server or proxy idle timeout would otherwise
+# surface as a request-time failure. A setting whose sole valid value is its
+# default is a constant, not a setting.
+POOL_PRE_PING = True
+
 # Global engine and sessionmaker (initialized once)
 _engine = None
 _SessionLocal = None
@@ -37,13 +43,19 @@ async def get_async_engine() -> AsyncEngine:
             DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
         logger.info("Initializing async engine for %s", DATABASE_URL.split("@")[-1])
+        pool = config.database
         _engine = create_async_engine(
             DATABASE_URL,
             echo=False,
-            pool_pre_ping=True,
-            pool_size=10,
-            max_overflow=20,
-            pool_timeout=30,
+            pool_pre_ping=POOL_PRE_PING,
+            pool_size=pool.pool_size,
+            max_overflow=pool.max_overflow,
+            pool_timeout=pool.pool_timeout,
+            pool_recycle=pool.pool_recycle,
+            # asyncpg takes application_name as a server runtime parameter,
+            # not a top-level connect() keyword, so it must nest under
+            # server_settings. Passing it flat raises TypeError at connect time.
+            connect_args={"server_settings": {"application_name": pool.application_name}},
         )
     return _engine
 

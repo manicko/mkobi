@@ -35,6 +35,27 @@ logger = logging.getLogger(__name__)
 DB_CONNECT_TIMEOUT = 10.0
 DB_HEALTH_CHECK_TIMEOUT = 5.0
 
+# Deliberate divergence of the starter's GRANT engine from the application
+# engine. These are not settings: the starter engine is a start-up engine and
+# its values are pinned here so a future change to either engine is a visible
+# diff rather than an accident of SQLAlchemy's defaults.
+#
+# A DROP/CREATE DATABASE statement requires an AUTOCOMMIT connection, and the
+# starter must not share the application engine: putting start-up reads on the
+# request pool would expose them to a pool timeout during cold start, the worst
+# possible moment. That is the reason for a second engine, not its size.
+#
+# The small pool is free only because the starter's five call sites run
+# sequentially. If one is ever made concurrent, this ceiling becomes a second,
+# unconfigured budget rather than a start-up spike. Note also that
+# DatabaseStarter._main_engine is disposed only in shutdown(), so it counts
+# toward the steady-state budget, not merely start-up.
+STARTER_POOL_PRE_PING = True
+STARTER_POOL_RECYCLE_SECONDS = 300
+STARTER_POOL_SIZE = 5
+STARTER_MAX_OVERFLOW = 10
+STARTER_POOL_TIMEOUT_SECONDS = 30
+
 
 class DatabaseNotFoundError(Exception):
     """Database not found."""
@@ -156,11 +177,15 @@ class DatabaseStarter:
         if not main_url:
             raise DatabaseNotFoundError("Main database URL not configured")
 
-        # Create main engine with connection pool settings
+        # Create main engine with connection pool settings that deliberately
+        # differ from the application engine; see the STARTER_* constants above.
         self._main_engine = create_async_engine(
             main_url,
-            pool_pre_ping=True,
-            pool_recycle=300,
+            pool_pre_ping=STARTER_POOL_PRE_PING,
+            pool_recycle=STARTER_POOL_RECYCLE_SECONDS,
+            pool_size=STARTER_POOL_SIZE,
+            max_overflow=STARTER_MAX_OVERFLOW,
+            pool_timeout=STARTER_POOL_TIMEOUT_SECONDS,
         )
         assert self._main_engine is not None
 

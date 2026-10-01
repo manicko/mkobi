@@ -69,6 +69,11 @@ All environment variables use the double-underscore (`__`) delimiter for nesting
 | `DATABASE__PASSWORD`          | `database.password`      | `None`         | Database password (secret)      |
 | `DATABASE__TEST_DBNAME`       | `database.test_dbname`   | `bidb_test`    | Test database name              |
 | `DATABASE__LOCK_TIMEOUT_MS`   | `database.lock_timeout_ms` | `180000`     | Aggregate-rebuild lock wait bound (ms); `0` waits forever |
+| `DATABASE__POOL_SIZE`         | `database.pool_size`     | `10`           | Application engine pool size. `0` is SQLAlchemy's unbounded sentinel and is refused — it removes the cap **and discards `max_overflow`**; use `NullPool` for no pooling. |
+| `DATABASE__MAX_OVERFLOW`      | `database.max_overflow`  | `20`           | Extra connections above `pool_size`. `0` is legitimate (a strict cap) and is **not** refused. |
+| `DATABASE__POOL_TIMEOUT`      | `database.pool_timeout`  | `30`           | Seconds to wait for a pooled connection. `0` means **fail immediately, never queue** — not "wait forever" — so it is refused; every burst would become an instant 500. |
+| `DATABASE__POOL_RECYCLE`      | `database.pool_recycle`  | `-1`           | Connection recycle age in seconds. `-1` means **no recycle**. Recommended production value is `300` (see [Architecture](architecture.md)); the sizing decision is not yet taken. |
+| `DATABASE__APPLICATION_NAME`  | `database.application_name` | `mkobi-app` | The PostgreSQL `application_name` attached to every pool connection, so per-application `pg_stat_activity` breakdowns attribute connections. |
 | `JWT__SECRET_KEY`             | `jwt.secret_key`         | `None`         | JWT signing key (secret)        |
 | `JWT__ALGORITHM`              | `jwt.algorithm`          | `HS256`        | JWT signing algorithm           |
 | `JWT__ACCESS_TOKEN_EXPIRE_MINUTES` | `jwt.access_token_expire_minutes` | `15` | Token TTL      |

@@ -232,6 +232,36 @@ class DatabaseSettings(BaseModel):
     # mechanism meant to clean up after it is not a bound at all.
     lock_timeout_ms: int = 180_000
 
+    # Application connection-pool settings. Field names are the unprefixed
+    # SQLAlchemy keywords so the settings-to-engine mapping is 1:1 and greppable
+    # in both directions. Defaults are the values that were previously hard-coded
+    # in db/session.py, so rollout changes nothing.
+    #
+    # 0 is SQLAlchemy's unbounded sentinel: it disables the pool-size cap *and
+    # silently discards max_overflow*, so an operator writing 0 meaning "no
+    # pooling" gets the opposite. The validator below refuses it and points at
+    # NullPool, which is the supported way to express "no pooling".
+    pool_size: int = Field(default=10, le=500)  # DATABASE__POOL_SIZE
+    # max_overflow=0 is legitimate - a strict cap that permits no overflow - so
+    # unlike pool_size it is not refused. That asymmetry is why the two fields
+    # carry different validation shapes.
+    max_overflow: int = Field(default=20, ge=0, le=500)  # DATABASE__MAX_OVERFLOW
+    # ge=1 is not arbitrary: the async pool's get() is asyncio.wait_for(q.get(),
+    # timeout), and wait_for(coro, 0) on an unready future raises in ~0.2 ms. So
+    # pool_timeout=0 means "fail immediately, never queue" - every burst becomes
+    # an instant 500 - and not the intuitive "wait forever".
+    pool_timeout: int = Field(default=30, ge=1, le=300)  # DATABASE__POOL_TIMEOUT
+    # -1 is SQLAlchemy's own sentinel and the value effective today (the setting
+    # was absent, so no recycled connection ever expired). Allowing -1 keeps
+    # rollout a no-op; the recommended production value (300 s) is documentation
+    # only. le=86_400 is a managed-proxy 24-hour hard cap on client connection
+    # lifetime, not an invented bound.
+    pool_recycle: int = Field(default=-1, ge=-1, le=86_400)  # DATABASE__POOL_RECYCLE
+    # Pure observability label attached to every backend as the PostgreSQL
+    # application_name. It was unset project-wide, so the standard per-application
+    # breakdown query collapsed every connection into one (blank) row.
+    application_name: str = "mkobi-app"  # DATABASE__APPLICATION_NAME
+
     model_config = {"extra": "ignore"}
 
     @property
@@ -288,6 +318,32 @@ class DatabaseSettings(BaseModel):
                 "Admin password must be at least 8 characters for security"
             )
         return v
+
+    @field_validator("pool_size")
+    @classmethod
+    def validate_pool_size_not_unbounded(cls, value: int) -> int:
+        """Refuse pool_size=0, which is SQLAlchemy's unbounded sentinel.
+
+        A pool_size of 0 does not mean "no pooling": it removes the cap and
+        silently discards the configured max_overflow, so an operator writing 0
+        for "no pooling" gets the opposite of what they intend. Use NullPool to
+        express "no pooling".
+
+        Args:
+            value: The configured pool size.
+
+        Returns:
+            int: The validated pool size.
+
+        Raises:
+            ValueError: If pool size is the unbounded sentinel 0.
+        """
+        if value == 0:
+            raise ValueError(
+                "pool_size=0 is SQLAlchemy's unbounded sentinel, which also "
+                "discards max_overflow. Use NullPool for no pooling."
+            )
+        return value
 
 
 class JWTSettings(BaseModel):
