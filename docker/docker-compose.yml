@@ -102,6 +102,12 @@ services:
         condition: service_completed_successfully
       db:
         condition: service_healthy
+      # Startup ordering only, NOT a correctness dependency. The reconciler lease
+      # fails open, so the app boots and sweeps even with Redis down; waiting for
+      # redis here merely avoids starting in the fail-open state for the first
+      # seconds of a slow Redis boot.
+      redis:
+        condition: service_healthy
     environment:
       # The production tier is pinned: this file is the production deployment
       # definition and must not resolve to another tier through an env file.

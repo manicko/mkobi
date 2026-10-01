@@ -65,6 +65,12 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      # Startup ordering only, NOT a correctness dependency. The reconciler lease
+      # fails open, so the app boots and sweeps even with Redis down; waiting for
+      # redis here merely avoids starting in the fail-open state for the first
+      # seconds of a slow Redis boot.
+      redis:
+        condition: service_healthy
     environment:
       ENV: development
       APP__COOKIE_SECURE: "false"

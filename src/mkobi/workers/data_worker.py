@@ -28,8 +28,14 @@ from mkobi.db.models.graphs import Graph
 from mkobi.db.models.processing_logs import ProcessingLog
 from mkobi.db.models.filters import Filter, dashboard_filters
 from mkobi.db.session import get_session
+from mkobi.core.reconciler_lease import ReconcilerLease, ReconcilerStatus
 from mkobi.models.data import LoaderConfig, ProcessingConfig
-from mkobi.models.enums import ErrorCode, ProcessingStatus
+from mkobi.models.enums import (
+    ErrorCode,
+    LeaseAcquisitionResult,
+    ProcessingStatus,
+    ReconcilerLeaseState,
+)
 
 from mkobi.utils.exceptions import AppException
 
@@ -288,6 +294,14 @@ async def cleanup_stale_processing_logs(
         logger.info(
             "Marked %d stale PROCESSING entries as FAILED (timeout=%dm)",
             count,
+            timeout_minutes,
+        )
+    else:
+        # A loop that has died is indistinguishable from a loop with nothing to
+        # do while this is silent. Log every tick at debug so a healthy idle
+        # sweep still leaves a trace.
+        logger.debug(
+            "No stale PROCESSING entries to mark (timeout=%dm)",
             timeout_minutes,
         )
     return int(count)
@@ -932,27 +946,138 @@ def process_csv_background_sync(
     return asyncio.run(_run_and_dispose())
 
 
+async def _sleep_with_lease_renewal(
+    lease: ReconcilerLease,
+    status: ReconcilerStatus | None,
+    interval_seconds: int,
+) -> None:
+    """Sleep for the interval while keeping the held lease alive.
+
+    The sweep interval is longer than the lease TTL by design (a short TTL makes
+    failover fast), so renewing only immediately before a sweep would let the
+    lease lapse between ticks. This sleeps in slices no longer than a third of
+    the TTL and renews each slice, so a holder never loses ownership while idle.
+    A renewal failure is reported but never raises: the next slice keeps trying,
+    and the caller's sweep decision is unaffected.
+
+    Args:
+        lease: The holder's lease.
+        status: Optional shared status snapshot to update.
+        interval_seconds: Total time to sleep.
+    """
+    remaining = float(interval_seconds)
+    slice_seconds = max(1.0, lease.ttl_seconds / 3)
+    while remaining > 0:
+        await asyncio.sleep(min(slice_seconds, remaining))
+        remaining -= slice_seconds
+        renewed = await lease.renew()
+        if status is not None:
+            status.lease_state = (
+                ReconcilerLeaseState.HOLDER
+                if renewed
+                else ReconcilerLeaseState.UNPROTECTED
+            )
+        if not renewed:
+            logger.critical(
+                "Reconciler lease renewal failed while idle; continuing to sweep unprotected"
+            )
+    if interval_seconds <= 0:
+        # A non-positive interval means "tick immediately". Still yield once so
+        # the loop cannot starve the event loop without an await point.
+        await asyncio.sleep(0)
+
+
 async def start_stale_processing_cleanup_task(
     interval_seconds: int = 300,  # Run every 5 minutes by default
     timeout_minutes: int = DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES,
+    lease: ReconcilerLease | None = None,
+    status: ReconcilerStatus | None = None,
 ) -> None:
     """Start background task for cleaning up stale processing logs.
 
     This function runs indefinitely, periodically checking for and marking
     stale PROCESSING entries as FAILED.
 
+    When a ``lease`` is supplied the loop is guarded so that, among several
+    replicas, only the single lease holder sweeps. The guard fails **open**: an
+    unreachable Redis still sweeps (Redis is a load-and-observability
+    optimisation, never a correctness gate), while a reachable Redis holding
+    another replica's lease is the only case that skips - it is proof a live
+    sweeper exists.
+
     Args:
         interval_seconds: Interval between cleanup runs in seconds.
         timeout_minutes: Timeout threshold for considering entries stale.
+        lease: Optional lease guarding the loop. When None the loop always sweeps.
+        status: Optional shared status snapshot, advanced on every completed tick.
     """
     logger.info(
         "Starting stale processing cleanup task (interval=%ds, timeout=%dm)",
         interval_seconds,
         timeout_minutes,
     )
+    # Whether this replica currently owns the lease. A holder renews; a replica
+    # that is not the holder retries acquisition each tick. Re-acquiring with
+    # SET NX while already holding would fail against this replica's own key, so
+    # the two paths must not share the NX call.
+    holding = lease.is_holder if lease is not None else False
     while True:
         try:
-            await cleanup_stale_processing_logs(timeout_minutes=timeout_minutes)
+            if lease is not None:
+                if holding:
+                    # Renew inside the existing try/except so no renewal failure
+                    # can escape into a dead task. A failed renewal never gates
+                    # the sweep: demote to unprotected and keep sweeping, and
+                    # retry the renewal on the next tick. Ownership is not
+                    # dropped here - a replica that still believes it holds the
+                    # lease keeps sweeping, which is a benign split-brain for an
+                    # idempotent statement and strictly better than stopping.
+                    renewed = await lease.renew()
+                    if status is not None:
+                        status.lease_state = (
+                            ReconcilerLeaseState.HOLDER
+                            if renewed
+                            else ReconcilerLeaseState.UNPROTECTED
+                        )
+                    if not renewed:
+                        logger.critical(
+                            "Reconciler lease renewal failed; continuing to sweep unprotected"
+                        )
+                else:
+                    outcome = await lease.acquire()
+                    if outcome == LeaseAcquisitionResult.NOT_ACQUIRED:
+                        # Redis was reached and another replica holds the lease.
+                        # Normal state, not an error - do not sweep.
+                        if status is not None:
+                            status.lease_state = ReconcilerLeaseState.NOT_HOLDER
+                        logger.info(
+                            "Stale processing reconciler lease held by another replica; skipping sweep"
+                        )
+                        await asyncio.sleep(interval_seconds)
+                        continue
+                    if outcome == LeaseAcquisitionResult.UNREACHABLE:
+                        # Fail open: without Redis we cannot prove a holder
+                        # exists, and skipping would silently disable the only
+                        # sweeper of PROCESSING rows. Sweep unprotected and
+                        # report loudly.
+                        if status is not None:
+                            status.lease_state = ReconcilerLeaseState.UNPROTECTED
+                        logger.critical(
+                            "Reconciler lease unreachable; sweeping without protection"
+                        )
+                    else:
+                        holding = True
+                        if status is not None:
+                            status.lease_state = ReconcilerLeaseState.HOLDER
+
+            count = await cleanup_stale_processing_logs(timeout_minutes=timeout_minutes)
+            if status is not None:
+                status.record_success(count)
         except Exception as e:
             logger.exception("Error during stale processing cleanup: %s", e)
-        await asyncio.sleep(interval_seconds)
+        if lease is not None and holding:
+            # Keep the held lease alive across the whole interval, not only at
+            # the instant before the sweep.
+            await _sleep_with_lease_renewal(lease, status, interval_seconds)
+        else:
+            await asyncio.sleep(interval_seconds)

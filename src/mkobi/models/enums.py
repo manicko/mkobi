@@ -80,6 +80,34 @@ class ProcessingStatus(StrEnum):
         }
 
 
+class LeaseAcquisitionResult(StrEnum):
+    """Outcome of attempting to acquire the reconciler lease.
+
+    Three-valued on purpose: ``UNREACHABLE`` (Redis could not be contacted) must
+    never collapse into ``NOT_ACQUIRED`` (Redis was reached and the lease is held
+    by another worker). The first fails open (the caller must still sweep), the
+    second is the one case where skipping the sweep is justified.
+    """
+
+    ACQUIRED = "acquired"
+    NOT_ACQUIRED = "not_acquired"
+    UNREACHABLE = "unreachable"
+
+
+class ReconcilerLeaseState(StrEnum):
+    """Reported state of the stale-processing reconciler lease holder.
+
+    ``holder`` owns the lease, ``not_holder`` reached Redis but lost the race, and
+    ``unprotected`` runs without a lease because Redis is unreachable. The last is
+    the fail-open state and is reported as a critical condition.
+    """
+
+    UNKNOWN = "unknown"
+    HOLDER = "holder"
+    NOT_HOLDER = "not_holder"
+    UNPROTECTED = "unprotected"
+
+
 class EnvironmentEnum(StrEnum):
     """Application environments."""
 

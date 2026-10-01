@@ -19,7 +19,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from mkobi.api import routes
 from mkobi.config import get_config
 from mkobi.core.logging_config import setup_logging
-from mkobi.models.enums import EnvironmentEnum
+from mkobi.core.redis_client import get_async_redis_client
+from mkobi.core.reconciler_lease import (
+    DEFAULT_LEASE_TTL_SECONDS,
+    ReconcilerLease,
+    ReconcilerStatus,
+)
+from mkobi.models.enums import EnvironmentEnum, LeaseAcquisitionResult, ReconcilerLeaseState
 from mkobi.db.session import get_session
 from mkobi.db.starter import (
     DatabaseStarter,
@@ -102,6 +108,18 @@ async def lifespan(app: FastAPI) -> Any:
     )
     starter = DatabaseStarter(starter_config)
 
+    # Shared observable state for the stale-processing reconciler. Published on
+    # /health/detailed so a loop that has died is distinguishable from an idle
+    # one.
+    reconciler_status = ReconcilerStatus()
+    app.state.reconciler_status = reconciler_status
+
+    # One lease client per process, created once and closed on shutdown. The TTL
+    # is bounded by a third of the configured sweep interval, so a dead holder is
+    # replaced within one interval.
+    lease: ReconcilerLease | None = None
+    lease_client: Any = None
+
     # Background task for stale processing cleanup
     cleanup_task: asyncio.Task[None] | None = None
 
@@ -110,15 +128,40 @@ async def lifespan(app: FastAPI) -> Any:
         await starter.startup()
         logger.info("Application initialized successfully")
 
-        # Mark orphaned UPLOADED entries as FAILED on startup
-        await mark_orphaned_uploaded_logs_failed()
-        logger.info("Checked for orphaned UPLOADED entries")
+        lease_client = get_async_redis_client()
+        lease = ReconcilerLease(
+            lease_client, ttl_seconds=min(DEFAULT_LEASE_TTL_SECONDS, config.stale_processing_cleanup_interval_seconds // 3)
+        )
+
+        # Guard the boot-time orphan repair with the lease too: with several
+        # workers the repair must run once, not four times. The boot path never
+        # raises on lease trouble - an unreachable Redis still boots and still
+        # repairs (fail open), a reachable holder is the only case that skips.
+        boot_outcome = await lease.acquire()
+        if boot_outcome == LeaseAcquisitionResult.ACQUIRED:
+            reconciler_status.lease_state = ReconcilerLeaseState.HOLDER
+            await mark_orphaned_uploaded_logs_failed()
+            logger.info("Checked for orphaned UPLOADED entries")
+        elif boot_outcome == LeaseAcquisitionResult.NOT_ACQUIRED:
+            reconciler_status.lease_state = ReconcilerLeaseState.NOT_HOLDER
+            logger.info(
+                "Another replica holds the reconciler lease; skipping startup orphan repair"
+            )
+        else:
+            reconciler_status.lease_state = ReconcilerLeaseState.UNPROTECTED
+            logger.critical(
+                "Reconciler lease unreachable at startup; running orphan repair unprotected"
+            )
+            await mark_orphaned_uploaded_logs_failed()
+            logger.info("Checked for orphaned UPLOADED entries")
 
         # Start background cleanup task for stale processing logs
         cleanup_task = asyncio.create_task(
             start_stale_processing_cleanup_task(
                 interval_seconds=config.stale_processing_cleanup_interval_seconds,
                 timeout_minutes=config.stale_processing_timeout_minutes,
+                lease=lease,
+                status=reconciler_status,
             )
         )
         logger.info("Started stale processing cleanup background task")
@@ -144,6 +187,22 @@ async def lifespan(app: FastAPI) -> Any:
             except asyncio.CancelledError:
                 pass
             logger.info("Stale processing cleanup task cancelled")
+
+        # Best-effort, owner-checked lease release so a restart does not wait a
+        # full TTL. Wrapped so no Redis error can break the finally chain and
+        # skip the engine disposal and starter shutdown below.
+        if lease is not None:
+            try:
+                released = await lease.release()
+                if released:
+                    logger.info("Released reconciler lease")
+            except Exception as e:
+                logger.warning("Failed to release reconciler lease: %s", e)
+        if lease_client is not None:
+            try:
+                await lease_client.aclose()
+            except Exception as e:
+                logger.warning("Failed to close reconciler lease client: %s", e)
 
         # Dispose the main application engine
         await dispose_engine()
@@ -238,7 +297,7 @@ def create_app() -> FastAPI:
             )
 
     @application.get("/health/detailed", tags=["health"])
-    async def detailed_health_check() -> dict[str, Any]:
+    async def detailed_health_check(request: Request) -> dict[str, Any]:
         """Detailed health check with component status.
 
         Checks database connectivity and returns detailed status information.
@@ -273,6 +332,29 @@ def create_app() -> FastAPI:
             "status": "available" if os.path.isdir("frontend/dist") else "unavailable",
             "path": "frontend/dist",
         }
+
+        # Report the stale-processing reconciler's liveness and lease state. A
+        # dead loop is visible here as a frozen last_success_at; a Redis outage is
+        # visible as lease_state "unprotected". This component never changes the
+        # overall status - the production healthcheck and nginx gate on /health,
+        # which must keep meaning "database reachable".
+        status_snapshot = getattr(request.app.state, "reconciler_status", None)
+        if status_snapshot is None:
+            components["stale_processing_reconciler"] = {
+                "status": "not_started",
+                "lease_state": ReconcilerLeaseState.UNKNOWN.value,
+                "last_success_at": None,
+            }
+        else:
+            last_success = status_snapshot.last_success_at
+            components["stale_processing_reconciler"] = {
+                "status": "ok" if last_success is not None else "starting",
+                "lease_state": status_snapshot.lease_state.value,
+                "last_success_at": last_success.isoformat() if last_success is not None else None,
+                "last_swept_count": status_snapshot.last_swept_count,
+                "sweep_count": status_snapshot.sweep_count,
+                "unprotected_ticks": status_snapshot.unprotected_ticks,
+            }
 
         health_status["components"] = components
         return health_status

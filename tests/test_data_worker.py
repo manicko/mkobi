@@ -7,16 +7,338 @@ from uuid import uuid4
 import pytest
 import polars as pl
 
-from mkobi.models.enums import AggregationFunctionEnum, ProcessingStatus, FilterType
+from mkobi.models.enums import (
+    AggregationFunctionEnum,
+    LeaseAcquisitionResult,
+    ProcessingStatus,
+    ReconcilerLeaseState,
+    FilterType,
+)
 from mkobi.models.data import ProcessingConfig
+from mkobi.core.reconciler_lease import (
+    LEASE_KEY,
+    ReconcilerLease,
+    ReconcilerStatus,
+)
 from mkobi.utils.exceptions import AppException, ErrorCode
 from mkobi.workers.data_worker import (
     _update_processing_log_status,
     cleanup_stale_processing_logs,
     mark_orphaned_uploaded_logs_failed,
+    start_stale_processing_cleanup_task,
     _store_aggregates,
     _validate_processing_config,
 )
+
+
+class FakeAsyncRedis:
+    """Minimal in-memory async Redis double for lease tests.
+
+    Implements only the commands the lease uses (``set`` with ``nx``/``ex`` and
+    server-side ``eval``) plus a ``ttls`` map so ownership and TTL behaviour can
+    be asserted directly. Setting ``fail_mode`` makes every command raise, which
+    models an unreachable Redis.
+    """
+
+    def __init__(self) -> None:
+        self._data: dict[str, str] = {}
+        self._ttls: dict[str, int] = {}
+        self.fail_mode = False
+        self.closed = False
+
+    def _check(self) -> None:
+        if self.fail_mode:
+            raise OSError("redis unavailable")
+
+    async def set(self, key, value, nx=False, ex=None):
+        self._check()
+        if nx and key in self._data:
+            return None
+        self._data[key] = value
+        if ex is not None:
+            self._ttls[key] = ex
+        return True
+
+    async def eval(self, script, numkeys, *args):
+        self._check()
+        key, token = args[0], args[1]
+        current = self._data.get(key)
+        if current != token:
+            return 0
+        if "DEL" in script:
+            del self._data[key]
+            self._ttls.pop(key, None)
+            return 1
+        ttl = int(args[2])
+        self._ttls[key] = ttl
+        return 1
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+    def expire_ttl(self, key=LEASE_KEY) -> None:
+        """Simulate the key's TTL lapsing."""
+        self._data.pop(key, None)
+        self._ttls.pop(key, None)
+
+
+@pytest.mark.asyncio
+class TestReconcilerLoop:
+    """Lease-guarded behaviour of the stale-processing reconciler loop."""
+
+    @pytest.fixture
+    def status(self):
+        return ReconcilerStatus()
+
+    @pytest.fixture
+    def sweep_recorder(self):
+        """Sweep double plus its call recorder.
+
+        Patches the module-level ``cleanup_stale_processing_logs`` for the whole
+        fixture lifetime, so the loop never opens a real database session and the
+        tick behaviour is deterministic. The loop is driven with
+        ``interval_seconds=0`` (a real, yielding ``asyncio.sleep(0)``) rather than
+        by patching ``asyncio.sleep`` - patching that attribute is global to the
+        ``asyncio`` module and would also neutralise the test's own yields.
+        """
+        calls: list[int] = []
+
+        async def sweep(timeout_minutes=5, session=None):
+            calls.append(len(calls))
+            return 0
+
+        with patch(
+            "mkobi.workers.data_worker.cleanup_stale_processing_logs", new=sweep
+        ):
+            yield calls
+
+    async def _run_for(self, ticks: int) -> None:
+        """Drive the zero-interval loop forward by yielding the event loop.
+
+        A real (tiny) timer rather than a bare ``sleep(0)``: the loop's own
+        ``await`` competes with the test's, so a fixed number of zero-delay
+        yields is not enough to guarantee a tick per yield.
+        """
+        for _ in range(ticks):
+            await asyncio.sleep(0.005)
+
+    async def _run_until(self, predicate, ticks: int = 200) -> bool:
+        """Yield until ``predicate`` is true or the tick budget runs out."""
+        for _ in range(ticks):
+            if predicate():
+                return True
+            await asyncio.sleep(0.005)
+        return predicate()
+
+    async def _stop(self, task) -> None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def test_two_contenders_exactly_one_sweeps(
+        self, status, sweep_recorder
+    ):
+        """Two independent contenders: exactly one wins and only it sweeps."""
+        client = FakeAsyncRedis()
+        winner_lease = ReconcilerLease(client)
+        loser_lease = ReconcilerLease(client)
+
+        contender_results: list[LeaseAcquisitionResult] = [
+            await winner_lease.acquire(),
+            await loser_lease.acquire(),
+        ]
+        assert contender_results.count(LeaseAcquisitionResult.ACQUIRED) == 1
+        assert winner_lease.is_holder
+        assert not loser_lease.is_holder
+
+        # The winner's loop sweeps.
+        winner_task = asyncio.create_task(
+            start_stale_processing_cleanup_task(
+                interval_seconds=0, lease=winner_lease, status=status
+            )
+        )
+        try:
+            assert await self._run_until(lambda: bool(sweep_recorder))
+            assert status.lease_state == ReconcilerLeaseState.HOLDER
+        finally:
+            await self._stop(winner_task)
+
+        # Start the loser against the still-held key with a clean recorder. It
+        # reaches Redis but never owns the lease, so it must not sweep at all.
+        sweep_recorder.clear()
+        loser_task = asyncio.create_task(
+            start_stale_processing_cleanup_task(interval_seconds=0, lease=loser_lease)
+        )
+        try:
+            await self._run_for(60)
+            assert sweep_recorder == [], "NOT_ACQUIRED must not sweep"
+        finally:
+            await self._stop(loser_task)
+
+    async def test_recovery_after_holder_loss(self, status, sweep_recorder):
+        """After the holder's lease lapses, another contender acquires - the loop is not wedged."""
+        client = FakeAsyncRedis()
+        first_lease = ReconcilerLease(client)
+        second_lease = ReconcilerLease(client)
+
+        assert await first_lease.acquire() == LeaseAcquisitionResult.ACQUIRED
+        assert await second_lease.acquire() == LeaseAcquisitionResult.NOT_ACQUIRED
+
+        # Holder stops renewing; after the TTL the key is gone and the second
+        # contender wins on its next attempt.
+        client.expire_ttl()
+        assert await second_lease.acquire() == LeaseAcquisitionResult.ACQUIRED
+
+        task = asyncio.create_task(
+            start_stale_processing_cleanup_task(
+                interval_seconds=0, lease=second_lease, status=status
+            )
+        )
+        try:
+            assert await self._run_until(lambda: bool(sweep_recorder))
+            assert sweep_recorder, "recovered holder must sweep"
+        finally:
+            await self._stop(task)
+
+    async def test_not_acquired_skips_but_unreachable_sweeps(
+        self, status, sweep_recorder
+    ):
+        """The ruling: NOT_ACQUIRED skips the sweep, UNREACHABLE sweeps - as a pair."""
+        # They are distinct values; the forbidden collapse cannot happen.
+        assert LeaseAcquisitionResult.NOT_ACQUIRED != LeaseAcquisitionResult.UNREACHABLE
+
+        holder_client = FakeAsyncRedis()
+        assert await ReconcilerLease(holder_client).acquire() == LeaseAcquisitionResult.ACQUIRED
+
+        # Share the held key with a contender that will reach Redis and lose.
+        contender_lease = ReconcilerLease(holder_client)
+        task = asyncio.create_task(
+            start_stale_processing_cleanup_task(
+                interval_seconds=0, lease=contender_lease, status=status
+            )
+        )
+        try:
+            await self._run_for(60)
+            assert sweep_recorder == [], "NOT_ACQUIRED must not sweep"
+            assert status.lease_state == ReconcilerLeaseState.NOT_HOLDER
+        finally:
+            await self._stop(task)
+
+        # Now make Redis unreachable: the loop must fail open and sweep.
+        unreachable_client = FakeAsyncRedis()
+        unreachable_client.fail_mode = True
+        unprotected_status = ReconcilerStatus()
+
+        task = asyncio.create_task(
+            start_stale_processing_cleanup_task(
+                interval_seconds=0,
+                lease=ReconcilerLease(unreachable_client),
+                status=unprotected_status,
+            )
+        )
+        try:
+            assert await self._run_until(lambda: bool(sweep_recorder))
+            assert sweep_recorder, "UNREACHABLE must fail open and sweep"
+            assert unprotected_status.lease_state == ReconcilerLeaseState.UNPROTECTED
+        finally:
+            await self._stop(task)
+
+    async def test_renewal_failure_does_not_kill_loop(
+        self, status, sweep_recorder
+    ):
+        """Consecutive renewal failures: the sweep count still increments and the task lives."""
+        lease = ReconcilerLease(FakeAsyncRedis())
+
+        with patch.object(lease, "renew", new=AsyncMock(return_value=False)):
+            task = asyncio.create_task(
+                start_stale_processing_cleanup_task(
+                    interval_seconds=0, lease=lease, status=status
+                )
+            )
+            try:
+                assert await self._run_until(lambda: len(sweep_recorder) >= 3)
+                assert len(sweep_recorder) >= 3, "sweep must keep running after renewal failure"
+                assert not task.done(), "renewal failure must not kill the loop"
+                assert status.lease_state == ReconcilerLeaseState.UNPROTECTED
+            finally:
+                await self._stop(task)
+
+    async def test_zero_row_tick_still_updates_last_success(
+        self, status, sweep_recorder
+    ):
+        """A tick that marked 0 rows still advances last_success_at."""
+        assert status.last_success_at is None
+        lease = ReconcilerLease(FakeAsyncRedis())
+
+        task = asyncio.create_task(
+            start_stale_processing_cleanup_task(
+                interval_seconds=0, lease=lease, status=status
+            )
+        )
+        try:
+            assert await self._run_until(lambda: status.last_success_at is not None)
+            assert status.last_success_at is not None
+            assert status.last_swept_count == 0
+            assert status.sweep_count >= 1
+        finally:
+            await self._stop(task)
+
+
+@pytest.mark.asyncio
+class TestReconcilerLeaseOwnership:
+    """Owner-checked renewal and release of the Redis lease."""
+
+    async def test_renew_extends_owned_lease_and_is_owner_checked(self):
+        client = FakeAsyncRedis()
+        lease = ReconcilerLease(client, ttl_seconds=90)
+        assert await lease.acquire() == LeaseAcquisitionResult.ACQUIRED
+        assert client._ttls[LEASE_KEY] == 90
+
+        # Foreign token in the key: renew must leave both key and TTL intact.
+        client._data[LEASE_KEY] = "foreign-token"
+        client._ttls[LEASE_KEY] = 11
+        assert await lease.renew() is False
+        assert client._data[LEASE_KEY] == "foreign-token"
+        assert client._ttls[LEASE_KEY] == 11
+
+    async def test_renew_with_correct_token_extends_ttl(self):
+        client = FakeAsyncRedis()
+        lease = ReconcilerLease(client, ttl_seconds=90)
+        assert await lease.acquire() == LeaseAcquisitionResult.ACQUIRED
+        client._ttls[LEASE_KEY] = 5  # model a partially elapsed TTL
+        assert await lease.renew() is True
+        assert client._ttls[LEASE_KEY] == 90
+
+    async def test_release_is_owner_checked(self):
+        client = FakeAsyncRedis()
+        lease = ReconcilerLease(client)
+        assert await lease.acquire() == LeaseAcquisitionResult.ACQUIRED
+
+        # A foreign replica now owns the key.
+        client._data[LEASE_KEY] = "foreign-token"
+        assert await lease.release() is False
+        assert client._data[LEASE_KEY] == "foreign-token"
+
+    async def test_release_deletes_owned_key_immediately(self):
+        client = FakeAsyncRedis()
+        lease = ReconcilerLease(client)
+        assert await lease.acquire() == LeaseAcquisitionResult.ACQUIRED
+        assert await lease.release() is True
+        assert LEASE_KEY not in client._data
+
+    async def test_release_never_raises_on_redis_error(self):
+        client = FakeAsyncRedis()
+        lease = ReconcilerLease(client)
+        assert await lease.acquire() == LeaseAcquisitionResult.ACQUIRED
+        client.fail_mode = True
+        assert await lease.release() is False
+
+
+@pytest.mark.asyncio
+class TestReconcilerLoopTask:
+    """Tests for the worker module-level reconciler entry point."""
 
 
 @pytest.mark.asyncio
