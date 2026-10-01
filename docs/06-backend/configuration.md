@@ -68,7 +68,7 @@ All environment variables use the double-underscore (`__`) delimiter for nesting
 | `DATABASE__USER`              | `database.user`          | `mkobi_app`    | Database user                   |
 | `DATABASE__PASSWORD`          | `database.password`      | `None`         | Database password (secret)      |
 | `DATABASE__TEST_DBNAME`       | `database.test_dbname`   | `bidb_test`    | Test database name              |
-| `DATABASE__LOCK_TIMEOUT_MS`   | `database.lock_timeout_ms` | `180000`     | Transaction-scoped bound (ms) on the aggregate-rebuild advisory-lock wait. Must stay below `STALE_PROCESSING_TIMEOUT_MINUTES`. |
+| `DATABASE__LOCK_TIMEOUT_MS`   | `database.lock_timeout_ms` | `180000`     | Aggregate-rebuild lock wait bound (ms); `0` waits forever |
 | `JWT__SECRET_KEY`             | `jwt.secret_key`         | `None`         | JWT signing key (secret)        |
 | `JWT__ALGORITHM`              | `jwt.algorithm`          | `HS256`        | JWT signing algorithm           |
 | `JWT__ACCESS_TOKEN_EXPIRE_MINUTES` | `jwt.access_token_expire_minutes` | `15` | Token TTL      |

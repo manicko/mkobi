@@ -319,6 +319,27 @@ class TestAppSettings(TestSettingsBase):
         assert settings.app.version == "1.0.0"
 
 
+class TestDatabaseSettings(TestSettingsBase):
+    """Tests for DatabaseSettings."""
+
+    def test_lock_timeout_defaults_to_three_minutes(self, monkeypatch):
+        """The aggregate-rebuild lock bound defaults to 180 000 ms.
+
+        The default must stay below ``STALE_PROCESSING_TIMEOUT_MINUTES``; that
+        relationship is asserted here rather than stated in a comment.
+        """
+        monkeypatch.delenv("DATABASE__LOCK_TIMEOUT_MS", raising=False)
+        settings = Settings(_env_file=None)
+        assert settings.database.lock_timeout_ms == 180_000
+        assert settings.database.lock_timeout_ms < 30 * 60 * 1000
+
+    def test_lock_timeout_from_env(self, monkeypatch):
+        """``DATABASE__LOCK_TIMEOUT_MS`` overrides the default."""
+        monkeypatch.setenv("DATABASE__LOCK_TIMEOUT_MS", "4000")
+        settings = Settings(_env_file=None)
+        assert settings.database.lock_timeout_ms == 4000
+
+
 class TestUploadSettings(TestSettingsBase):
     """Tests for UploadSettings."""
 

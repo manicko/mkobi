@@ -25,6 +25,14 @@ Rejected alternatives, one clause each:
   when the correct behaviour is for the second rebuilder to wait (boundedly).
 - ``statement_timeout`` - not scoped to lock acquisition, so it would also abort a
   long but legitimate aggregation.
+
+The bound this module installs is a whole-transaction ``lock_timeout``, because
+PostgreSQL has no per-lock timeout: it applies to every lock wait in the rebuild
+transaction, not only the advisory one below. A row-lock wait later in the job that
+exceeds the bound therefore also raises SQLSTATE ``55P03`` and is classified
+``PROCESSING_IN_PROGRESS``; the timeout log line names this module's advisory lock,
+which is the common case, while ``pg_locks`` remains the operator's window on any
+other waiter.
 """
 
 import hashlib
@@ -67,8 +75,9 @@ def dashboard_rebuild_lock_key(dashboard_id: UUID) -> int:
 
     Note:
         ``signed=True`` is load-bearing: asyncpg raises a hard ``DataError`` on an
-        unsigned value above 2**63 - 1, it does not truncate. Big-endian is the
-        correct reading of the digest bytes (``uuid.int`` is the big-endian form).
+        unsigned value above 2**63 - 1, it does not truncate. Big-endian is chosen
+        simply because it is the canonical reading of a digest, so the derivation is
+        spelled the same way in any other language an operator may reimplement it in.
     """
     payload = f"{REBUILD_LOCK_NAMESPACE}:{dashboard_id}".encode()
     return int.from_bytes(
