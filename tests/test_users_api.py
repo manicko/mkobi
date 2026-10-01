@@ -66,7 +66,7 @@ class TestUpdateUserRoleDeprecatedPut:
     """Tests for the deprecated PUT /users/{user_id} surface.
 
     This endpoint reaches UserService.update_user_role and had no test caller at
-    all; it is the one of the four TXN-001 endpoints fixed without a test change.
+    all; it is one of the four endpoints whose write was not committed.
     """
 
     async def test_deprecated_put_updates_role_durably(

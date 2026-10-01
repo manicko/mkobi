@@ -158,8 +158,11 @@ async def update_user_active_admin_endpoint(
     commits before this endpoint revokes, and ``is_active`` is the authority
     for protected access — ``api/deps.py::get_current_user_dependency`` rejects a
     deactivated user independently of Redis. The Redis user-level marker is the
-    authority for ``POST /auth/refresh`` and login, which do not re-read the row.
-    A Redis fault therefore leaves a committed deactivation with a failed
+    authority for ``POST /auth/refresh`` and the protected gate
+    (``api/deps.py``, ``core/permissions.py``); the login routes consult neither
+    ``is_active`` nor the marker, so a deactivated user can still obtain freshly
+    signed tokens at login, but each of those is then rejected at the gate. A
+    Redis fault therefore leaves a committed deactivation with a failed
     revocation: that is reported as 500 and the endpoint is idempotent, so a
     retry completes the revocation.
     """

@@ -60,7 +60,7 @@ async def _read_email_in_new_session(
 
 
 async def _delete_committed_email(async_session_maker, email: str) -> None:
-    """Delete a row committed by a B1 test.
+    """Delete a row committed by a test in this suite.
 
     A production commit in this harness is durable and the fixture's teardown
     rollback cannot undo it, so any test that commits must clean up after itself.
@@ -129,39 +129,47 @@ class TestCreateUser:
     """Tests for POST /users endpoint (admin only)."""
 
     async def test_create_user_admin(
-        self, async_client: AsyncClient, test_user: dict
+        self, async_client: AsyncClient, async_session_maker, test_user: dict
     ) -> None:
         """Test admin can create a new user."""
-        response = await async_client.post(
-            "/users/",
-            headers={"Authorization": f"Bearer {test_user['token']}"},
-            json={
-                "email": "newly_created_user@example.com",
-                "password": "NewUserPass123!",
-                "role": UserRole.VIEWER,
-            },
-        )
-        assert response.status_code == status.HTTP_201_CREATED
-        data = response.json()
-        assert data["email"] == "newly_created_user@example.com"
-        assert data["role"] == UserRole.VIEWER
+        email = f"created_{uuid.uuid4().hex[:8]}@example.com"
+        try:
+            response = await async_client.post(
+                "/users/",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={
+                    "email": email,
+                    "password": "NewUserPass123!",
+                    "role": UserRole.VIEWER,
+                },
+            )
+            assert response.status_code == status.HTTP_201_CREATED
+            data = response.json()
+            assert data["email"] == email
+            assert data["role"] == UserRole.VIEWER
+        finally:
+            await _delete_committed_email(async_session_maker, email)
 
     async def test_create_user_editor_role(
-        self, async_client: AsyncClient, test_user: dict
+        self, async_client: AsyncClient, async_session_maker, test_user: dict
     ) -> None:
         """Test admin can create editor user."""
-        response = await async_client.post(
-            "/users/",
-            headers={"Authorization": f"Bearer {test_user['token']}"},
-            json={
-                "email": "editor_created_user2@example.com",
-                "password": "EditorPass123!",
-                "role": UserRole.EDITOR,
-            },
-        )
-        assert response.status_code == status.HTTP_201_CREATED
-        data = response.json()
-        assert data["role"] == UserRole.EDITOR
+        email = f"editor_{uuid.uuid4().hex[:8]}@example.com"
+        try:
+            response = await async_client.post(
+                "/users/",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={
+                    "email": email,
+                    "password": "EditorPass123!",
+                    "role": UserRole.EDITOR,
+                },
+            )
+            assert response.status_code == status.HTTP_201_CREATED
+            data = response.json()
+            assert data["role"] == UserRole.EDITOR
+        finally:
+            await _delete_committed_email(async_session_maker, email)
 
     async def test_create_user_duplicate_email(
         self,
@@ -190,7 +198,7 @@ class TestCreateUser:
             assert committed_id is not None, "first create did not commit"
 
             # Try to create another with same email - returns 422 because ValueError
-            # is raised (D-1: duplicate email stays on the 422 path).
+            # is raised (duplicate email is reported as a validation error (422)).
             response = await async_client.post(
                 "/users/",
                 headers={"Authorization": f"Bearer {test_user['token']}"},
@@ -280,7 +288,6 @@ class TestCreateUser:
         self,
         async_client: AsyncClient,
         async_db_session,
-        async_session_maker,
         test_user: dict,
     ) -> None:
         """An IntegrityError that is not the duplicate-email race still returns 500.

@@ -196,6 +196,9 @@ class UserService(IUserService):
             # conflict on users.email is only raised once the competing
             # transaction has committed, so the winner is visible on the re-read.
             # Roll back first: the aborted transaction must not poison the session.
+            # This discards *any* uncommitted work on the caller's session, not
+            # only the failed insert, so a future multi-write caller must commit
+            # its earlier writes before calling create_user.
             await db.rollback()
             winner = await self.user_repo.get_by_email(email, db)
             if winner is not None:

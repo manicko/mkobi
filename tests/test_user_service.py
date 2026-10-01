@@ -17,7 +17,7 @@ from mkobi.models.enums import UserRole
 from mkobi.services.user_service import UserService
 
 
-def _make_user(**overrides) -> MagicMock:
+def _make_user(**overrides: object) -> MagicMock:
     """Build a repository/user double accepted by UserRead.model_validate."""
     user = MagicMock()
     user.id = overrides.get("id", uuid4())
