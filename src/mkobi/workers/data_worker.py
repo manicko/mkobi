@@ -202,7 +202,8 @@ async def _update_processing_log_status(
         task_id: Task ID (UUID string).
         status: New status.
         message: Status message.
-        started_at: Processing start time (only set if not already set).
+        started_at: Processing start time. Overwrites the stored value whenever
+            provided; a previous value is not preserved.
         finished_at: Processing finish time.
         session: Optional database session for testing. If None, creates a new session.
             When provided, caller manages transaction (SAVEPOINT pattern).
@@ -598,8 +599,6 @@ async def _process_csv_file_async(
                 status=ProcessingStatus.PROCESSING,
                 message="Processing started",
                 started_at=datetime.now(UTC),
-                error_code=None,
-                finished_at=None,
                 session=db_session,
             )
             return await _run_with_transaction(db_session)
@@ -649,8 +648,6 @@ async def _process_csv_file_async(
                 status=ProcessingStatus.PROCESSING,
                 message="Processing started",
                 started_at=datetime.now(UTC),
-                error_code=None,
-                finished_at=None,
             )
             async with get_session() as session:
                 async with session.begin():

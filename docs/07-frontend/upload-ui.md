@@ -171,7 +171,7 @@ GET /api/v1/upload/status/:task_id
 }
 ```
 
-Polling continues until `status` is `'completed'` (or `'failed'`), at which point a success toast is shown and the `onUploadComplete` callback invalidates the dashboard data cache. A mid-job `'processing'` value is non-terminal and keeps the poll running.
+Polling continues until `status` is `'completed'` or `'failed'`. On `'completed'` a success toast is shown and the `onUploadComplete` callback invalidates the dashboard data cache; on `'failed'` the modal switches to the error state instead. A mid-job `'processing'` value is non-terminal and keeps the poll running.
 
 ## Backend Processing Pipeline
 

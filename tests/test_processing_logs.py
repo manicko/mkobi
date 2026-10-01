@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+from sqlalchemy import delete
+
 from mkobi.models.enums import GraphType, ProcessingStatus
 from mkobi.models.processing_logs import ProcessingLogFilter, ProcessingLogRead, ProcessingLogCreate
 from mkobi.db.repositories.processing_log_repo import ProcessingLogRepository
@@ -15,6 +17,10 @@ from mkobi.workers.data_worker import (
     mark_orphaned_uploaded_logs_failed,
 )
 from mkobi.db.models.processing_logs import ProcessingLog
+from mkobi.db.models.aggregated_data import AggregatedData
+from mkobi.db.models.dashboard import Dashboard
+from mkobi.db.models.graphs import Graph
+from mkobi.data.storage.manager import StorageManager
 from mkobi.utils.exceptions import AppException, ErrorCode
 
 
@@ -548,11 +554,28 @@ class TestDurableProcessingTransitions:
         import polars as pl
 
         from mkobi.workers.data_worker import _process_csv_file_async
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+        from mkobi.db.repositories.graph_repo import GraphRepository
 
         task_id = uuid4()
-        dashboard_id = uuid4()
         task_file = tmp_path / f"{task_id}.csv"
         task_file.write_text("category,sales\na,1\n")
+
+        # A graph is required for aggregates to be produced at all.
+        dashboard_repo = DashboardRepository()
+        graph_repo = GraphRepository()
+        dashboard = await dashboard_repo.create(
+            db=async_db_session, name=f"durable_{uuid4().hex[:8]}", description="d"
+        )
+        await graph_repo.create(
+            db=async_db_session,
+            dashboard_id=dashboard.id,
+            name="g",
+            type=GraphType.TABLE,
+            dimensions=["category"],
+            metrics=["sales"],
+            config={},
+        )
 
         # Seed a committed row the worker's early PROCESSING UPDATE can match.
         await async_db_session.execute(
@@ -578,17 +601,30 @@ class TestDurableProcessingTransitions:
                 row = result.mappings().one()
                 observed["status"] = row["status"]
                 observed["started_at"] = row["started_at"]
-            # Aggregates must not be visible yet: the main transaction is open.
+                # The main transaction is still open here, so an independent
+                # connection must not see the aggregates this run just wrote.
+                manager = StorageManager(other)
+                observed["aggregates_visible"] = bool(
+                    await manager.get_aggregates(dashboard.id)
+                )
 
         from mkobi.workers.data_worker import CSVLoader
 
-        with patch.object(CSVLoader, "load_csv", return_value=valid_frame), patch(
-            "mkobi.workers.data_worker._store_aggregates", new=AsyncMock(side_effect=probe)
+        original_save_aggregates = StorageManager.save_aggregates
+
+        async def save_then_probe(self, *args, **kwargs) -> int:
+            """Run the real aggregate write, then probe while still uncommitted."""
+            inserted = await original_save_aggregates(self, *args, **kwargs)
+            await probe()
+            return inserted
+
+        with patch.object(CSVLoader, "load_csv", return_value=valid_frame), patch.object(
+            StorageManager, "save_aggregates", new=save_then_probe
         ):
             await _process_csv_file_async(
                 file_path_str=str(task_file),
                 task_id=str(task_id),
-                dashboard_id_str=str(dashboard_id),
+                dashboard_id_str=str(dashboard.id),
                 processing_config_dict=None,
                 mode="overwrite",
                 db_session=None,
@@ -596,6 +632,13 @@ class TestDurableProcessingTransitions:
 
         assert observed["status"] == ProcessingStatus.PROCESSING
         assert observed["started_at"] is not None
+        assert observed["aggregates_visible"] is False
+
+        # Delete the committed rows so they cannot leak into other tests.
+        await async_db_session.execute(
+            delete(ProcessingLog).where(ProcessingLog.id == task_id)
+        )
+        await async_db_session.commit()
 
     async def test_terminal_status_and_aggregates_become_visible_together(
         self, async_db_session, async_session_maker, tmp_path: Path
@@ -658,14 +701,27 @@ class TestDurableProcessingTransitions:
             assert log_row["status"] == ProcessingStatus.COMPLETED
             assert log_row["finished_at"] is not None
 
-            from mkobi.data.storage.manager import StorageManager
-
             manager = StorageManager(other)
             aggregates = await manager.get_aggregates(dashboard.id)
         assert aggregates, "aggregates must be committed with the terminal status"
 
         # Success path: the temp file was unlinked inside the transaction body.
         assert not task_file.exists()
+
+        # Delete the committed rows so they cannot leak into other tests.
+        await async_db_session.execute(
+            delete(ProcessingLog).where(ProcessingLog.id == task_id)
+        )
+        await async_db_session.execute(
+            delete(AggregatedData).where(AggregatedData.dashboard_id == dashboard.id)
+        )
+        await async_db_session.execute(
+            delete(Graph).where(Graph.dashboard_id == dashboard.id)
+        )
+        await async_db_session.execute(
+            delete(Dashboard).where(Dashboard.id == dashboard.id)
+        )
+        await async_db_session.commit()
 
     async def test_mid_job_failure_leaves_exactly_one_failed_row_written_on_its_own_session(
         self, async_db_session, async_session_maker, tmp_path: Path
@@ -674,11 +730,13 @@ class TestDurableProcessingTransitions:
 
         The row must survive the rollback it reports, which is only possible
         because the compensation writes on its own session after the failed
-        transaction has exited.
+        transaction has exited. The failure is classified as PROCESSING_FAILED
+        and no aggregates are persisted.
         """
         from mkobi.workers.data_worker import _process_csv_file_async, CSVLoader
 
         task_id = uuid4()
+        failed_dashboard_id = uuid4()
         task_file = tmp_path / f"{task_id}.csv"
         task_file.write_text("category,sales\na,1\n")
 
@@ -706,7 +764,7 @@ class TestDurableProcessingTransitions:
                 await _process_csv_file_async(
                     file_path_str=str(task_file),
                     task_id=str(task_id),
-                    dashboard_id_str="00000000-0000-0000-0000-000000000000",
+                    dashboard_id_str=str(failed_dashboard_id),
                     processing_config_dict=None,
                     mode="overwrite",
                     db_session=None,
@@ -721,24 +779,40 @@ class TestDurableProcessingTransitions:
                 ProcessingLog.__table__.select().where(ProcessingLog.id == task_id)
             )
             rows = result.mappings().all()
+            aggregates = await StorageManager(other).get_aggregates(failed_dashboard_id)
         assert len(rows) == 1
         assert rows[0]["status"] == ProcessingStatus.FAILED
+        assert rows[0]["error_code"] == ErrorCode.PROCESSING_FAILED.value
         assert rows[0]["message"]
         assert rows[0]["started_at"] is not None
+        assert aggregates == [], "a failed job must not persist aggregates"
+
+        # Delete the committed row so it cannot leak into other tests.
+        await async_db_session.execute(
+            delete(ProcessingLog).where(ProcessingLog.id == task_id)
+        )
+        await async_db_session.commit()
 
     async def test_marker_shares_the_horizon_and_sweeps_only_its_own_status(
         self, async_db_session
     ) -> None:
-        """A 2-minute-old row is inside the shared horizon for both sweeps.
+        """A 2-minute-old UPLOADED row is left alone; the same row as PROCESSING is swept.
 
-        With the retired one-minute literal the marker would flip the still-queued
-        UPLOADED row to FAILED. Sharing the horizon leaves it UPLOADED, while the
-        periodic sweep still acts on the same age when the row is PROCESSING.
+        With the marker's shared 30-minute horizon the still-queued UPLOADED row
+        survives; the sweep is then called with an explicit one-minute horizon,
+        so the same-aged PROCESSING row is stale to it. Both predicates are
+        played over the same planted row, so the assertions are row-scoped and
+        independent of any other committed rows in the table.
         """
         from sqlalchemy import update as sa_update
 
         task_id = uuid4()
         old_time = datetime.now(UTC) - timedelta(minutes=2)
+        # Isolate from rows committed by other tests: both sweeps are unfiltered
+        # UPDATEs over the whole table.
+        await async_db_session.execute(
+            delete(ProcessingLog).where(ProcessingLog.dashboard_id.is_(None))
+        )
         await async_db_session.execute(
             ProcessingLog.__table__.insert().values(
                 id=task_id,
@@ -750,8 +824,7 @@ class TestDurableProcessingTransitions:
         )
         await async_db_session.commit()
 
-        marker_count = await mark_orphaned_uploaded_logs_failed(session=async_db_session)
-        assert marker_count == 0
+        await mark_orphaned_uploaded_logs_failed(session=async_db_session)
         row = await ProcessingLogRepository().get_by_id(task_id, db=async_db_session)
         assert row is not None and row.status == ProcessingStatus.UPLOADED
 
@@ -763,9 +836,16 @@ class TestDurableProcessingTransitions:
             .values(status=ProcessingStatus.PROCESSING, started_at=old_time)
         )
         await async_db_session.commit()
-        swept = await cleanup_stale_processing_logs(
+        await cleanup_stale_processing_logs(
             timeout_minutes=1, session=async_db_session
         )
-        assert swept == 1
-        row = await ProcessingLogRepository().get_by_id(task_id, db=async_db_session)
-        assert row is not None and row.status == ProcessingStatus.FAILED
+        refreshed = await ProcessingLogRepository().get_by_id(
+            task_id, db=async_db_session
+        )
+        assert refreshed is not None and refreshed.status == ProcessingStatus.FAILED
+
+        # Clean up the planted row so it cannot leak into other tests.
+        await async_db_session.execute(
+            delete(ProcessingLog).where(ProcessingLog.id == task_id)
+        )
+        await async_db_session.commit()

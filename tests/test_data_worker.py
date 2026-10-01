@@ -23,6 +23,7 @@ from mkobi.core.reconciler_lease import (
 from mkobi.db.advisory_lock import LOCK_TIMEOUT_SQLSTATE
 from mkobi.utils.exceptions import AppException, ErrorCode
 from mkobi.workers.data_worker import (
+    DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES,
     _map_processing_error_to_code,
     _update_processing_log_status,
     cleanup_stale_processing_logs,
@@ -623,9 +624,11 @@ class TestDataWorker:
     ):
         """No-argument call resolves its cutoff from the configured horizon.
 
-        The retired one-minute literal and the sweep's own
-        ``DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES`` (5) must not be the answer:
-        only ``Settings.stale_processing_timeout_minutes`` is.
+        The cutoff must be ``Settings.stale_processing_timeout_minutes``, not the
+        sweep's own ``DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES`` nor the retired
+        one-minute literal. Those candidates are checked only when they actually
+        differ from the configured value, so a developer environment that sets
+        the horizon to 1 or 5 does not make this test fail.
         """
         from mkobi.config import get_config
 
@@ -634,8 +637,13 @@ class TestDataWorker:
         mock_session.execute.return_value = mock_result
 
         configured = get_config().stale_processing_timeout_minutes
-        # Distinct from both the retired literal (1) and the sweep default (5).
-        assert configured not in (1, 5)
+        # Candidates the cutoff must NOT be, minus any that coincide with the
+        # configured value (the configured value is the only correct answer).
+        stale_candidates = {
+            candidate
+            for candidate in (1, DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES, configured + 1)
+            if candidate != configured
+        }
 
         before = datetime.now(UTC)
         await mark_orphaned_uploaded_logs_failed(session=mock_session)
@@ -647,6 +655,12 @@ class TestDataWorker:
         assert before - timedelta(minutes=configured) <= cutoff <= after - timedelta(
             minutes=configured
         )
+        for candidate in stale_candidates:
+            assert not (
+                before - timedelta(minutes=candidate)
+                <= cutoff
+                <= after - timedelta(minutes=candidate)
+            ), f"cutoff matched stale candidate {candidate}, not the configured horizon"
 
     async def test_mark_orphaned_uploaded_logs_failed_explicit_override_wins(
         self, mock_session
@@ -666,7 +680,6 @@ class TestDataWorker:
         cutoff = self._cutoff_from_compiled_values(stmt)
 
         assert before - timedelta(minutes=7) <= cutoff <= after - timedelta(minutes=7)
-
 
 
 # --- _map_processing_error_to_code tests ---
