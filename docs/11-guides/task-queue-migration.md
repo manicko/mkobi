@@ -19,7 +19,41 @@ related:
 
 This document provides a comprehensive migration plan for transitioning the task queue from an in-memory `asyncio.Queue` implementation to a persistent Redis/RQ backend. It details the current limitations, target architecture, step-by-step migration instructions, and rollback strategy for production deployment.
 
+**Status:** the migration this document plans has been carried out — see
+[Decision Record](#decision-record) below, which records the direction chosen,
+the date, and the audit phase that owns the remaining documentation work. The
+body of the plan is retained as the historical record of *why* that direction
+was chosen; it is not a description of the current system.
+
 # Task Queue Migration Plan: In-Memory to Redis/RQ
+
+## Decision Record
+
+**Decision — Direction A: RQ is the single submission and execution path, and the in-process queue is removed.**
+**Implemented:** 2026-09-30, commit `3848e7a`.
+**Owning audit phase for this document:** phase 10.
+
+The migration this guide plans is complete **in direction**. `core/task_queue.py` no longer holds an `asyncio.Queue`: it is a thin RQ submission seam (`enqueue_job`, `get_rq_queue`), and the `rq-worker` container is the only executor of background work. `app.py::lifespan` no longer runs a queue worker. Every step below that describes *replacing* the in-memory queue has already happened.
+
+### What this guide is now
+
+A historical plan. Read *Current State*, *Limitations* and *Migration Steps* as a description of the system **before** 2026-09-30, not as the current system. The file paths, line numbers, class names and code snippets in those sections no longer match the repository: `TaskQueue`, `default_queue` and `get_task_queue()` are gone, and `enqueue_job()` is an `async` RQ submission that raises `AppException` rather than returning `None`.
+
+The authoritative account of the current submission path is
+[Backend Architecture](../06-backend/architecture.md) plus the source itself —
+`src/mkobi/core/task_queue.py` and `src/mkobi/rq_worker_wrapper.py`. Do not
+maintain a third account of it here.
+
+### What phase 10 still owns
+
+Audit phase 10 recorded `OPS-002` as a duplicate of `TOPO-002` and ruled that **phase 01 owns the architectural decision while phase 10 owns the documentation correction**. Commit `3848e7a` named the sentences that became false when the in-process queue was removed. They are left uncorrected, here and in their own files, on purpose: correcting them in two places would produce two divergent descriptions of the same thing.
+
+| Sentence that became false | Where it lives | Owner |
+|---|---|---|
+| The in-memory `asyncio.Queue` is used when the worker is not running / the "replace with Redis/RabbitMQ" note | this guide, *MVP Rationale*; [Docker Guide](./docker.md), *RQ Worker* | phase 10 |
+| The `rq-worker` command and its `Redis(...).ping()` healthcheck | [Docker Guide](./docker.md), *RQ Worker* and *Health Checks* | phase 10 |
+| The `rq-worker` service entry | [Deployment](../10-deployment/deployment.md), *Production Profiles* | phase 10 |
+| The whole plan text, duplicated | [Task Queue](../03-processing/task-queue.md) | phase 10 |
 
 ## Current State
 

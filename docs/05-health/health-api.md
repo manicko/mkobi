@@ -90,6 +90,14 @@ Returns the overall application status along with per-component health informati
     "static_files": {
       "status": "available",
       "path": "frontend/dist"
+    },
+    "stale_processing_reconciler": {
+      "status": "ok",
+      "lease_state": "holder",
+      "last_success_at": "2026-10-01T07:05:00+00:00",
+      "last_swept_count": 0,
+      "sweep_count": 1,
+      "unprotected_ticks": 0
     }
   }
 }
@@ -121,11 +129,71 @@ Returned when one or more components are unavailable. The overall `status` field
 | -------------- | ---------------------------------------------------------- | ----------- |
 | `database`     | Executes `SELECT 1` against PostgreSQL                     | Critical    |
 | `static_files` | Verifies `frontend/dist` directory exists on disk          | Non-critical|
+| `stale_processing_reconciler` | Reports the background reconciler's lease state and last completed sweep | Observability only |
 
 **Behavior:**
 - Database check: same connectivity test as the basic endpoint; includes the error message in the response on failure
 - Static files check: verifies the `frontend/dist` directory exists (populated by `npm run build`); reports `"available"` or `"unavailable"`
 - The overall `status` is `"unhealthy"` if any component reports a failure
+- The reconciler component never changes the overall `status` — see [below](#22-health-is-deliberately-unchanged)
+
+#### 2.1 The `stale_processing_reconciler` Component
+
+The production image runs uvicorn with `--workers 4`, so every worker process would otherwise run its own copy of the periodic stale-processing reconciler. A Redis-backed lease elects exactly one replica; this component makes the outcome of that election observable.
+
+It is **observability only**. It is not a readiness or correctness signal, and it never contributes to the overall `status` field.
+
+**Fields:**
+
+| Field | Meaning |
+| ----- | ------- |
+| `status` | `not_started` before the lifespan has published any state; otherwise `starting` until the first sweep completes, then `ok` |
+| `lease_state` | `unknown`, `holder`, `not_holder` or `unprotected` |
+| `last_success_at` | ISO-8601 UTC timestamp of the last **completed** sweep, or `null`. It advances even on a tick that marked zero rows, so a frozen value means the loop has died rather than that it had nothing to do |
+| `last_swept_count` | Rows the last completed tick moved to a terminal state (may be `0`) |
+| `sweep_count` | Completed ticks since the process started |
+| `unprotected_ticks` | Completed ticks that ran without holding the lease because Redis was unreachable |
+
+`lease_state` values:
+
+| Value | Meaning |
+| ----- | ------- |
+| `holder` | This replica won the lease and is the one sweeping |
+| `not_holder` | Redis was reached and the lease belongs to another replica; this replica does not sweep |
+| `unprotected` | Redis could not be reached. The lease **fails open**: this replica sweeps anyway, because the sweep is a monotone, idempotent update and skipping it during an outage would leave nobody sweeping |
+| `unknown` | No state published yet |
+
+The lease is a load-and-observability optimisation, never a correctness gate: only `not_holder` (proof that a live holder exists) suppresses a sweep.
+
+**Example** (a replica that holds the lease and has completed one tick):
+
+```json
+{
+  "status": "healthy",
+  "components": {
+    "database": { "status": "connected", "type": "postgresql" },
+    "static_files": { "status": "available", "path": "frontend/dist" },
+    "stale_processing_reconciler": {
+      "status": "ok",
+      "lease_state": "holder",
+      "last_success_at": "2026-10-01T07:05:00+00:00",
+      "last_swept_count": 0,
+      "sweep_count": 1,
+      "unprotected_ticks": 0
+    }
+  }
+}
+```
+
+**Reading this in a multi-worker deployment.** Each of the four workers answers with **its own** state, so a request may land on a replica reporting `not_holder`. That is the expected steady state, not a fault: exactly one replica holds the lease and three do not. To judge the reconciler across the deployment, alert on a frozen `last_success_at` or a rising `unprotected_ticks`, not on `not_holder` alone.
+
+**Before the lifespan runs** (for example in an ASGI test harness that never starts it) the component reports `not_started` with `lease_state: unknown` and `last_success_at: null` — never a guessed state.
+
+#### 2.2 `/health` Is Deliberately Unchanged
+
+`/health` still returns exactly `{"status": "healthy", "database": "connected"}` (or the `503` `unhealthy` variant). It was **not** widened to include the reconciler, and the split is intentional.
+
+`/health` is what the container healthcheck curls and what `nginx` gates on via `depends_on: app: condition: service_healthy`. If reconciler or lease state fed that endpoint, then during any Redis blip three of the four workers would report unhealthy and the reverse proxy would refuse to start — turning a degraded background sweep into a total outage of the API. `/health` therefore keeps meaning one thing only: *the database is reachable*. Everything else belongs on `/health/detailed`, which returns `200` regardless and never withholds a component.
 
 ---
 

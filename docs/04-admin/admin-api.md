@@ -389,9 +389,14 @@ Approve a pending registration request. Creates a new user account with a random
 **Side effects:**
 - Creates a new user in the `users` table with the email from the request
 - Sets the user's password to a cryptographically random temporary password
-- Stores the plaintext temporary password in Redis via `TempPasswordStore` under the `retrieval_token`
-- Updates the `registration_requests` record: status → `approved`, `reviewed_by` → admin user ID, `reviewed_at` → current timestamp
 - Sets `force_password_change=True` on the new user
+- Updates the `registration_requests` record: status → `approved`, `reviewed_by` → admin user ID, `reviewed_at` → current timestamp
+- **Commits**, and only then stores the plaintext temporary password in Redis via `TempPasswordStore` under the `retrieval_token`
+
+The first four steps happen inside a single transaction owned by
+`AuthService.approve_registration_request`; the route does not open, commit or
+roll back a transaction itself. See [Registration Approval Flow](#registration-approval-flow)
+for why the Redis write is deliberately last.
 
 > **Security Note:** The `retrieval_token` (UUID) is returned instead of a plaintext `temp_password`. The admin retrieves the actual password via `GET /api/v1/admin/temp-passwords/{retrieval_token}` when needed. This ensures the plaintext password never appears in API response logs. The password is stored in Redis with TTL (default: 24h) and is single-use.
 
@@ -579,11 +584,20 @@ Browser (User)        FastAPI              Database
   │                     │  requests           │
   │                     │────────────────────►│
   │                     │  (status=approved,  │
-  │                     │   reviewed_by,      │
-  │                     │   reviewed_at)      │
-  │                     │◄────────────────────│
-  │                     │                     │
-   │  200 OK             │                     │
+   │                     │   reviewed_by,      │
+   │                     │   reviewed_at)      │
+   │                     │◄────────────────────│
+   │                     │                     │
+   │                     │  COMMIT             │
+   │                     │────────────────────►│
+   │                     │◄────────────────────│
+   │                     │                     │
+   │                     │  SET temp_pwd:{     │
+   │                     │  {token} in Redis   │
+   │                     │  — AFTER the commit,│
+   │                     │    non-transactional│
+   │                     │                     │
+    │  200 OK             │                     │
    │  { message,         │                     │
    │    user_id,         │                     │
    │    retrieval_token }│                     │
@@ -597,9 +611,49 @@ Browser (User)        FastAPI              Database
    │  it to new user     │                     │
 ```
 
+### Approval Sequence and Transaction Ownership
+
+The route is transport only. `AuthService.approve_registration_request` owns the
+sequence and, with it, the transaction:
+
+```
+generate temp password  (service-private helper)
+      ↓
+create user             ┐
+set force_password_change│  one transaction,
+update request status   ┘  opened and committed by the service
+      ↓
+COMMIT
+      ↓
+store temp password in Redis   ← deliberately after the commit
+      ↓
+return { message, user_id, retrieval_token }
+```
+
+The ordering is the point. Redis is not transactional, so a credential written
+before the commit becomes durable independently of the database. The old
+sequence wrote it in the middle of the transaction: a failure at the status
+update or at the commit rolled the database back but not Redis, leaving a live
+`retrieval_token` that unlocked a credential for a user that did not exist, for
+the full TTL. Writing after the commit inverts the failure mode — a store
+failure now leaves a real, committed user whose temporary password is not yet
+retrievable. That state is visible to an admin and recoverable; the old one was
+neither.
+
+`TempPasswordStore.store` fails open: it catches every exception and returns. The
+service therefore neither treats a non-raising call as proof that the credential
+is retrievable, nor rolls the user back.
+
+The response shape, the status code and every error code are unchanged by this
+move. Other admin routes still commit in the transport layer; that inconsistency
+is recorded, not resolved here.
+
+`AuthService.reset_password_admin` — behind
+`POST /api/v1/admin/users/{user_id}/reset-password` — was reordered the same way.
+
 ### Temporary Password Generation
 
-When a registration request is approved, the system generates a cryptographically secure 16-character temporary password (letters + digits, at least one of each) using `_generate_temp_password()`. This password:
+When a registration request is approved, `AuthService` generates a cryptographically secure 16-character temporary password (letters + digits, at least one of each) using its own private `_generate_temp_password()` helper. Generation is internal to the service: the route neither calls the helper nor handles the plaintext password. This password:
 
 - Is generated using `secrets.choice(string.ascii_letters + string.digits)` with up to 3 attempts to produce a password passing Pydantic validation
 - Is returned in the `temp_password` field of the approval response

@@ -213,6 +213,29 @@ raise HTTPException(status_code=403, detail="Access denied")
 
 The `AppException` class automatically maps `ErrorCode` values to HTTP status codes via `_ERROR_CODE_STATUS_MAP`.
 
+### Refactoring Without Changing the Error Surface
+
+Moving logic out of a route and into a service is not automatically
+API-compatible. Two recent refactors are worth recording because both *were*
+checked, and the difference matters when reviewing the next one:
+
+- **Admin approval transaction moved into `AuthService` (2026-09-30).** The
+  admin approval route stopped owning its transaction and delegated to
+  `AuthService.approve_registration_request`. The endpoint still raises
+  `NOT_FOUND`, `DUPLICATE_RESOURCE` and `INTERNAL_ERROR` through `AppException`,
+  with the same statuses and response keys, so the table above is unchanged. The
+  refactor was about the *order* of a commit and a non-transactional Redis write,
+  not about the error contract — see
+  [Admin API](../04-admin/admin-api.md#approval-sequence-and-transaction-ownership).
+- **Destructive test-database recreation guarded (2026-09-30).** The refusal in
+  `DatabaseStarter.recreate_test_database` raises
+  `UnsafeTestDatabaseRecreationError`, a plain startup exception. It never
+  reaches an HTTP response, so no `ErrorCode` was added for it.
+
+The general rule these two establish: a change that moves *where* an error is
+raised must still raise it through `AppException` with the same `ErrorCode`, or
+it is an API change and needs its own entry in the table above.
+
 ## Frontend Integration
 
 ### Error Extraction Chain

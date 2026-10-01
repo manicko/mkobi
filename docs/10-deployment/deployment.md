@@ -216,6 +216,50 @@ or not a profile is passed:
 
 See [Docker Guide](../11-guides/docker.md#rq-worker) for its dependencies, environment and mounts.
 
+### Start Order and Readiness
+
+Services are started in a fixed order, and every edge names a *condition*
+rather than a mere "container started":
+
+```
+db (healthy)
+  └─> migrate (service_completed_successfully)
+        └─> app (with redis healthy)
+              └─> nginx (service_healthy, production profile only)
+```
+
+| Order | Service | Waits for | Condition |
+| --- | --- | --- | --- |
+| 1 | `db` | — | `pg_isready` healthcheck |
+| 2 | `migrate` | `db` | `service_healthy` |
+| 3 | `app` | `migrate`, `db`, `redis` | `service_completed_successfully`, `service_healthy`, `service_healthy` |
+| 4 | `nginx` | `app` | `service_healthy` |
+
+Two of these edges are load-bearing and should not be relaxed:
+
+- **`nginx` waits on the application's health.** It used to declare only
+  `depends_on: [app]`, so the reverse proxy could begin serving while the
+  application was still booting. It is now keyed on
+  `app: {condition: service_healthy}`, gated by the app healthcheck
+  (`curl -f http://localhost:8000/health`, which performs a real database
+  round-trip). An operator now sees an absent proxy at startup rather than a
+  `502` at request time — the failure is meant to happen once, during deploy,
+  not on every request afterwards.
+- **`app` waits on `redis` for startup ordering only.** The stale-processing
+  reconciler lease fails open: the application boots and sweeps even when Redis
+  is unreachable. The wait exists so the app does not spend the first seconds of
+  a slow Redis boot in the fail-open state; it is not a correctness dependency,
+  and removing it would not break the sweep.
+
+The development tier has the same readiness signal. The development override no
+longer disables the `app` healthcheck, so `docker compose ... up -d --wait` —
+which is what `.\Makefile.ps1 up` runs — returns only after `/health` answers.
+`up` is consequently slower than it used to be and now fails loudly on a
+half-started stack instead of returning early.
+
+See [Docker Guide](../11-guides/docker.md#readiness-and-start-order) for the
+Compose-level view, including the development-specific differences.
+
 ### Test Environment Port Configuration
 
 The standalone test Docker Compose (`docker/docker-compose.test.yml`) uses shifted, **configurable** host ports to enable parallel dev+test execution and parallel checkouts on one machine:
@@ -314,8 +358,14 @@ This is configured in both `docker/docker-compose.yml` and `docker/docker-compos
 ### Health Checks
 
 - **db**: `pg_isready` — verifies PostgreSQL is accepting connections
-- **app**: HTTP GET `/health` — verifies the application responds
+- **app**: HTTP GET `/health` — verifies the application responds; this is the
+  readiness gate `nginx` starts behind (see [Start Order and
+  Readiness](#start-order-and-readiness))
 - **redis**: `redis-cli ping` — verifies Redis availability
+
+The detailed component breakdown, including the reconciler-lease component on
+`/health/detailed` and the reason `/health` is deliberately left narrow, is in
+[Health API](../05-health/health-api.md).
 
 ### Common Operations
 

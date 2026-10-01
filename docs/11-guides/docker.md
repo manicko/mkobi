@@ -127,6 +127,44 @@ SIGBUS fault described under Troubleshooting.
 - `mkobi` project: `mkobi_default` (bridge)
 - `mkobi-test` project: `test_network` (bridge), isolated from the dev stack
 
+### Readiness and Start Order
+
+Compose resolves `depends_on` before it starts anything, so the stack has a
+strict order. Each edge names a *condition*, not merely a start:
+
+| Order | Service | Waits for | Condition |
+|-------|---------|-----------|-----------|
+| 1 | `db` | — | its own `pg_isready` healthcheck turns it green |
+| 2 | `migrate` | `db` | `service_healthy`; it is one-shot and exits `0` |
+| 3 | `app` | `migrate`, `db`, `redis` | `service_completed_successfully`, `service_healthy`, `service_healthy` |
+| 4 | `nginx` | `app` | `service_healthy` |
+
+Two edges deserve their reason stated, because both are easy to undo by
+accident:
+
+- **`nginx` waits on the application's health, not its start.** `nginx`
+  previously declared only `depends_on: [app]`, which meant "the application
+  container was created" — the proxy could begin serving while the application
+  was still booting, turning a slow start into a window of `502`s. It is now
+  `depends_on: {app: {condition: service_healthy}}`. The gate is the base
+  `app` healthcheck, `curl -f http://localhost:8000/health`, which performs a
+  real database round-trip; its `interval` / `timeout` / `retries` /
+  `start_period` (`30s` / `10s` / `3` / `40s`) are unchanged and bound the wait.
+  The intended failure mode is now *no proxy at all* rather than a proxy that
+  serves errors. `profiles: [production]` is preserved, so the development
+  stack gains no proxy.
+- **`app` waits on `redis` for ordering only, not for correctness.** The
+  reconciler lease fails open, so the application boots and sweeps even with
+  Redis unreachable. Waiting for a healthy `redis` merely avoids starting in the
+  fail-open state for the first seconds of a slow Redis boot.
+
+**The development tier has a readiness signal.** `docker-compose.override.yml`
+used to disable the `app` healthcheck, leaving `up --wait` with nothing to wait
+for. That `healthcheck: disable: true` is removed, so the dev `app` inherits the
+base `/health` probe. The visible consequence: **`.\Makefile.ps1 up` is slower
+and fails loudly on a half-started stack** instead of returning as soon as the
+containers exist. That is the intended effect, not a regression.
+
 ## Prerequisites
 
 - Docker Engine 20.10+
@@ -373,7 +411,9 @@ Optional production reverse proxy, and the only service gated by the
 `production` profile. Serves the React SPA static files and proxies API requests
 to FastAPI at `app:8000`.
 
-- **Depends on:** `app`
+- **Depends on:** `app`, on condition `service_healthy` — the proxy does not start
+  until the application's `/health` probe passes. See
+  [Readiness and Start Order](#readiness-and-start-order)
 - **Ports:** `80:80`
 - **Volumes:** `docker/nginx/nginx.conf` (read-only), `frontend/dist` (read-only)
 - **Requires a prior frontend build** — the dist directory is mounted, not built
@@ -569,13 +609,19 @@ file is the build context for all of them; there is no `docker/.dockerignore`.
 | Service | Method | Notes |
 |---------|--------|-------|
 | `db` | `pg_isready -U postgres -d bidb` | |
-| `app` | `curl -f http://localhost:8000/health` | `start_period: 40s`; **disabled in the dev override** |
+| `app` | `curl -f http://localhost:8000/health` | `start_period: 40s`; inherited by the dev override, so `up --wait` gates on it in development too |
 | `redis` | `redis-cli ping` | |
 | `rq-worker` | Python one-liner, `Redis(...).ping()` | **disabled in the dev override** |
 | `nginx` | `wget --spider -q http://localhost/` | Verifies nginx is serving, not merely config-valid |
 
-The dev override disables the `app` and `rq-worker` healthchecks for faster
-startup, so `up --wait` in development does not gate on them.
+The dev override no longer disables the `app` healthcheck, so
+`.\Makefile.ps1 up` (which runs `up -d --wait`) waits for `/health` to answer
+before returning. See [Readiness and Start Order](#readiness-and-start-order).
+
+> **Note on the `rq-worker` row:** the worker command and healthcheck are owned
+> by [audit phase 10](./task-queue-migration.md#decision-record) and are being
+> corrected separately. The annotation above is deliberately left for that owner
+> to fix, so this guide does not carry a second, divergent account.
 
 ## PostgreSQL Locale Configuration
 

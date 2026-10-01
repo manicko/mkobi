@@ -391,6 +391,28 @@ raise AppException(
 }
 ```
 
+### Moving a Transaction Into a Service Without Changing Any Code
+
+Moving error-raising logic out of a route and into a service is where error
+contracts usually break. Two refactorings in this repository did **not** break
+one, and the check is cheap to repeat:
+
+| Change | Error surface |
+|---|---|
+| Admin approval route delegates to `AuthService.approve_registration_request` (2026-09-30) | Unchanged — still `NOT_FOUND`, `DUPLICATE_RESOURCE`, `INTERNAL_ERROR` via `AppException`, same statuses and response keys |
+| `DatabaseStarter.recreate_test_database` gains an environment and name guard (2026-09-30) | `UnsafeTestDatabaseRecreationError` is a startup exception; it never reaches HTTP, so no `ErrorCode` was added |
+
+When you do the same refactor yourself, three things keep the contract intact:
+
+1. Keep raising through `AppException` with the **same `ErrorCode`**. A new code
+   is a new row in the tables above and a change for every frontend consumer.
+2. Keep the `detail` strings clients may match on. Re-wording a `detail` is a
+   behaviour change even though the status code is identical.
+3. Do not let the service swallow an exception the route used to map. If the
+   service returns `None` to mean "not found", the route must translate that
+   back into the same `AppException` it raised before — a sentinel return is not
+   a substitute for an error contract.
+
 ## Troubleshooting Common Mistakes
 
 ### Backend

@@ -82,7 +82,9 @@ PostgreSQL
 - Permission checking logic
 - Logging configuration (structured JSON logging)
 - Redis client for rate limiting
-- Background task queue (in-memory `asyncio.Queue` for MVP; Redis/RQ for production)
+- Background task submission (RQ, `core/task_queue.py`) — the only submission
+  path; the in-process `asyncio.Queue` has been removed
+- Redis-backed lease for the stale-processing reconciler (`core/reconciler_lease.py`)
 
 ### Models (`src/mkobi/models/`)
 
@@ -137,21 +139,30 @@ Required modules: `aiofiles`, `fastapi`, `sqlalchemy`, `httpx`, `pydantic`, `pol
 
 ### Step 6: Test Database (test environment only)
 
-- When `RECREATE_TEST_DB=true` or `ENV=test`:
-  - Drops and recreates the `bidb_test` database
-  - Terminates existing connections to avoid conflicts
-  - Applies Alembic migrations to the test database
+- Reached when the tier is `test` or `RECREATE_TEST_DB=true` is set
+- **Guarded twice before any statement reaches the target**: recreation is
+  refused unless the *configured* environment is `test`, and refused again unless
+  the database name matches `^bidb_test(_[A-Za-z0-9]+)?$` (the convention
+  `tests/conftest.py` derives for pytest-xdist workers). A refusal raises
+  `UnsafeTestDatabaseRecreationError` — it is never logged and ignored
+- `RECREATE_TEST_DB` can therefore *select* recreation inside a test tier; it can
+  no longer authorise one anywhere else
+- On success: terminates existing connections, drops and recreates the database,
+  then applies Alembic migrations
 
 ### Step 7: Application Ready
 
 - FastAPI begins accepting HTTP requests
 - All API endpoints are available
-- Background task queue is initialized
-- Stale processing log cleanup is scheduled
+- Background work is submitted to the RQ queue and executed by the `rq-worker`
+  process; the application process no longer runs a queue worker of its own
+- Stale processing log cleanup is scheduled (see below)
 
 ### Stale Processing Log Cleanup
 
 A periodic background task detects and resolves processing logs stuck in `PROCESSING` state (e.g., due to worker crashes). Entries that have been in `PROCESSING` state longer than a configurable timeout (default: 5 minutes) are automatically marked as `FAILED` with an error message indicating the cleanup action. This provides visibility into crashed workers and prevents indefinite `PROCESSING` states.
+
+The production image runs uvicorn with `--workers 4`, so every worker process executes `lifespan` and would otherwise start its own copy of this loop — and run its own boot-time orphan repair. A Redis-backed lease (`core/reconciler_lease.py`) elects a single replica to do both. The lease **fails open**: a replica that cannot reach Redis sweeps anyway, because the cleanup is a monotone, idempotent `UPDATE` and skipping it during an outage would leave nobody sweeping. Only a replica that reached Redis and found the lease held by a live peer suppresses its own sweep. Which replica won the election is published on `/health/detailed`; see [Health API](../05-health/health-api.md).
 
 ### Shutdown
 
