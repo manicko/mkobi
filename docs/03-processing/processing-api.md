@@ -132,17 +132,26 @@ CSV loading and processing runs asynchronously through a background task queue.
 ### Task Lifecycle
 
 ```
-started → uploaded → processing → success/failed
+started → uploaded → processing → completed/failed
 ```
+
+The worker's transition to `processing` is committed in its own short
+transaction *before* the pipeline runs, and the terminal transition commits
+with the aggregate write in the main transaction. The row is therefore truthful
+to an independent reader for the whole run, and a worker killed mid-job leaves
+the row in `processing` for the periodic stale-processing sweep to find.
 
 | Status | Enum Value | Description |
 | ------ | ----------- | ----------- |
 | Started | `ProcessingStatus.STARTED` | Task created, file upload initiated |
-| Uploaded | `ProcessingStatus.UPLOADED` | File saved to temporary storage |
+| Uploaded | `ProcessingStatus.UPLOADED` | File saved to temporary storage, not yet picked up by a worker |
 | Processing | `ProcessingStatus.PROCESSING` | Pipeline execution in progress |
-| Success | `ProcessingStatus.SUCCESS` | Processing completed successfully |
+| Completed | `ProcessingStatus.COMPLETED` | Processing completed successfully |
 | Failed | `ProcessingStatus.FAILED` | Processing encountered an error |
-| Completed | `ProcessingStatus.COMPLETED` | Final state (alias for success in some contexts) |
+
+`GET /upload/status/{task_id}` can now genuinely return `status="processing"`
+with `progress=50` mid-job; previously the row stayed `uploaded` until it
+jumped straight to `completed`, so that branch was unreachable.
 
 ### Task Queue
 

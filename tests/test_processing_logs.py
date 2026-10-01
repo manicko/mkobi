@@ -2,13 +2,18 @@
 
 import pytest
 from datetime import datetime, timedelta, UTC
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from mkobi.models.enums import ProcessingStatus
+from mkobi.models.enums import GraphType, ProcessingStatus
 from mkobi.models.processing_logs import ProcessingLogFilter, ProcessingLogRead, ProcessingLogCreate
 from mkobi.db.repositories.processing_log_repo import ProcessingLogRepository
 from mkobi.services.processing_log_service import ProcessingLogService, _validate_transition
-from mkobi.workers.data_worker import cleanup_stale_processing_logs
+from mkobi.workers.data_worker import (
+    cleanup_stale_processing_logs,
+    mark_orphaned_uploaded_logs_failed,
+)
 from mkobi.db.models.processing_logs import ProcessingLog
 from mkobi.utils.exceptions import AppException, ErrorCode
 
@@ -516,3 +521,251 @@ class TestStateTransitionValidation:
         with pytest.raises(AppException) as exc_info:
             await service.update_to_processing(log.id, async_db_session)
         assert exc_info.value.code == ErrorCode.INVALID_TRANSITION
+
+
+@pytest.mark.asyncio
+class TestDurableProcessingTransitions:
+    """Durable processing-log transitions of the production worker path.
+
+    Production calls ``_process_csv_file_async`` with ``db_session=None``. The
+    PROCESSING transition is published by a short transaction on its own
+    session, and the COMPLETED transition commits with the aggregate write in
+    the main transaction. These tests prove both boundaries against a real
+    database, reading the row back from an *independent* session - the one view
+    the old single-transaction shape could not produce.
+    """
+
+    async def test_processing_transition_is_visible_to_an_independent_connection_while_the_job_is_in_flight(
+        self, async_db_session, async_session_maker, tmp_path: Path
+    ) -> None:
+        """The row reads PROCESSING from a second session while the job runs.
+
+        The probe runs *inside* the job's own flow, at a patched seam
+        (``_store_aggregates``), so it is sequenced rather than raced: at the
+        instant it runs COMMIT 1 has already committed and the main transaction
+        has not. A regression to the old shape shows up as UPLOADED.
+        """
+        import polars as pl
+
+        from mkobi.workers.data_worker import _process_csv_file_async
+
+        task_id = uuid4()
+        dashboard_id = uuid4()
+        task_file = tmp_path / f"{task_id}.csv"
+        task_file.write_text("category,sales\na,1\n")
+
+        # Seed a committed row the worker's early PROCESSING UPDATE can match.
+        await async_db_session.execute(
+            ProcessingLog.__table__.insert().values(
+                id=task_id,
+                dashboard_id=None,
+                status=ProcessingStatus.UPLOADED,
+                message="uploaded",
+                started_at=datetime.now(UTC),
+            )
+        )
+        await async_db_session.commit()
+
+        observed: dict[str, object] = {}
+        valid_frame = pl.DataFrame({"category": ["a"], "sales": [1]})
+
+        async def probe(*args, **kwargs):
+            """Read the row from an independent session while the job runs."""
+            async with async_session_maker() as other:
+                result = await other.execute(
+                    ProcessingLog.__table__.select().where(ProcessingLog.id == task_id)
+                )
+                row = result.mappings().one()
+                observed["status"] = row["status"]
+                observed["started_at"] = row["started_at"]
+            # Aggregates must not be visible yet: the main transaction is open.
+
+        from mkobi.workers.data_worker import CSVLoader
+
+        with patch.object(CSVLoader, "load_csv", return_value=valid_frame), patch(
+            "mkobi.workers.data_worker._store_aggregates", new=AsyncMock(side_effect=probe)
+        ):
+            await _process_csv_file_async(
+                file_path_str=str(task_file),
+                task_id=str(task_id),
+                dashboard_id_str=str(dashboard_id),
+                processing_config_dict=None,
+                mode="overwrite",
+                db_session=None,
+            )
+
+        assert observed["status"] == ProcessingStatus.PROCESSING
+        assert observed["started_at"] is not None
+
+    async def test_terminal_status_and_aggregates_become_visible_together(
+        self, async_db_session, async_session_maker, tmp_path: Path
+    ) -> None:
+        """COMPLETED and its aggregate rows are visible together afterwards."""
+        import polars as pl
+
+        from mkobi.workers.data_worker import _process_csv_file_async
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+        from mkobi.db.repositories.graph_repo import GraphRepository
+
+        task_id = uuid4()
+        task_file = tmp_path / f"{task_id}.csv"
+        task_file.write_text("category,sales\na,1\nb,2\n")
+
+        dashboard_repo = DashboardRepository()
+        graph_repo = GraphRepository()
+        dashboard = await dashboard_repo.create(
+            db=async_db_session, name=f"durable_{uuid4().hex[:8]}", description="d"
+        )
+        await graph_repo.create(
+            db=async_db_session,
+            dashboard_id=dashboard.id,
+            name="g",
+            type=GraphType.TABLE,
+            dimensions=["category"],
+            metrics=["sales"],
+            config={},
+        )
+        await async_db_session.execute(
+            ProcessingLog.__table__.insert().values(
+                id=task_id,
+                dashboard_id=None,
+                status=ProcessingStatus.UPLOADED,
+                message="uploaded",
+                started_at=datetime.now(UTC),
+            )
+        )
+        await async_db_session.commit()
+
+        valid_frame = pl.DataFrame({"category": ["a", "b"], "sales": [1, 2]})
+
+        from mkobi.workers.data_worker import CSVLoader
+
+        with patch.object(CSVLoader, "load_csv", return_value=valid_frame):
+            await _process_csv_file_async(
+                file_path_str=str(task_file),
+                task_id=str(task_id),
+                dashboard_id_str=str(dashboard.id),
+                processing_config_dict=None,
+                mode="overwrite",
+                db_session=None,
+            )
+
+        async with async_session_maker() as other:
+            log_result = await other.execute(
+                ProcessingLog.__table__.select().where(ProcessingLog.id == task_id)
+            )
+            log_row = log_result.mappings().one()
+            assert log_row["status"] == ProcessingStatus.COMPLETED
+            assert log_row["finished_at"] is not None
+
+            from mkobi.data.storage.manager import StorageManager
+
+            manager = StorageManager(other)
+            aggregates = await manager.get_aggregates(dashboard.id)
+        assert aggregates, "aggregates must be committed with the terminal status"
+
+        # Success path: the temp file was unlinked inside the transaction body.
+        assert not task_file.exists()
+
+    async def test_mid_job_failure_leaves_exactly_one_failed_row_written_on_its_own_session(
+        self, async_db_session, async_session_maker, tmp_path: Path
+    ) -> None:
+        """A post-transaction failure writes exactly one FAILED row on a fresh session.
+
+        The row must survive the rollback it reports, which is only possible
+        because the compensation writes on its own session after the failed
+        transaction has exited.
+        """
+        from mkobi.workers.data_worker import _process_csv_file_async, CSVLoader
+
+        task_id = uuid4()
+        task_file = tmp_path / f"{task_id}.csv"
+        task_file.write_text("category,sales\na,1\n")
+
+        await async_db_session.execute(
+            ProcessingLog.__table__.insert().values(
+                id=task_id,
+                dashboard_id=None,
+                status=ProcessingStatus.UPLOADED,
+                message="uploaded",
+                started_at=datetime.now(UTC),
+            )
+        )
+        await async_db_session.commit()
+
+        import polars as pl
+
+        valid_frame = pl.DataFrame({"category": ["a"], "sales": [1]})
+
+        raised: BaseException | None = None
+        with patch.object(CSVLoader, "load_csv", return_value=valid_frame), patch(
+            "mkobi.workers.data_worker._store_aggregates",
+            new=AsyncMock(side_effect=RuntimeError("forced failure")),
+        ):
+            try:
+                await _process_csv_file_async(
+                    file_path_str=str(task_file),
+                    task_id=str(task_id),
+                    dashboard_id_str="00000000-0000-0000-0000-000000000000",
+                    processing_config_dict=None,
+                    mode="overwrite",
+                    db_session=None,
+                )
+            except BaseException as exc:  # noqa: BLE001
+                raised = exc
+
+        assert isinstance(raised, RuntimeError)
+
+        async with async_session_maker() as other:
+            result = await other.execute(
+                ProcessingLog.__table__.select().where(ProcessingLog.id == task_id)
+            )
+            rows = result.mappings().all()
+        assert len(rows) == 1
+        assert rows[0]["status"] == ProcessingStatus.FAILED
+        assert rows[0]["message"]
+        assert rows[0]["started_at"] is not None
+
+    async def test_marker_shares_the_horizon_and_sweeps_only_its_own_status(
+        self, async_db_session
+    ) -> None:
+        """A 2-minute-old row is inside the shared horizon for both sweeps.
+
+        With the retired one-minute literal the marker would flip the still-queued
+        UPLOADED row to FAILED. Sharing the horizon leaves it UPLOADED, while the
+        periodic sweep still acts on the same age when the row is PROCESSING.
+        """
+        from sqlalchemy import update as sa_update
+
+        task_id = uuid4()
+        old_time = datetime.now(UTC) - timedelta(minutes=2)
+        await async_db_session.execute(
+            ProcessingLog.__table__.insert().values(
+                id=task_id,
+                dashboard_id=None,
+                status=ProcessingStatus.UPLOADED,
+                message="queued",
+                started_at=old_time,
+            )
+        )
+        await async_db_session.commit()
+
+        marker_count = await mark_orphaned_uploaded_logs_failed(session=async_db_session)
+        assert marker_count == 0
+        row = await ProcessingLogRepository().get_by_id(task_id, db=async_db_session)
+        assert row is not None and row.status == ProcessingStatus.UPLOADED
+
+        # Same age, PROCESSING: the periodic sweep acts on it under a one-minute
+        # horizon, while the marker above (configured 30-minute horizon) did not.
+        await async_db_session.execute(
+            sa_update(ProcessingLog)
+            .where(ProcessingLog.id == task_id)
+            .values(status=ProcessingStatus.PROCESSING, started_at=old_time)
+        )
+        await async_db_session.commit()
+        swept = await cleanup_stale_processing_logs(
+            timeout_minutes=1, session=async_db_session
+        )
+        assert swept == 1
+        row = await ProcessingLogRepository().get_by_id(task_id, db=async_db_session)
+        assert row is not None and row.status == ProcessingStatus.FAILED

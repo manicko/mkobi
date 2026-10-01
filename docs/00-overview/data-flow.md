@@ -108,7 +108,7 @@ User (Browser)
 * **Background**: Processing runs asynchronously via task queue (in-memory `TaskQueue` for MVP; Redis + RQ for production). See [Task Queue](../03-processing/task-queue.md) for the migration plan.
 * **File processing service**: `file_processing.py` handles validation, upload, and task orchestration.
 * **Background worker**: `data_worker.py` provides `process_csv_background` (async) and `process_csv_background_sync` (sync RQ wrapper) with mode-aware data persistence (`overwrite` clears old data, `append` keeps it).
-* **Status tracking**: `processing_logs` table (`started` → `uploaded` → `processing` → `success`/`failed`)
+* **Status tracking**: `processing_logs` table (`started` → `uploaded` → `processing` → `completed`/`failed`). The `processing` state is committed in its own transaction before the work starts and the terminal state commits with the aggregate write afterwards, so a killed worker's row stays `processing` for the periodic stale-processing sweep to find.
 * **Processing config wiring**: The dashboard's `processing_config` (from `processing_configs` table) is automatically fetched and passed through the upload pipeline to the background worker, ensuring transformations use the correct loader settings and custom metrics.
 * **Transaction safety**: File move to final path occurs **after** DB commit to prevent orphan files. On commit failure, the file remains at the temp path for cleanup.
 

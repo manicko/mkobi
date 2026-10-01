@@ -106,7 +106,7 @@ For each file:
   └────────────────┬────────────────┘
                    │
                    ▼
-  On success: { task_id, processing_log_id, status: "started" }
+  On success: { task_id, filename, dashboard_id, status: "uploaded", message, uploaded_at }
   On failure: error toast, file marked as ERROR
                    │
                    ▼
@@ -116,7 +116,7 @@ All files uploaded → poll processing status
 GET /api/v1/upload/status/:task_id (polled via TanStack Query)
         │
         ▼
-Status = 'completed' or 'success'
+Status = 'completed'
   → toast success → onUploadComplete callback → modal closes
   → dashboard data invalidated and refetched
 ```
@@ -146,8 +146,11 @@ File: <binary data>
 ```json
 {
   "task_id": "<uuid>",
-  "processing_log_id": "<uuid>",
-  "status": "started"
+  "filename": "data.csv",
+  "dashboard_id": "<uuid>",
+  "status": "uploaded",
+  "message": "File uploaded successfully",
+  "uploaded_at": "2026-05-31T12:00:00Z"
 }
 ```
 
@@ -168,7 +171,7 @@ GET /api/v1/upload/status/:task_id
 }
 ```
 
-Polling continues until `status` is `'completed'` or `'success'`, at which point a success toast is shown and the `onUploadComplete` callback invalidates the dashboard data cache.
+Polling continues until `status` is `'completed'` (or `'failed'`), at which point a success toast is shown and the `onUploadComplete` callback invalidates the dashboard data cache. A mid-job `'processing'` value is non-terminal and keeps the poll running.
 
 ## Backend Processing Pipeline
 
@@ -185,11 +188,12 @@ Upload → Parse (Polars) → Transform (LoaderConfig) → Aggregate → Save to
 | Status | Description |
 | --- | --- |
 | `started` | Task created, file upload initiated |
-| `uploaded` | File saved to temporary storage |
+| `uploaded` | File saved to temporary storage, not yet picked up by a worker |
 | `processing` | Pipeline execution in progress |
-| `success` | Processing completed successfully |
+| `completed` | Processing completed successfully |
 | `failed` | Processing encountered an error |
-| `completed` | Final state |
+
+**Renderer note.** The modal stores the polled status into `FileUploadState.processingStatus` but no render branch reads it; the visible state comes from `FileUploadState.status` (`FileUploadStatus`: `PENDING`, `UPLOADING`, `SUCCESS`, `ERROR`). The mapping reacts to only two polled values (`failed` → `ERROR`, `completed` → success toast) and the progress bar uses the axios upload percentage, not `statusData.progress`. The `processing` state (now genuinely observable mid-job, with `progress=50`) is therefore non-terminal and rendered as the pre-existing "Success" display; `useProcessingStatus` simply keeps polling until `completed` or `failed`.
 
 ## File Upload Security
 

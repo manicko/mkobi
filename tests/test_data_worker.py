@@ -1,6 +1,6 @@
 """Tests for data worker background functions."""
 import asyncio
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -601,6 +601,72 @@ class TestDataWorker:
         count = await mark_orphaned_uploaded_logs_failed(session=mock_session)
 
         assert count == 0
+
+    # --- mark_orphaned_uploaded_logs_failed horizon tests ---
+
+    @staticmethod
+    def _cutoff_from_compiled_values(stmt) -> datetime:
+        """Extract the bound ``started_at < cutoff`` value from the marker's UPDATE.
+
+        ``cutoff`` is the right-hand operand of the WHERE comparison, not a
+        column being set, so it is read from the clause comparing ``started_at``.
+        """
+        clauses = list(getattr(stmt.whereclause, "clauses", [stmt.whereclause]))
+        for clause in clauses:
+            left = getattr(clause, "left", None)
+            if getattr(left, "key", None) == "started_at":
+                return clause.right.value
+        raise AssertionError("no started_at comparison found in the marker WHERE clause")
+
+    async def test_mark_orphaned_uploaded_logs_failed_uses_the_configured_stale_processing_horizon(
+        self, mock_session
+    ):
+        """No-argument call resolves its cutoff from the configured horizon.
+
+        The retired one-minute literal and the sweep's own
+        ``DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES`` (5) must not be the answer:
+        only ``Settings.stale_processing_timeout_minutes`` is.
+        """
+        from mkobi.config import get_config
+
+        mock_result = MagicMock()
+        mock_result.rowcount = 0
+        mock_session.execute.return_value = mock_result
+
+        configured = get_config().stale_processing_timeout_minutes
+        # Distinct from both the retired literal (1) and the sweep default (5).
+        assert configured not in (1, 5)
+
+        before = datetime.now(UTC)
+        await mark_orphaned_uploaded_logs_failed(session=mock_session)
+        after = datetime.now(UTC)
+
+        stmt = mock_session.execute.call_args[0][0]
+        cutoff = self._cutoff_from_compiled_values(stmt)
+
+        assert before - timedelta(minutes=configured) <= cutoff <= after - timedelta(
+            minutes=configured
+        )
+
+    async def test_mark_orphaned_uploaded_logs_failed_explicit_override_wins(
+        self, mock_session
+    ):
+        """An explicit ``timeout_minutes`` overrides the configured horizon."""
+        mock_result = MagicMock()
+        mock_result.rowcount = 0
+        mock_session.execute.return_value = mock_result
+
+        before = datetime.now(UTC)
+        await mark_orphaned_uploaded_logs_failed(
+            timeout_minutes=7, session=mock_session
+        )
+        after = datetime.now(UTC)
+
+        stmt = mock_session.execute.call_args[0][0]
+        cutoff = self._cutoff_from_compiled_values(stmt)
+
+        assert before - timedelta(minutes=7) <= cutoff <= after - timedelta(minutes=7)
+
 
 
 # --- _map_processing_error_to_code tests ---

@@ -24,6 +24,7 @@ from mkobi.data.processing.transformations import (
     apply_transformations,
     calculate_aggregations,
 )
+from mkobi.config import get_config
 from mkobi.core.reconciler_lease import ReconcilerLease, ReconcilerStatus
 from mkobi.db.advisory_lock import acquire_dashboard_rebuild_lock, is_lock_timeout_error
 from mkobi.db.models.graphs import Graph
@@ -316,22 +317,40 @@ async def cleanup_stale_processing_logs(
 
 
 async def mark_orphaned_uploaded_logs_failed(
+    *,
+    timeout_minutes: int | None = None,
     session: AsyncSession | None = None,
 ) -> int:
-    """Mark UPLOADED logs older than 1 minute as FAILED.
+    """Mark UPLOADED logs older than the stale-processing horizon as FAILED.
 
-    On startup, any log stuck in UPLOADED state means the worker
-    crashed between enqueue and processing start. This function marks
-    those orphaned entries as FAILED.
+    On startup, a log still in UPLOADED state means no worker ever picked the
+    job up - it was queued when the worker stopped. Once the durable PROCESSING
+    transition exists, UPLOADED means only "not started yet", so this marker and
+    the periodic PROCESSING sweep must share one horizon: otherwise a restart
+    would flip queued-but-unstarted rows to FAILED and the still-queued job
+    would then move them back to completed, which reads as a false failure.
+
+    The two sweeps are disjoint by status (UPLOADED vs PROCESSING), so they
+    never contend for the same row; sharing the horizon keeps their notion of
+    "too old" from diverging.
 
     Args:
+        timeout_minutes: Age in minutes past which an UPLOADED entry is
+            orphaned. When None, the configured
+            ``Settings.stale_processing_timeout_minutes`` is used - the same
+            value the periodic sweep is given.
         session: Optional database session for testing. If None, creates a new session
             with transaction. When provided, caller manages transaction (SAVEPOINT pattern).
 
     Returns:
         int: Number of entries that were marked as FAILED.
     """
-    cutoff = datetime.now(UTC) - timedelta(minutes=1)
+    horizon = (
+        timeout_minutes
+        if timeout_minutes is not None
+        else get_config().stale_processing_timeout_minutes
+    )
+    cutoff = datetime.now(UTC) - timedelta(minutes=horizon)
 
     if session is not None:
         # Test mode - use provided session (SAVEPOINT pattern)
@@ -370,8 +389,9 @@ async def mark_orphaned_uploaded_logs_failed(
 
     if count > 0:
         logger.info(
-            "Marked %d orphaned UPLOADED entries as FAILED (cutoff=1m)",
+            "Marked %d orphaned UPLOADED entries as FAILED (horizon=%dm)",
             count,
+            horizon,
         )
     return int(count)
 
@@ -386,8 +406,11 @@ async def _process_csv_file_async(
 ) -> dict[str, Any]:
     """Async CSV processing implementation.
 
-    Uses a single atomic transaction for all database operations. If any step
-    fails (processing, storage, or status updates), the entire transaction rolls back.
+    The production path uses two ordered commits: a short own-session
+    transaction that publishes the PROCESSING transition, then a main
+    transaction that holds the dashboard's rebuild exclusion, writes the
+    aggregates and commits the terminal COMPLETED transition together. The
+    test path leaves every write inside the caller's SAVEPOINT.
 
     Args:
         file_path_str: Path to CSV file as string.
@@ -407,16 +430,7 @@ async def _process_csv_file_async(
     async def _run_with_transaction(
         session: AsyncSession,
     ) -> dict[str, Any]:
-        """Execute all processing and DB operations within a single transaction."""
-        # Update status to processing (within transaction)
-        await _update_processing_log_status(
-            task_id=task_id,
-            status=ProcessingStatus.PROCESSING,
-            message="Processing started (background task)",
-            started_at=datetime.now(UTC),
-            session=session,
-        )
-
+        """Execute all processing and DB operations within the main transaction."""
         # Extract CSV parsing config from processing_config
         csv_parse_config: dict[str, Any] = {}
         column_types: dict[str, str] = {}
@@ -574,6 +588,20 @@ async def _process_csv_file_async(
     if db_session is not None:
         # Test mode - use provided session (caller manages transaction)
         try:
+            # Same transition as production, but non-committing: the write stays
+            # inside the caller's SAVEPOINT. A durable commit here would release
+            # the SAVEPOINT (Session.commit() commits to the root), so the
+            # fixture's teardown rollback could not undo it. The caller owns the
+            # transaction boundary.
+            await _update_processing_log_status(
+                task_id=task_id,
+                status=ProcessingStatus.PROCESSING,
+                message="Processing started",
+                started_at=datetime.now(UTC),
+                error_code=None,
+                finished_at=None,
+                session=db_session,
+            )
             return await _run_with_transaction(db_session)
         except Exception as e:
             error_msg = str(e)
@@ -602,11 +630,28 @@ async def _process_csv_file_async(
             )
             raise
     else:
-        # Production mode - create new session with single transaction.
-        # The failure-compensation handler wraps the whole session block so it also
-        # covers failures raised before the transaction body runs (get_session() or
+        # Production mode - exactly two ordered commits.
+        #
+        # The failure-compensation handler wraps the whole block so it also covers
+        # failures raised before either transaction runs (get_session() or
         # session.begin()), not just failures from _run_with_transaction.
         try:
+            # First transaction: publish PROCESSING on its own short-lived session
+            # so any independent connection observes the job in flight. Committing
+            # here - before the lock below - is the only correct order: the lock is
+            # transaction-scoped, so a commit after taking it would release the
+            # exclusion at that commit, and a PROCESSING write inside the main
+            # transaction would stay invisible to every other connection.
+            # get_session() closes on exit, so this connection returns to the pool
+            # before the main session opens.
+            await _update_processing_log_status(
+                task_id=task_id,
+                status=ProcessingStatus.PROCESSING,
+                message="Processing started",
+                started_at=datetime.now(UTC),
+                error_code=None,
+                finished_at=None,
+            )
             async with get_session() as session:
                 async with session.begin():
                     # The exclusion must be taken inside this block. SQLAlchemy
@@ -619,6 +664,9 @@ async def _process_csv_file_async(
                     await acquire_dashboard_rebuild_lock(
                         session, dashboard_id, task_id=task_id
                     )
+                    # Second transaction: the work plus the terminal transition.
+                    # COMPLETED commits with the aggregate write, so a dashboard
+                    # never reports completed with aggregates that did not commit.
                     return await _run_with_transaction(session)
         except Exception as e:
             error_msg = str(e)

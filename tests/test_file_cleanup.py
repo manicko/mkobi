@@ -516,3 +516,144 @@ class TestProcessingFailureReportedOnOwnSession:
         assert "session" not in failed_writes[0]
 
         assert list(tmp_path.glob("*.csv*")) == []
+
+
+class TestRolledBackMainTransactionLeavesNoLeakedFile:
+    """A failed commit of the main transaction must not leak the temp file.
+
+    The success path unlinks the temp file *inside* the transaction body, so a
+    commit failure rolls the status back but the file is already gone and the
+    compensation's ``if file_path.exists()`` guard makes its own unlink a no-op.
+    Moving the unlink after the commit would leak the file here.
+    """
+
+    @staticmethod
+    def _session_with_failing_commit(observed: dict[str, Any], task_file: Path) -> MagicMock:
+        """A mock session whose ``begin()`` block raises when it commits.
+
+        Records whether the temp file still exists at the moment the commit
+        fails (``__aexit__``, after the block body ran) - that is the instant
+        that distinguishes an unlink kept inside the transaction body (already
+        gone) from one moved after the commit (still present, and leaked on any
+        path that does not reach it).
+        """
+
+        class _FailingBegin:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                observed["file_exists_at_commit"] = task_file.exists()
+                raise RuntimeError("main transaction commit failed")
+
+        session = MagicMock()
+        session.execute = AsyncMock()
+        session.begin = lambda: _FailingBegin()
+        return session
+
+    @staticmethod
+    def _successful_session() -> MagicMock:
+        """A mock session whose ``begin()`` block commits normally."""
+        from contextlib import asynccontextmanager
+
+        session = MagicMock()
+        session.execute = AsyncMock()
+
+        @asynccontextmanager
+        async def ok_begin():
+            yield
+
+        session.begin = ok_begin
+        return session
+
+    @pytest.mark.asyncio
+    async def test_rolled_back_main_transaction_leaves_no_leaked_file_and_no_secondary_failure(
+        self, tmp_path
+    ):
+        """The early commit succeeds, the main commit fails, no file is left."""
+        import polars as pl
+
+        import mkobi.workers.data_worker as data_worker
+        from mkobi.models.enums import ProcessingStatus
+        from mkobi.workers.data_worker import CSVLoader
+
+        task_id = uuid4()
+        task_file = tmp_path / f"{task_id}.csv"
+        task_file.write_bytes(b"category,sales\n1,\"unclosed quote\n")
+
+        original_helper = data_worker._update_processing_log_status
+        status_calls: list[dict[str, Any]] = []
+        observed: dict[str, Any] = {}
+
+        async def spy_helper(**kwargs):
+            """Record every status write, then delegate to the real helper."""
+            status_calls.append(kwargs)
+            return await original_helper(**kwargs)
+
+        main_session = self._session_with_failing_commit(observed, task_file)
+        # get_session is opened once per own-session status write: the early
+        # PROCESSING announcement, the main transaction, then the compensation's
+        # FAILED report. Only the main transaction's session fails to commit.
+        sessions = [
+            self._successful_session(),
+            main_session,
+            self._successful_session(),
+        ]
+
+        @asynccontextmanager
+        async def counting_get_session():
+            yield sessions.pop(0)
+
+        valid_frame = pl.DataFrame({"category": ["a"], "sales": [1]})
+        store_mock = AsyncMock(return_value=None)
+
+        raised: BaseException | None = None
+        with patch(
+            "mkobi.workers.data_worker._update_processing_log_status", new=spy_helper
+        ), patch(
+            "mkobi.workers.data_worker._store_aggregates", new=store_mock
+        ), patch(
+            "mkobi.workers.data_worker.get_session", new=counting_get_session
+        ), patch(
+            "mkobi.workers.data_worker.acquire_dashboard_rebuild_lock",
+            new=AsyncMock(),
+        ), patch.object(
+            CSVLoader, "load_csv", return_value=valid_frame
+        ):
+            try:
+                await data_worker._process_csv_file_async(
+                    file_path_str=str(task_file),
+                    task_id=str(task_id),
+                    dashboard_id_str="00000000-0000-0000-0000-000000000000",
+                    processing_config_dict=None,
+                    mode="overwrite",
+                    db_session=None,
+                )
+            except BaseException as exc:  # noqa: BLE001 - asserted below
+                raised = exc
+
+        # The original commit failure propagates; the compensation raised nothing
+        # of its own (a secondary failure would replace it here).
+        assert isinstance(raised, RuntimeError)
+        assert "main transaction commit failed" in str(raised)
+
+        # The early PROCESSING write carries no session argument (own transaction).
+        processing_writes = [
+            call for call in status_calls if call.get("status") == ProcessingStatus.PROCESSING
+        ]
+        assert len(processing_writes) == 1
+        assert "session" not in processing_writes[0]
+
+        # Exactly one FAILED write, on a session the helper opened (no argument).
+        failed_writes = [
+            call for call in status_calls if call.get("status") == ProcessingStatus.FAILED
+        ]
+        assert len(failed_writes) == 1
+        assert "session" not in failed_writes[0]
+
+        # The unlink ran inside the transaction body: the file was already gone
+        # when the main transaction failed to commit, and the compensation's own
+        # unlink was therefore a no-op. Moving the unlink after the commit would
+        # leave the file present at this instant.
+        assert observed.get("file_exists_at_commit") is False
+        assert list(tmp_path.glob("*.csv*")) == []
