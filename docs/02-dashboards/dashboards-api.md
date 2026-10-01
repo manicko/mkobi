@@ -775,6 +775,7 @@ Admins can grant, list, and revoke user access to a dashboard through dedicated 
 
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
+| `200`  | A grant for this `(user_id, dashboard_id)` already exists — idempotent no-op | `Access granted` (same body as a first grant) |
 | `403`  | Caller is not admin          | Forbidden                    |
 | `404`  | Dashboard not found          | `Dashboard not found`        |
 | `422`  | dashboard_id mismatch        | `dashboard_id in body doesn't match URL` |

@@ -9,6 +9,8 @@ from uuid import UUID
 from typing import cast
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import Insert as PGInsert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +19,32 @@ from mkobi.db.models import dashboard as dashboard_model
 from mkobi.interfaces.repository_interfaces import IAccessRepository
 
 logger = logging.getLogger(__name__)
+
+
+def _conflict_tolerant_access_insert(
+    user_id: UUID, dashboard_id: UUID, permission: str
+) -> PGInsert:
+    """Build the conflict-tolerant INSERT for one dashboard_access row.
+
+    The composite primary key on (user_id, dashboard_id) is what enforces
+    "one grant per pair"; naming those two columns in index_elements means the
+    conflict action applies to *that* constraint only, so any other integrity
+    violation still raises instead of being silently absorbed.
+    """
+    return (
+        pg_insert(access_model.DashboardAccess)
+        .values(
+            user_id=user_id,
+            dashboard_id=dashboard_id,
+            permission=permission,
+        )
+        .on_conflict_do_nothing(index_elements=["user_id", "dashboard_id"])
+        .returning(
+            access_model.DashboardAccess.user_id,
+            access_model.DashboardAccess.dashboard_id,
+            access_model.DashboardAccess.permission,
+        )
+    )
 
 
 class AccessRepository(IAccessRepository):
@@ -44,9 +72,15 @@ class AccessRepository(IAccessRepository):
             db: Async database session.
 
         Returns:
-            Access model or None on error.
+            DashboardAccess representing the desired state: the row this call
+            inserted, or the existing row when the pair already had one. A
+            re-grant is a no-op that writes nothing and returns the existing
+            row unchanged. ``None`` only when no row could be read back.
         """
         try:
+            # Fast path only, never the correctness mechanism: a concurrent
+            # winner's uncommitted row is invisible to this SELECT, which is
+            # exactly the window that used to yield a unique-violation 500.
             result = await db.execute(
                 select(access_model.DashboardAccess).where(
                     access_model.DashboardAccess.user_id == user_id,
@@ -62,21 +96,48 @@ class AccessRepository(IAccessRepository):
                 )
                 return cast(access_model.DashboardAccess | None, existing)
 
-            access_obj = access_model.DashboardAccess(
-                user_id=user_id,
-                dashboard_id=dashboard_id,
-                permission=permission,
+            insert_result = await db.execute(
+                _conflict_tolerant_access_insert(user_id, dashboard_id, permission)
             )
-            db.add(access_obj)
-            await db.flush()
-            await db.refresh(access_obj)
-            logger.info(
-                "Access granted: user_id=%s, dashboard_id=%s, permission=%s",
-                user_id,
-                dashboard_id,
-                permission,
+            inserted = insert_result.first()
+            if inserted is not None:
+                logger.info(
+                    "Access granted: user_id=%s, dashboard_id=%s, permission=%s",
+                    user_id,
+                    dashboard_id,
+                    permission,
+                )
+            else:
+                # The conflict was absorbed, so our INSERT produced no row.
+                # PostgreSQL runs the conflict action only once the conflicting
+                # transaction has ended: had the winner rolled back, our INSERT
+                # would have proceeded and RETURNING would have yielded a row.
+                # Reaching this branch therefore means the winner committed, and
+                # under READ COMMITTED the next statement takes a fresh snapshot
+                # and sees it.
+                logger.warning(
+                    "Access already exists: user_id=%s, dashboard_id=%s",
+                    user_id,
+                    dashboard_id,
+                )
+
+            # Re-read on both branches so the method has one return type: a
+            # DashboardAccess, whether this call inserted it or absorbed it.
+            reread = await db.execute(
+                select(access_model.DashboardAccess).where(
+                    access_model.DashboardAccess.user_id == user_id,
+                    access_model.DashboardAccess.dashboard_id == dashboard_id,
+                )
             )
-            return cast(access_model.DashboardAccess | None, access_obj)
+            persisted = reread.scalar_one_or_none()
+            if persisted is None:
+                logger.error(
+                    "Access grant could not be read back: user_id=%s, dashboard_id=%s",
+                    user_id,
+                    dashboard_id,
+                )
+                return None
+            return cast(access_model.DashboardAccess | None, persisted)
         except SQLAlchemyError as e:
             logger.error(
                 "Error granting access user_id=%s, dashboard_id=%s: %s",
