@@ -2,14 +2,59 @@
 
 import uuid
 
+import pytest
 from fastapi import status
 from httpx import AsyncClient
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.core.security import create_access_token, hash_password
+from mkobi.db.models import dashboard as dashboard_model
+from mkobi.db.models import graphs as graph_model
 from mkobi.db.repositories.user_repo import UserRepository
 from mkobi.db.repositories.graph_repo import GraphRepository
-from mkobi.models.enums import GraphType, UserRole, DashboardPermission
+from mkobi.models.enums import ErrorCode, GraphType, UserRole, DashboardPermission
+
+
+async def _delete_committed_graph(
+    async_session_maker, dashboard_id: uuid.UUID, name: str
+) -> None:
+    """Delete rows a create request in this suite committed.
+
+    A production commit in this harness is durable and the fixture's teardown
+    rollback cannot undo it, so any test that creates a graph must delete it
+    afterwards. Graphs are deleted before their dashboard to respect the
+    foreign key.
+    """
+    async with async_session_maker() as session:
+        await session.execute(
+            delete(graph_model.Graph).where(
+                graph_model.Graph.dashboard_id == dashboard_id,
+                graph_model.Graph.name == name,
+            )
+        )
+        await session.execute(
+            delete(dashboard_model.Dashboard).where(
+                dashboard_model.Dashboard.id == dashboard_id
+            )
+        )
+        await session.commit()
+
+
+async def _count_committed_graphs(
+    async_session_maker, dashboard_id: uuid.UUID, name: str
+) -> int:
+    """Count graph rows for a pair through a session independent of the request's."""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(func.count())
+            .select_from(graph_model.Graph)
+            .where(
+                graph_model.Graph.dashboard_id == dashboard_id,
+                graph_model.Graph.name == name,
+            )
+        )
+        return result.scalar_one()
 
 
 class TestGraphsAPI:
@@ -537,3 +582,155 @@ class TestGraphsAPI:
 
         response = await authenticated_client.delete(f"/graphs/{graph.id}")
         assert response.status_code == status.HTTP_204_NO_CONTENT
+
+    async def test_create_graph_duplicate_name_returns_409(
+        self,
+        async_db_session: AsyncSession,
+        async_session_maker,
+        authenticated_client: AsyncClient,
+    ) -> None:
+        """A duplicate name on the global create route answers 409, not 500 or 422."""
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+
+        dashboard_repo = DashboardRepository()
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"dup-graph-dashboard-{uuid.uuid4().hex[:8]}",
+            config={"graph_types": ["bar"]},
+        )
+        await async_db_session.flush()
+        # Capture the id now: the request commits, which expires the ORM
+        # instance, and reading it afterwards would trigger a lazy load.
+        dashboard_id = dashboard.id
+        name = f"dup-graph-{uuid.uuid4().hex[:8]}"
+        body = {
+            "dashboard_id": str(dashboard_id),
+            "name": name,
+            "type": "bar",
+            "config": {"xaxis": {"title": "X"}},
+            "dimensions": ["category"],
+            "metrics": ["sales"],
+        }
+
+        try:
+            first = await authenticated_client.post("/graphs/", json=body)
+            assert first.status_code == status.HTTP_201_CREATED
+            first_body = first.json()
+            assert first_body["name"] == name
+            assert first_body["type"] == GraphType.BAR
+            assert first_body["dashboard_id"] == str(dashboard_id)
+            assert first_body["id"]
+
+            second = await authenticated_client.post("/graphs/", json=body)
+            assert second.status_code == status.HTTP_409_CONFLICT
+            assert second.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR
+            assert second.status_code != status.HTTP_422_UNPROCESSABLE_CONTENT
+            conflict = second.json()
+            assert conflict["code"] == ErrorCode.DUPLICATE_RESOURCE.value
+            assert conflict["detail"] == "Conflict: graph creation failed"
+
+            count = await _count_committed_graphs(
+                async_session_maker, dashboard_id, name
+            )
+            assert count == 1
+        finally:
+            await _delete_committed_graph(async_session_maker, dashboard_id, name)
+
+    async def test_create_dashboard_graph_duplicate_name_returns_409(
+        self,
+        async_db_session: AsyncSession,
+        async_session_maker,
+        authenticated_client: AsyncClient,
+    ) -> None:
+        """The dashboard-scoped route answers a duplicate name with the same 409.
+
+        This is an anti-drift pin: it asserts the surviving sibling route's
+        contract matches the global route's status, code and detail, so the two
+        surfaces cannot diverge again silently. It does not discriminate the fix
+        -- it passes before and after the change by design.
+        """
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+
+        dashboard_repo = DashboardRepository()
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"dup-scoped-dashboard-{uuid.uuid4().hex[:8]}",
+            config={"graph_types": ["bar"]},
+        )
+        await async_db_session.flush()
+        dashboard_id = dashboard.id
+        name = f"dup-scoped-graph-{uuid.uuid4().hex[:8]}"
+        body = {
+            "dashboard_id": str(dashboard_id),
+            "name": name,
+            "type": "bar",
+            "config": {"xaxis": {"title": "X"}},
+            "dimensions": ["category"],
+            "metrics": ["sales"],
+        }
+        path = f"/dashboards/{dashboard_id}/graphs"
+
+        try:
+            first = await authenticated_client.post(path, json=body)
+            assert first.status_code == status.HTTP_201_CREATED
+
+            second = await authenticated_client.post(path, json=body)
+            assert second.status_code == status.HTTP_409_CONFLICT
+            assert second.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR
+            assert second.status_code != status.HTTP_422_UNPROCESSABLE_CONTENT
+            conflict = second.json()
+            assert conflict["code"] == ErrorCode.DUPLICATE_RESOURCE.value
+            assert conflict["detail"] == "Conflict: graph creation failed"
+
+            count = await _count_committed_graphs(
+                async_session_maker, dashboard_id, name
+            )
+            assert count == 1
+        finally:
+            await _delete_committed_graph(async_session_maker, dashboard_id, name)
+
+    @pytest.mark.parametrize(
+        "path_template",
+        ["/graphs/", "/dashboards/{dashboard_id}/graphs"],
+    )
+    async def test_graph_name_conflict_is_not_500_on_any_create_route(
+        self,
+        async_db_session: AsyncSession,
+        async_session_maker,
+        authenticated_client: AsyncClient,
+        path_template: str,
+    ) -> None:
+        """A name conflict never surfaces as 500 on either create route."""
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+
+        # The unique index is per (dashboard_id, name), so each parametrised
+        # case needs its own dashboard.
+        dashboard_repo = DashboardRepository()
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"conflict-dashboard-{uuid.uuid4().hex[:8]}",
+            config={"graph_types": ["bar"]},
+        )
+        await async_db_session.flush()
+        dashboard_id = dashboard.id
+        name = f"conflict-graph-{uuid.uuid4().hex[:8]}"
+        body = {
+            "dashboard_id": str(dashboard_id),
+            "name": name,
+            "type": "bar",
+            "config": {"xaxis": {"title": "X"}},
+            "dimensions": ["category"],
+            "metrics": ["sales"],
+        }
+        path = path_template.format(dashboard_id=dashboard_id)
+
+        try:
+            first = await authenticated_client.post(path, json=body)
+            assert first.status_code == status.HTTP_201_CREATED
+
+            second = await authenticated_client.post(path, json=body)
+            assert second.status_code == status.HTTP_409_CONFLICT
+            assert second.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR
+            assert second.json()["code"] == ErrorCode.DUPLICATE_RESOURCE.value
+        finally:
+            await _delete_committed_graph(async_session_maker, dashboard_id, name)

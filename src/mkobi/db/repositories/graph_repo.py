@@ -130,7 +130,7 @@ class GraphRepository(IGraphRepository):
             logger.info("Graph created: id=%s, name=%s", graph_obj.id, graph_obj.name)
             return cast(graph_model.Graph | None, graph_obj)
         except SQLAlchemyError as e:
-            logger.error("Error creating graph: %s", e)
+            logger.error("Error creating graph: %s", e, exc_info=True)
             raise
 
     async def update(

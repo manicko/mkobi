@@ -11,6 +11,7 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.api.deps import (
@@ -130,6 +131,20 @@ async def create_graph_endpoint(
             code=ErrorCode.VALIDATION_ERROR,
             detail=str(e),
         ) from e
+    except IntegrityError:
+        # A flush-time integrity error leaves the transaction aborted, so the
+        # next statement on this session would raise PendingRollbackError.
+        await db.rollback()
+        logger.error(
+            "Integrity error creating graph name=%s dashboard_id=%s",
+            graph.name,
+            graph.dashboard_id,
+            exc_info=True,
+        )
+        raise AppException(
+            code=ErrorCode.DUPLICATE_RESOURCE,
+            detail="Conflict: graph creation failed",
+        ) from None
     except Exception as e:
         await db.rollback()
         logger.error("Error creating graph name=%s: %s", graph.name, e)

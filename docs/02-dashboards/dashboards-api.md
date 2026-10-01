@@ -419,7 +419,7 @@ Admin only.
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
 | `403`  | Caller is not admin          | Forbidden                    |
-| `422`  | Duplicate name in dashboard  | Validation error             |
+| `409`  | Duplicate name in dashboard  | `Conflict: graph creation failed` |
 | `422`  | Invalid graph type           | Validation error             |
 
 ---
