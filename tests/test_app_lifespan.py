@@ -141,6 +141,85 @@ class TestLifespanLeaseGuard:
         dispose.assert_awaited_once()
 
 
+class TestLifespanTeardownFailIsolation:
+    """One failing teardown step must not skip the remaining releases."""
+
+    @pytest.mark.asyncio
+    async def test_lease_release_failure_still_disposes_and_shuts_down(self):
+        """A raising lease.release() must not skip dispose_engine or starter.shutdown.
+
+        ``ReconcilerLease.release`` swallows its own Redis errors, so this can
+        only be raised from the lease call boundary itself. The existing
+        boot-time-unreachable-lease test short-circuits ``release()`` before any
+        Redis call, so it does not cover this path.
+        """
+        app = MagicMock()
+        starter = MagicMock()
+        starter.startup = AsyncMock()
+        starter.shutdown = AsyncMock()
+
+        dispose = AsyncMock()
+
+        with patch.object(app_module, "DatabaseStarter", return_value=starter):
+            with patch.object(
+                app_module, "get_async_redis_client", return_value=_UnreachableRedis()
+            ):
+                with patch.object(
+                    app_module.ReconcilerLease,
+                    "release",
+                    new=AsyncMock(side_effect=RuntimeError("release blew up")),
+                ):
+                    with patch.object(app_module, "dispose_engine", new=dispose):
+                        with patch.object(
+                            app_module,
+                            "mark_orphaned_uploaded_logs_failed",
+                            new=AsyncMock(),
+                        ):
+                            with patch.object(
+                                app_module,
+                                "start_stale_processing_cleanup_task",
+                                new=AsyncMock(return_value=None),
+                            ):
+                                async with app_module.lifespan(app):
+                                    pass
+
+        # The release raised, yet both later releases still ran.
+        dispose.assert_awaited_once()
+        starter.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_engine_dispose_failure_still_shuts_down_starter(self):
+        """A raising dispose_engine() must not skip starter.shutdown()."""
+        app = MagicMock()
+        starter = MagicMock()
+        starter.startup = AsyncMock()
+        starter.shutdown = AsyncMock()
+
+        with patch.object(app_module, "DatabaseStarter", return_value=starter):
+            with patch.object(
+                app_module, "get_async_redis_client", return_value=_UnreachableRedis()
+            ):
+                with patch.object(
+                    app_module,
+                    "dispose_engine",
+                    new=AsyncMock(side_effect=RuntimeError("dispose blew up")),
+                ):
+                    with patch.object(
+                        app_module,
+                        "mark_orphaned_uploaded_logs_failed",
+                        new=AsyncMock(),
+                    ):
+                        with patch.object(
+                            app_module,
+                            "start_stale_processing_cleanup_task",
+                            new=AsyncMock(return_value=None),
+                        ):
+                            async with app_module.lifespan(app):
+                                pass
+
+        starter.shutdown.assert_awaited_once()
+
+
 class _UnreachableRedis:
     """Async Redis double whose every command raises, modelling an outage."""
 

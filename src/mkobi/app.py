@@ -179,6 +179,10 @@ async def lifespan(app: FastAPI) -> Any:
     finally:
         logger.info("Shutting down application...")
 
+        # Every teardown step below runs to completion even if an earlier one
+        # fails: a single failure must not skip the remaining releases. Each
+        # step is wrapped and logged, never swallowed silently.
+
         # Cancel background cleanup task
         if cleanup_task is not None and not cleanup_task.done():
             cleanup_task.cancel()
@@ -186,11 +190,14 @@ async def lifespan(app: FastAPI) -> Any:
                 await cleanup_task
             except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                logger.warning("Cleanup task raised during shutdown: %s", e)
             logger.info("Stale processing cleanup task cancelled")
 
         # Best-effort, owner-checked lease release so a restart does not wait a
-        # full TTL. Wrapped so no Redis error can break the finally chain and
-        # skip the engine disposal and starter shutdown below.
+        # full TTL. The owning lease closes its own Redis client, so both the
+        # release and the client close cannot break the finally chain and skip
+        # the engine disposal and starter shutdown below.
         if lease is not None:
             try:
                 released = await lease.release()
@@ -198,16 +205,28 @@ async def lifespan(app: FastAPI) -> Any:
                     logger.info("Released reconciler lease")
             except Exception as e:
                 logger.warning("Failed to release reconciler lease: %s", e)
-        if lease_client is not None:
+            try:
+                await lease.aclose()
+            except Exception as e:
+                logger.warning("Failed to close reconciler lease client: %s", e)
+        elif lease_client is not None:
+            # A lease was never constructed (a failure between client creation
+            # and lease construction): close the bare client directly.
             try:
                 await lease_client.aclose()
             except Exception as e:
                 logger.warning("Failed to close reconciler lease client: %s", e)
 
         # Dispose the main application engine
-        await dispose_engine()
+        try:
+            await dispose_engine()
+        except Exception as e:
+            logger.warning("Failed to dispose database engine: %s", e)
 
-        await starter.shutdown()
+        try:
+            await starter.shutdown()
+        except Exception as e:
+            logger.warning("Failed to shut down database starter: %s", e)
 
 
 def create_app() -> FastAPI:
