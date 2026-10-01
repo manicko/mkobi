@@ -123,13 +123,27 @@ class IAuthService(abc.ABC):
 
 
 class IUserService(abc.ABC):
-    """User service interface."""
+    """User service interface.
+
+    Transaction ownership: write methods own their unit of work. On success a
+    write method commits, so the write is durable when the method returns; on
+    failure nothing is committed and the session is left usable. A method
+    returning ``None`` because the entity does not exist commits nothing. Read
+    methods never commit. Callers must not add a commit of their own, and must
+    not assume the session teardown is a transaction boundary.
+    """
 
     @abc.abstractmethod
     async def create_user(
         self, email: str, password: str, role: UserRole, db: AsyncSession
     ) -> UserRead:
-        """Create new user."""
+        """Create new user.
+
+        On success commits, and only then returns, so the user row is durable
+        when this method returns. A duplicate email — whether caught by the
+        pre-check or by the users.email unique index — raises ``ValueError`` and
+        therefore maps to 422.
+        """
         pass
 
     @abc.abstractmethod
@@ -146,19 +160,34 @@ class IUserService(abc.ABC):
     async def update_user_role(
         self, user_id: UUID, role: UserRole, db: AsyncSession
     ) -> UserRead | None:
-        """Update user role."""
+        """Update user role.
+
+        On success commits, and only then returns, so the new role is durable
+        when this method returns. Returns ``None`` without committing when the
+        user does not exist.
+        """
         pass
 
     @abc.abstractmethod
     async def delete_user(self, user_id: UUID, db: AsyncSession) -> bool:
-        """Delete user."""
+        """Delete user.
+
+        On success commits, and only then returns, so the deletion is durable
+        when this method returns. Returns ``False`` without committing when the
+        user does not exist.
+        """
         pass
 
     @abc.abstractmethod
     async def update_user_active_status(
         self, user_id: UUID, is_active: bool, db: AsyncSession
     ) -> UserRead | None:
-        """Update user active status (deactivate/reactivate user)."""
+        """Update user active status (deactivate/reactivate user).
+
+        On success commits, and only then returns, so the new active status is
+        durable when this method returns. Returns ``None`` without committing
+        when the user does not exist.
+        """
         pass
 
     @abc.abstractmethod

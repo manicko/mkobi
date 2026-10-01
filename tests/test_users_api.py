@@ -3,10 +3,30 @@
 import uuid
 from fastapi import status
 from httpx import AsyncClient
+from sqlalchemy import delete, select
 
 from mkobi.core.security import hash_password
+from mkobi.db.models import user as user_model
 from mkobi.db.repositories.user_repo import UserRepository
 from mkobi.models.enums import UserRole
+
+
+async def _read_role_in_new_session(async_session_maker, user_id: uuid.UUID) -> UserRole | None:
+    """Re-read a user's role through a second session, independent of the request's."""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(user_model.User.role).where(user_model.User.id == user_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def _delete_committed_email(async_session_maker, email: str) -> None:
+    """Delete a row committed by this test; a production commit is durable here."""
+    async with async_session_maker() as session:
+        await session.execute(
+            delete(user_model.User).where(user_model.User.email == email)
+        )
+        await session.commit()
 
 
 class TestGetProfile:
@@ -40,6 +60,49 @@ class TestGetProfile:
         """Test getting profile without token."""
         response = await async_client.get("/auth/me")
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+class TestUpdateUserRoleDeprecatedPut:
+    """Tests for the deprecated PUT /users/{user_id} surface.
+
+    This endpoint reaches UserService.update_user_role and had no test caller at
+    all; it is the one of the four TXN-001 endpoints fixed without a test change.
+    """
+
+    async def test_deprecated_put_updates_role_durably(
+        self,
+        async_client: AsyncClient,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
+    ) -> None:
+        """PUT /users/{user_id} returns the updated role and commits it."""
+        repo = UserRepository()
+        target_email = f"deprecated_put_{uuid.uuid4().hex[:8]}@example.com"
+        target = await repo.create(
+            db=async_db_session,
+            email=target_email,
+            password_hash=hash_password("TargetPass123!"),
+            role=UserRole.VIEWER,
+        )
+        await async_db_session.commit()
+
+        try:
+            response = await async_client.put(
+                f"/users/{target.id}",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={"role": UserRole.EDITOR},
+            )
+            assert response.status_code == status.HTTP_200_OK
+            assert response.json()["role"] == UserRole.EDITOR
+
+            # Committed, not merely flushed.
+            committed_role = await _read_role_in_new_session(
+                async_session_maker, target.id
+            )
+            assert committed_role == UserRole.EDITOR
+        finally:
+            await _delete_committed_email(async_session_maker, target_email)
 
 
 class TestDeleteAccount:

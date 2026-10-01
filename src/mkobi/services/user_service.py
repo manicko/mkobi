@@ -12,6 +12,7 @@ import logging
 from uuid import UUID
 from typing import cast
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.core.security import hash_password
@@ -164,7 +165,7 @@ class UserService(IUserService):
             db: Async database session.
 
         Returns:
-            Created user data.
+            Created user data. The row is committed before this method returns.
 
         Raises:
             ValueError: If email is incorrect or email is already taken.
@@ -183,15 +184,32 @@ class UserService(IUserService):
         logger.info("Password hashed successfully for user: %s", email)
 
         # Create user through repository
-        user_obj = await self.user_repo.create(
-            db=db,
-            email=email,
-            password_hash=password_hash,
-            role=role,
-        )
+        try:
+            user_obj = await self.user_repo.create(
+                db=db,
+                email=email,
+                password_hash=password_hash,
+                role=role,
+            )
+        except IntegrityError:
+            # The pre-check above cannot see a concurrent insert. A unique-index
+            # conflict on users.email is only raised once the competing
+            # transaction has committed, so the winner is visible on the re-read.
+            # Roll back first: the aborted transaction must not poison the session.
+            await db.rollback()
+            winner = await self.user_repo.get_by_email(email, db)
+            if winner is not None:
+                logger.warning(
+                    "Unique-index conflict on users.email: %s", email
+                )
+                raise ValueError(f"User with email '{email}' already exists") from None
+            # Not the duplicate-email race: surface the driver error unchanged.
+            raise
 
         if user_obj is None:
             raise ValueError("Failed to create user")
+
+        await db.commit()
 
         logger.info(
             "User created successfully: id=%s, email=%s, role=%s",
@@ -217,7 +235,8 @@ class UserService(IUserService):
             db: Async database session.
 
         Returns:
-            UserRead of updated user or None if user not found.
+            UserRead of updated user or None if user not found. The new role is
+            committed before the method returns on the success path.
 
         Raises:
             ValueError: If role is invalid.
@@ -234,6 +253,7 @@ class UserService(IUserService):
         updated_user = await self.user_repo.update(id=user_id, db=db, role=role)
 
         if updated_user:
+            await db.commit()
             logger.info(
                 "User role updated: id=%s, old_role=%s, new_role=%s",
                 user_id,
@@ -256,7 +276,8 @@ class UserService(IUserService):
             db: Async database session.
 
         Returns:
-            UserRead of updated user or None if user not found.
+            UserRead of updated user or None if user not found. The new active
+            status is committed before the method returns on the success path.
 
         Raises:
             SQLAlchemyError: On database error.
@@ -274,6 +295,7 @@ class UserService(IUserService):
         )
 
         if updated_user:
+            await db.commit()
             logger.info(
                 "User active status updated: id=%s, is_active=%s",
                 user_id,

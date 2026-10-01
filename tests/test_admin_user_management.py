@@ -10,12 +10,66 @@ Tests cover:
 """
 
 import uuid
+
 from fastapi import status
 from httpx import AsyncClient
+from sqlalchemy import delete, select
 
 from mkobi.core.security import create_access_token, hash_password
+from mkobi.db.models import user as user_model
 from mkobi.db.repositories.user_repo import UserRepository
 from mkobi.models.enums import UserRole
+
+
+async def _read_is_active_in_new_session(
+    async_session_maker, user_id: uuid.UUID
+) -> bool | None:
+    """Re-read is_active through a second session, independent of the request's.
+
+    The request session is the test session (conftest overrides the dependency),
+    so a re-read through it proves nothing. A second session sees only committed
+    rows, which is what distinguishes a durable write from a flushed one.
+    """
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(user_model.User.is_active).where(user_model.User.id == user_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def _read_role_in_new_session(
+    async_session_maker, user_id: uuid.UUID
+) -> UserRole | None:
+    """Re-read role through a second session, independent of the request's."""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(user_model.User.role).where(user_model.User.id == user_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def _read_email_in_new_session(
+    async_session_maker, email: str
+) -> uuid.UUID | None:
+    """Return a committed row's id for an email, or None, from a second session."""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(user_model.User.id).where(user_model.User.email == email)
+        )
+        return result.scalar_one_or_none()
+
+
+async def _delete_committed_email(async_session_maker, email: str) -> None:
+    """Delete a row committed by a B1 test.
+
+    A production commit in this harness is durable and the fixture's teardown
+    rollback cannot undo it, so any test that commits must clean up after itself.
+    """
+    async with async_session_maker() as session:
+        await session.execute(
+            delete(user_model.User).where(user_model.User.email == email)
+        )
+        await session.commit()
 
 
 class TestListUsers:
@@ -110,31 +164,168 @@ class TestCreateUser:
         assert data["role"] == UserRole.EDITOR
 
     async def test_create_user_duplicate_email(
-        self, async_client: AsyncClient, test_user: dict
+        self,
+        async_client: AsyncClient,
+        async_session_maker,
+        test_user: dict,
     ) -> None:
         """Test creating user with existing email returns validation error."""
-        # First create a user
-        await async_client.post(
-            "/users/",
-            headers={"Authorization": f"Bearer {test_user['token']}"},
-            json={
-                "email": "duplicate_test2@example.com",
-                "password": "Pass123!",
-                "role": UserRole.VIEWER,
-            },
-        )
+        email = f"duplicate_{uuid.uuid4().hex[:8]}@example.com"
+        try:
+            # First create a user. Its response was previously discarded; assert it
+            # actually committed, or the second create could pass having created
+            # nothing.
+            first = await async_client.post(
+                "/users/",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={
+                    "email": email,
+                    "password": "Pass123!",
+                    "role": UserRole.VIEWER,
+                },
+            )
+            assert first.status_code == status.HTTP_201_CREATED
 
-        # Try to create another with same email - returns 422 because ValueError is raised
-        response = await async_client.post(
-            "/users/",
-            headers={"Authorization": f"Bearer {test_user['token']}"},
-            json={
-                "email": "duplicate_test2@example.com",
-                "password": "AnotherPass123!",
-                "role": UserRole.VIEWER,
-            },
+            committed_id = await _read_email_in_new_session(async_session_maker, email)
+            assert committed_id is not None, "first create did not commit"
+
+            # Try to create another with same email - returns 422 because ValueError
+            # is raised (D-1: duplicate email stays on the 422 path).
+            response = await async_client.post(
+                "/users/",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={
+                    "email": email,
+                    "password": "AnotherPass123!",
+                    "role": UserRole.VIEWER,
+                },
+            )
+            assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        finally:
+            await _delete_committed_email(async_session_maker, email)
+
+    async def test_create_user_duplicate_email_race_returns_422(
+        self,
+        async_client: AsyncClient,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
+    ) -> None:
+        """An IntegrityError from the unique index surfaces as 422, not 500.
+
+        The repository double returns None from the *first* get_by_email call only,
+        defeating the application-level pre-check so the real flush hits the unique
+        index. Every other call delegates to the real repository.
+        """
+        from mkobi.api.deps import get_user_service
+        from mkobi.main import app
+        from mkobi.services.user_service import UserService
+
+        email = f"race_{uuid.uuid4().hex[:8]}@example.com"
+        repo = UserRepository()
+
+        # Seed the winning row so the insert loses the race.
+        await repo.create(
+            db=async_db_session,
+            email=email,
+            password_hash=hash_password("WinnerPass123!"),
+            role=UserRole.VIEWER,
         )
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        await async_db_session.commit()
+
+        state = {"pre_checks": 0}
+        real_get_by_email = repo.get_by_email
+
+        async def _defeat_precheck_once(target_email: str, db):
+            if target_email == email:
+                state["pre_checks"] += 1
+                if state["pre_checks"] == 1:
+                    return None
+            return await real_get_by_email(target_email, db)
+
+        repo.get_by_email = _defeat_precheck_once  # type: ignore[method-assign]
+        service = UserService(repo)
+        app.dependency_overrides[get_user_service] = lambda: service
+
+        try:
+            response = await async_client.post(
+                "/users/",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={
+                    "email": email,
+                    "password": "LoserPass123!",
+                    "role": UserRole.VIEWER,
+                },
+            )
+
+            assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+            assert response.json()["code"] == "VALIDATION_ERROR"
+
+            # Exactly one row exists: the rollback discarded the failed insert.
+            async with async_session_maker() as session:
+                rows = await session.execute(
+                    select(user_model.User.id).where(user_model.User.email == email)
+                )
+                assert len(list(rows.scalars().all())) == 1
+
+            # The session must remain usable: the classifier's rollback is what
+            # prevents PendingRollbackError poisoning every later test.
+            probe = await async_db_session.execute(select(user_model.User.id))
+            _ = probe.scalars().all()
+        finally:
+            app.dependency_overrides.pop(get_user_service, None)
+            await _delete_committed_email(async_session_maker, email)
+
+    async def test_create_user_non_duplicate_integrity_error_returns_500(
+        self,
+        async_client: AsyncClient,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
+    ) -> None:
+        """An IntegrityError that is not the duplicate-email race still returns 500.
+
+        Same double, but the re-read also returns None, so the classifier re-raises
+        the driver error unchanged.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        from mkobi.api.deps import get_user_service
+        from mkobi.main import app
+        from mkobi.services.user_service import UserService
+
+        email = f"nondz_{uuid.uuid4().hex[:8]}@example.com"
+        repo = UserRepository()
+
+        async def _always_none(target_email: str, db):
+            if target_email == email:
+                return None
+            return await real_get_by_email(target_email, db)
+
+        async def _raise_integrity_error(**kwargs):
+            raise IntegrityError("stmt", {}, Exception("not a unique conflict"))
+
+        real_get_by_email = repo.get_by_email
+        repo.get_by_email = _always_none  # type: ignore[method-assign]
+        repo.create = _raise_integrity_error  # type: ignore[method-assign]
+        service = UserService(repo)
+        app.dependency_overrides[get_user_service] = lambda: service
+
+        try:
+            response = await async_client.post(
+                "/users/",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={
+                    "email": email,
+                    "password": "Pass123!",
+                    "role": UserRole.VIEWER,
+                },
+            )
+
+            assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+            assert response.json()["code"] == "INTERNAL_ERROR"
+        finally:
+            app.dependency_overrides.pop(get_user_service, None)
 
     async def test_create_user_non_admin_forbidden(
         self, async_client: AsyncClient, async_db_session
@@ -171,50 +362,77 @@ class TestUpdateUserRole:
     """Tests for PATCH /admin/users/{user_id}/role endpoint."""
 
     async def test_update_user_role_admin(
-        self, async_client: AsyncClient, async_db_session, test_user: dict
+        self,
+        async_client: AsyncClient,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
     ) -> None:
         """Test admin can update user role."""
         user_repo = UserRepository()
         # Create a viewer user
+        target_email = f"role_target_{uuid.uuid4().hex[:8]}@example.com"
         target_user = await user_repo.create(
             db=async_db_session,
-            email="role_update_target2@example.com",
+            email=target_email,
             password_hash=hash_password("TargetPass123!"),
             role=UserRole.VIEWER,
         )
         await async_db_session.commit()
 
-        response = await async_client.patch(
-            f"/admin/users/{target_user.id}/role",
-            headers={"Authorization": f"Bearer {test_user['token']}"},
-            json={"role": UserRole.EDITOR},
-        )
-        assert response.status_code == status.HTTP_200_OK
-        data = response.json()
-        assert data["role"] == UserRole.EDITOR
+        try:
+            response = await async_client.patch(
+                f"/admin/users/{target_user.id}/role",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={"role": UserRole.EDITOR},
+            )
+            assert response.status_code == status.HTTP_200_OK
+            data = response.json()
+            assert data["role"] == UserRole.EDITOR
+
+            # Committed, not merely flushed: a second session must see the new role.
+            committed_role = await _read_role_in_new_session(
+                async_session_maker, target_user.id
+            )
+            assert committed_role == UserRole.EDITOR
+        finally:
+            await _delete_committed_email(async_session_maker, target_email)
 
     async def test_update_user_role_to_admin(
-        self, async_client: AsyncClient, async_db_session, test_user: dict
+        self,
+        async_client: AsyncClient,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
     ) -> None:
         """Test admin can promote user to admin role."""
         user_repo = UserRepository()
         # Create a viewer user
+        target_email = f"promote_{uuid.uuid4().hex[:8]}@example.com"
         target_user = await user_repo.create(
             db=async_db_session,
-            email="promote_to_admin2@example.com",
+            email=target_email,
             password_hash=hash_password("TargetPass123!"),
             role=UserRole.VIEWER,
         )
         await async_db_session.commit()
 
-        response = await async_client.patch(
-            f"/admin/users/{target_user.id}/role",
-            headers={"Authorization": f"Bearer {test_user['token']}"},
-            json={"role": UserRole.ADMIN},
-        )
-        assert response.status_code == status.HTTP_200_OK
-        data = response.json()
-        assert data["role"] == UserRole.ADMIN
+        try:
+            response = await async_client.patch(
+                f"/admin/users/{target_user.id}/role",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={"role": UserRole.ADMIN},
+            )
+            assert response.status_code == status.HTTP_200_OK
+            data = response.json()
+            assert data["role"] == UserRole.ADMIN
+
+            committed_role = await _read_role_in_new_session(
+                async_session_maker, target_user.id
+            )
+            assert committed_role == UserRole.ADMIN
+        finally:
+            await _delete_committed_email(async_session_maker, target_email)
 
     async def test_update_user_role_nonexistent_user(
         self, async_client: AsyncClient, test_user: dict
@@ -268,51 +486,78 @@ class TestDeactivateUser:
     """Tests for PATCH /admin/users/{user_id}/active endpoint."""
 
     async def test_deactivate_user_admin(
-        self, async_client: AsyncClient, async_db_session, test_user: dict
+        self,
+        async_client: AsyncClient,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
     ) -> None:
         """Test admin can deactivate user."""
         user_repo = UserRepository()
         # Create a viewer user
+        target_email = f"deactivate_{uuid.uuid4().hex[:8]}@example.com"
         target_user = await user_repo.create(
             db=async_db_session,
-            email="deactivate_target2@example.com",
+            email=target_email,
             password_hash=hash_password("TargetPass123!"),
             role=UserRole.VIEWER,
         )
         await async_db_session.commit()
 
-        response = await async_client.patch(
-            f"/admin/users/{target_user.id}/active",
-            headers={"Authorization": f"Bearer {test_user['token']}"},
-            json={"is_active": False},
-        )
-        assert response.status_code == status.HTTP_200_OK
-        data = response.json()
-        assert data["is_active"] is False
+        try:
+            response = await async_client.patch(
+                f"/admin/users/{target_user.id}/active",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={"is_active": False},
+            )
+            assert response.status_code == status.HTTP_200_OK
+            data = response.json()
+            assert data["is_active"] is False
+
+            # The deactivation must be durable, not merely flushed.
+            committed_active = await _read_is_active_in_new_session(
+                async_session_maker, target_user.id
+            )
+            assert committed_active is False
+        finally:
+            await _delete_committed_email(async_session_maker, target_email)
 
     async def test_reactivate_user_admin(
-        self, async_client: AsyncClient, async_db_session, test_user: dict
+        self,
+        async_client: AsyncClient,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
     ) -> None:
         """Test admin can reactivate user."""
         user_repo = UserRepository()
         # Create a deactivated user
+        target_email = f"reactivate_{uuid.uuid4().hex[:8]}@example.com"
         target_user = await user_repo.create(
             db=async_db_session,
-            email="reactivate_target2@example.com",
+            email=target_email,
             password_hash=hash_password("TargetPass123!"),
             role=UserRole.VIEWER,
         )
         await user_repo.update(target_user.id, async_db_session, is_active=False)
         await async_db_session.commit()
 
-        response = await async_client.patch(
-            f"/admin/users/{target_user.id}/active",
-            headers={"Authorization": f"Bearer {test_user['token']}"},
-            json={"is_active": True},
-        )
-        assert response.status_code == status.HTTP_200_OK
-        data = response.json()
-        assert data["is_active"] is True
+        try:
+            response = await async_client.patch(
+                f"/admin/users/{target_user.id}/active",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={"is_active": True},
+            )
+            assert response.status_code == status.HTTP_200_OK
+            data = response.json()
+            assert data["is_active"] is True
+
+            committed_active = await _read_is_active_in_new_session(
+                async_session_maker, target_user.id
+            )
+            assert committed_active is True
+        finally:
+            await _delete_committed_email(async_session_maker, target_email)
 
     async def test_deactivate_nonexistent_user(
         self, async_client: AsyncClient, test_user: dict

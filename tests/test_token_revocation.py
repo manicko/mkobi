@@ -11,13 +11,35 @@ Tests cover:
 
 from fastapi import status
 from httpx import AsyncClient
+from sqlalchemy import delete, select
 
 from mkobi.core.security import (
     hash_password,
     decode_token,
 )
+from mkobi.db.models import user as user_model
 from mkobi.db.repositories.user_repo import UserRepository
 from mkobi.models.enums import UserRole
+
+
+async def _read_is_active_in_new_session(
+    async_session_maker, user_id
+) -> bool | None:
+    """Re-read is_active through a second session, independent of the request's."""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(user_model.User.is_active).where(user_model.User.id == user_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def _delete_committed_user(async_session_maker, user_id) -> None:
+    """Delete a row committed by this test; a production commit is durable here."""
+    async with async_session_maker() as session:
+        await session.execute(
+            delete(user_model.User).where(user_model.User.id == user_id)
+        )
+        await session.commit()
 
 
 class TestTokenRevocation:
@@ -175,15 +197,16 @@ class TestUserDeactivationRevocation:
     """Test token revocation on user deactivation."""
 
     async def test_user_deactivation_revokes_all_tokens(
-        self, async_client: AsyncClient, async_db_session
+        self, async_client: AsyncClient, async_db_session, async_session_maker
     ) -> None:
         """Deactivating a user should revoke all their active tokens."""
         user_repo = UserRepository()
 
         # Create a user
+        user_email = "deactiv_revoked_test@example.com"
         user = await user_repo.create(
             db=async_db_session,
-            email="deactiv_revoked_test@example.com",
+            email=user_email,
             password_hash=hash_password("TestPass123!"),
             role=UserRole.VIEWER,
             is_active=True,
@@ -191,53 +214,70 @@ class TestUserDeactivationRevocation:
         await async_db_session.commit()
 
         # Create admin user to perform deactivation (variable not used directly)
+        admin_email = "admin_deactivate_test@example.com"
         await user_repo.create(
             db=async_db_session,
-            email="admin_deactivate_test@example.com",
+            email=admin_email,
             password_hash=hash_password("AdminPass123!"),
             role=UserRole.ADMIN,
         )
         await async_db_session.commit()
 
-        # Login as the user to get their token
-        user_login = await async_client.post(
-            "/auth/login",
-            json={
-                "email": "deactiv_revoked_test@example.com",
-                "password": "TestPass123!",
-            },
-        )
-        user_token = user_login.json()["access_token"]
-        user_headers = {"Authorization": f"Bearer {user_token}"}
+        try:
+            # Login as the user to get their token
+            user_login = await async_client.post(
+                "/auth/login",
+                json={
+                    "email": user_email,
+                    "password": "TestPass123!",
+                },
+            )
+            user_token = user_login.json()["access_token"]
+            user_headers = {"Authorization": f"Bearer {user_token}"}
 
-        # Verify token works
-        assert (await async_client.get("/auth/me", headers=user_headers)).status_code == status.HTTP_200_OK
+            # Verify token works
+            assert (await async_client.get("/auth/me", headers=user_headers)).status_code == status.HTTP_200_OK
 
-        # Admin deactivates the user
-        admin_login = await async_client.post(
-            "/auth/login",
-            json={
-                "email": "admin_deactivate_test@example.com",
-                "password": "AdminPass123!",
-            },
-        )
-        admin_token = admin_login.json()["access_token"]
-        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+            # Admin deactivates the user
+            admin_login = await async_client.post(
+                "/auth/login",
+                json={
+                    "email": admin_email,
+                    "password": "AdminPass123!",
+                },
+            )
+            admin_token = admin_login.json()["access_token"]
+            admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
-        deactivate_response = await async_client.patch(
-            f"/admin/users/{user.id}/active",
-            json={"is_active": False},
-            headers=admin_headers,
-        )
-        assert deactivate_response.status_code == status.HTTP_200_OK
-        assert deactivate_response.json()["is_active"] is False
+            deactivate_response = await async_client.patch(
+                f"/admin/users/{user.id}/active",
+                json={"is_active": False},
+                headers=admin_headers,
+            )
+            assert deactivate_response.status_code == status.HTTP_200_OK
+            assert deactivate_response.json()["is_active"] is False
 
-        # User's token should now be revoked
-        me_response = await async_client.get("/auth/me", headers=user_headers)
-        assert me_response.status_code == status.HTTP_401_UNAUTHORIZED
-        response_data = me_response.json()
-        error_msg = response_data.get("error", "") or response_data.get("detail", "")
-        assert "revoked" in error_msg.lower()
+            # User's token should now be revoked
+            me_response = await async_client.get("/auth/me", headers=user_headers)
+            assert me_response.status_code == status.HTTP_401_UNAUTHORIZED
+            response_data = me_response.json()
+            error_msg = response_data.get("error", "") or response_data.get("detail", "")
+            assert "revoked" in error_msg.lower()
+
+            # Database-side half: the Redis marker is consulted before the row, so
+            # the assertions above can pass without the deactivation persisting.
+            # A second session proves is_active is committed False.
+            committed_active = await _read_is_active_in_new_session(
+                async_session_maker, user.id
+            )
+            assert committed_active is False
+        finally:
+            await _delete_committed_user(async_session_maker, user.id)
+            async with async_session_maker() as session:
+                await session.execute(
+                    delete(user_model.User).where(user_model.User.email == admin_email)
+                )
+                await session.commit()
 
     async def test_other_users_unaffected_by_deactivation(
         self, async_client: AsyncClient, async_db_session

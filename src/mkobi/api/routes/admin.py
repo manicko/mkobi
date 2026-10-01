@@ -150,7 +150,19 @@ async def update_user_active_admin_endpoint(
     db: AsyncSession = Depends(get_db_dependency),
     redis_client: Any = Depends(get_redis_client_dependency),
 ) -> UserRead:
-    """Update user active status (admin endpoint)."""
+    """Update user active status (admin endpoint).
+
+    Two effects are paired on deactivation: the ``is_active`` write and the
+    Redis user-level revocation marker. They cannot be made transactional
+    together, so the ordering is deliberate. ``update_user_active_status``
+    commits before this endpoint revokes, and ``is_active`` is the authority
+    for protected access — ``api/deps.py::get_current_user_dependency`` rejects a
+    deactivated user independently of Redis. The Redis user-level marker is the
+    authority for ``POST /auth/refresh`` and login, which do not re-read the row.
+    A Redis fault therefore leaves a committed deactivation with a failed
+    revocation: that is reported as 500 and the endpoint is idempotent, so a
+    retry completes the revocation.
+    """
     from mkobi.config import get_config
 
     logger.info(
@@ -159,7 +171,8 @@ async def update_user_active_admin_endpoint(
         user_data.is_active,
     )
     try:
-        # First update the user status in database
+        # First update the user status in database. The service commits on success,
+        # so once this returns the new is_active is durable.
         updated = await user_service.update_user_active_status(
             user_id=user_id, is_active=user_data.is_active, db=db
         )
@@ -170,21 +183,41 @@ async def update_user_active_admin_endpoint(
                 details={"user_id": str(user_id)},
             )
 
-        # On deactivation, revoke all user tokens via Redis
+        # On deactivation, revoke all user tokens via Redis. Guarded separately:
+        # a Redis fault must be reported as a committed deactivation with a failed
+        # revocation, not conflated with a database error.
         if not user_data.is_active:
             settings = get_config()
-            await revoke_all_user_tokens(
-                redis_client=redis_client,
-                user_id=user_id,
-                access_ttl=settings.jwt.access_token_expire_minutes * 60,
-                refresh_ttl=settings.jwt.refresh_token_expire_minutes * 60,
-            )
+            try:
+                await revoke_all_user_tokens(
+                    redis_client=redis_client,
+                    user_id=user_id,
+                    access_ttl=settings.jwt.access_token_expire_minutes * 60,
+                    refresh_ttl=settings.jwt.refresh_token_expire_minutes * 60,
+                )
+            except Exception as revoke_error:
+                logger.error(
+                    "Deactivation committed but token revocation failed: id=%s: %s",
+                    user_id,
+                    revoke_error,
+                )
+                raise AppException(
+                    code=ErrorCode.INTERNAL_ERROR,
+                    detail=(
+                        "User was deactivated successfully, but revoking the "
+                        "user's tokens failed"
+                    ),
+                ) from revoke_error
             logger.info("All tokens revoked for deactivated user: id=%s", user_id)
 
         return updated
     except AppException:
         raise
     except Exception as e:
+        # This rollback can only undo work done before the service's commit. Once
+        # update_user_active_status has committed, the deactivation stands and this
+        # rollback cannot take it back; it is still correct for a failure inside the
+        # service before that commit, where the session may need one.
         await db.rollback()
         logger.error("Error updating user active status: %s", e)
         raise AppException(

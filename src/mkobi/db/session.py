@@ -71,7 +71,8 @@ async def get_async_sessionlocal() -> async_sessionmaker[AsyncSession]:
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """Async context manager for database sessions.
 
-    Creates a new async session and ensures it is closed after use.
+    Creates a new async session and ensures it is closed after use. It ends no
+    transaction: leaving the context closes the session but does not commit.
 
     Example:
         ```python

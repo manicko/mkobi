@@ -101,7 +101,10 @@ security = HTTPBearer()
 async def get_db_dependency() -> AsyncSession:
     """Database session dependency for FastAPI routes.
 
-    Creates a new session for each request and closes it after completion.
+    Creates a new session for each request and closes it after completion. It
+    does not commit and does not roll back: closing the session is not a
+    transaction boundary. The request's unit of work belongs to the service
+    layer, whose write methods commit their own transactions.
 
     Yields:
         AsyncSession: SQLAlchemy async session.
