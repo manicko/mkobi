@@ -8,10 +8,12 @@ Redis unavailability during container startup.
 import asyncio
 import logging
 import sys
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import redis
 import rq
+from rq.defaults import DEFAULT_WORKER_TTL
 from rq.worker_registration import REDIS_WORKER_KEYS
 
 from mkobi.config import get_config
@@ -24,8 +26,13 @@ MAX_RETRIES = 3
 # Base delay in seconds for exponential backoff
 BASE_DELAY_SECONDS = 2
 
-# Worker states that mean the worker is alive and consuming.
-LIVE_WORKER_STATES = {"busy", "idle"}
+# A registered worker is considered dead once its last heartbeat is older than
+# RQ's own worker TTL. RQ gives every worker hash a TTL of ``worker_ttl + 60``
+# (default ``DEFAULT_WORKER_TTL + 60``) and refreshes it on each heartbeat, so a
+# heartbeat older than the TTL means the hash itself has already expired: no
+# live worker can produce it. This reuses RQ's own constant rather than an
+# arbitrary timeout.
+WORKER_LIVENESS_TTL_SECONDS = DEFAULT_WORKER_TTL
 
 
 def _build_redis_url() -> str:
@@ -88,23 +95,25 @@ async def check_redis_connection(redis_url: str, max_retries: int = MAX_RETRIES)
     return False
 
 
-def check_worker_registered(queue_name: str = "default") -> bool:
-    """Check that a live RQ worker is registered for the expected queue.
+def check_worker_registered() -> bool:
+    """Check that a live RQ worker is registered in the worker registry.
 
     Reads the RQ worker registry (the ``rq:workers`` set) rather than pinging
     Redis. A ping measures the broker from inside the worker container and is
-    green even when the worker is dead, wedged, mis-subscribed, or sitting in a
-    startup retry. This check fails when the registry is empty, and, for each
-    registered worker hash, accepts only a live state (``busy`` or ``idle``)
-    whose subscribed queues include the queue the producer enqueues into. It
-    fails when no registered worker names the expected queue, which detects a
-    producer/consumer split across different Redis databases or queue names.
+    green even when the worker is dead, wedged, or sitting in a startup retry.
 
-    Args:
-        queue_name: The queue the producer submits to.
+    A registered worker is considered alive when its id is a member of the
+    ``rq:workers`` set and the worker hash still carries a ``last_heartbeat``
+    timestamp no older than RQ's worker TTL. RQ's registry and heartbeat are the
+    only fields ``heartbeat()`` / ``register()`` are guaranteed to keep: an
+    expired-then-revived worker hash can legitimately contain ``last_heartbeat``
+    and nothing else (see ``Worker.maintain_heartbeats``), so ``state`` and
+    ``queues`` must not be required. The heartbeat age is judged against RQ's
+    own TTL because the hash cannot outlive its TTL and every live worker
+    refreshes it on a heartbeat.
 
     Returns:
-        bool: True when at least one live worker consumes ``queue_name``.
+        bool: True when at least one registered worker has a recent heartbeat.
     """
     connection = redis.Redis.from_url(_build_redis_url())
     try:
@@ -113,33 +122,45 @@ def check_worker_registered(queue_name: str = "default") -> bool:
             logger.error("No RQ workers registered")
             return False
 
+        now = datetime.now(UTC)
+        max_age = timedelta(seconds=WORKER_LIVENESS_TTL_SECONDS)
         for worker_key in worker_keys:
             key = worker_key.decode() if isinstance(worker_key, bytes) else str(worker_key)
-            data = {
-                _as_text(field): _as_text(value)
-                for field, value in connection.hgetall(key).items()
-            }
-            state = data.get("state")
-            queues = data.get("queues") or ""
-            subscribed = [name for name in queues.split(",") if name]
-            if state in LIVE_WORKER_STATES and queue_name in subscribed:
+            raw_heartbeat = connection.hget(key, "last_heartbeat")
+            heartbeat = _parse_heartbeat(raw_heartbeat)
+            if heartbeat is None:
+                logger.warning("Worker %r has no parsable last_heartbeat", key)
+                continue
+            if now - heartbeat <= max_age:
                 return True
+            logger.warning(
+                "Worker %r heartbeat is stale by %ds", key, (now - heartbeat).total_seconds()
+            )
 
-        logger.error(
-            "No live RQ worker registered for queue %r", queue_name
-        )
+        logger.error("No live RQ worker registered")
         return False
     finally:
         connection.close()
 
 
-def _as_text(value: Any) -> str | None:
-    """Decode a Redis value to text, tolerating bytes and None."""
+def _parse_heartbeat(value: Any) -> datetime | None:
+    """Parse an RQ ``last_heartbeat`` Redis value into an aware UTC datetime.
+
+    RQ stores the heartbeat as an ISO-8601 string with a ``Z`` suffix
+    (``utcformat``). Returns None when the value is missing or malformed.
+    """
     if value is None:
         return None
     if isinstance(value, bytes):
-        return value.decode()
-    return str(value)
+        value = value.decode()
+    text = str(value)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def main() -> None:

@@ -235,46 +235,72 @@ class TestCheckWorkerRegistered:
             key.encode() for key in workers
         }
 
-        def hgetall(key):
+        def hget(key, field):
             raw = workers.get(key, {})
-            return {k.encode(): v.encode() for k, v in raw.items()}
+            value = raw.get(field)
+            return value.encode() if value is not None else None
 
-        mock_connection.hgetall.side_effect = hgetall
+        mock_connection.hget.side_effect = hget
         mocker.patch(
             "mkobi.rq_worker_wrapper.redis.Redis.from_url",
             return_value=mock_connection,
         )
         return mock_connection
 
+    @staticmethod
+    def _heartbeat(age_seconds: int = 0) -> str:
+        """Format a ``last_heartbeat`` value ``age_seconds`` in the past.
+
+        RQ writes the heartbeat with ``utcformat`` (ISO-8601, ``Z`` suffix).
+        """
+        from datetime import UTC, datetime, timedelta
+
+        return (
+            datetime.now(UTC) - timedelta(seconds=age_seconds)
+        ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
     def test_empty_worker_set_is_not_healthy(self, mocker):
         """An empty registry fails the check."""
         self._patch_connection(mocker, {})
 
-        assert check_worker_registered("default") is False
+        assert check_worker_registered() is False
 
-    def test_worker_on_expected_queue_is_healthy(self, mocker):
-        """A live worker subscribed to the expected queue passes."""
+    def test_registry_member_with_fresh_heartbeat_is_healthy(self, mocker):
+        """Regression: the real observed hash shape must pass the check.
+
+        RQ's ``Worker.maintain_heartbeats`` resurrects an expired worker hash as
+        a bare ``{last_heartbeat}`` hash and its recovery write is lost on the
+        released pipeline, so a demonstrably live worker has exactly this hash.
+        Before the fix the check required ``state``/``queues`` and reported
+        ``unhealthy`` for this live worker.
+        """
         self._patch_connection(
             mocker,
-            {"rq:worker:abc": {"state": "idle", "queues": "default"}},
+            {"rq:worker:abc": {"last_heartbeat": self._heartbeat(age_seconds=0)}},
         )
 
-        assert check_worker_registered("default") is True
+        assert check_worker_registered() is True
 
-    def test_worker_on_different_queue_is_not_healthy(self, mocker):
-        """A live worker on another queue fails the check."""
+    def test_stale_heartbeat_is_not_healthy(self, mocker):
+        """A heartbeat older than RQ's worker TTL fails the check."""
         self._patch_connection(
             mocker,
-            {"rq:worker:abc": {"state": "idle", "queues": "other"}},
+            {"rq:worker:abc": {"last_heartbeat": self._heartbeat(age_seconds=3600)}},
         )
 
-        assert check_worker_registered("default") is False
+        assert check_worker_registered() is False
 
-    def test_dead_worker_state_is_not_healthy(self, mocker):
-        """A worker hash whose state is not live fails the check."""
+    def test_missing_heartbeat_is_not_healthy(self, mocker):
+        """A registered key without a heartbeat field fails the check."""
+        self._patch_connection(mocker, {"rq:worker:abc": {}})
+
+        assert check_worker_registered() is False
+
+    def test_malformed_heartbeat_is_not_healthy(self, mocker):
+        """A non-ISO heartbeat value fails the check instead of crashing."""
         self._patch_connection(
             mocker,
-            {"rq:worker:abc": {"state": "starting", "queues": "default"}},
+            {"rq:worker:abc": {"last_heartbeat": "not-a-timestamp"}},
         )
 
-        assert check_worker_registered("default") is False
+        assert check_worker_registered() is False
