@@ -20,7 +20,9 @@ from mkobi.utils.exceptions import AppException
 
 logger = logging.getLogger(__name__)
 
-# Name of the RQ queue the producer enqueues into and the worker must subscribe to.
+# Name of the RQ queue the producer enqueues into and the worker must subscribe
+# to. This is the single shared definition: ``rq_worker_wrapper`` imports it so
+# the producer and the consumer cannot diverge onto different queues.
 DEFAULT_QUEUE_NAME = "default"
 
 

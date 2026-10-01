@@ -17,6 +17,7 @@ from rq.defaults import DEFAULT_WORKER_TTL
 from rq.worker_registration import REDIS_WORKER_KEYS
 
 from mkobi.config import get_config
+from mkobi.core.task_queue import DEFAULT_QUEUE_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +28,16 @@ MAX_RETRIES = 3
 BASE_DELAY_SECONDS = 2
 
 # A registered worker is considered dead once its last heartbeat is older than
-# RQ's own worker TTL. RQ gives every worker hash a TTL of ``worker_ttl + 60``
-# (default ``DEFAULT_WORKER_TTL + 60``) and refreshes it on each heartbeat, so a
-# heartbeat older than the TTL means the hash itself has already expired: no
-# live worker can produce it. This reuses RQ's own constant rather than an
-# arbitrary timeout.
-WORKER_LIVENESS_TTL_SECONDS = DEFAULT_WORKER_TTL
+# the worker hash's own TTL. RQ's ``Worker.heartbeat`` performs
+# ``expire(self.key, worker_ttl + 60)`` (``timeout = timeout or
+# self.worker_ttl + 60``), so a live hash can never carry a heartbeat older than
+# ``worker_ttl + 60``: past that age the hash has already expired and no live
+# worker can produce it. Judging the heartbeat against ``worker_ttl + 60`` rather
+# than the bare ``worker_ttl`` also closes a false-negative margin - an idle
+# worker's heartbeat is refreshed only once per dequeue iteration, whose timeout
+# is ``worker_ttl - 15``, so a legitimately idle worker can present a heartbeat
+# nearly ``worker_ttl`` seconds old.
+WORKER_LIVENESS_TTL_SECONDS = DEFAULT_WORKER_TTL + 60
 
 
 def _build_redis_url() -> str:
@@ -104,13 +109,20 @@ def check_worker_registered() -> bool:
 
     A registered worker is considered alive when its id is a member of the
     ``rq:workers`` set and the worker hash still carries a ``last_heartbeat``
-    timestamp no older than RQ's worker TTL. RQ's registry and heartbeat are the
-    only fields ``heartbeat()`` / ``register()`` are guaranteed to keep: an
-    expired-then-revived worker hash can legitimately contain ``last_heartbeat``
-    and nothing else (see ``Worker.maintain_heartbeats``), so ``state`` and
-    ``queues`` must not be required. The heartbeat age is judged against RQ's
-    own TTL because the hash cannot outlive its TTL and every live worker
-    refreshes it on a heartbeat.
+    timestamp no older than the hash's own TTL (``worker_ttl + 60``).
+
+    The hash can legitimately contain ``last_heartbeat`` and nothing else. RQ's
+    ``Worker.heartbeat`` is a bare single-field ``hset(self.key,
+    'last_heartbeat', ...)`` which recreates the key when it has expired, and the
+    idle path (``dequeue_job_and_maintain_ttl`` -> ``heartbeat``) has no recovery
+    step that rewrites ``state`` or ``queues`` - only ``register_birth`` and
+    ``maintain_heartbeats`` ever write those. So an expired-then-revived live
+    worker has exactly a bare ``{last_heartbeat}`` hash and ``state`` / ``queues``
+    must not be required.
+
+    The heartbeat age is judged against ``worker_ttl + 60``: that is the TTL
+    ``heartbeat`` itself sets on the key, so a heartbeat older than it proves the
+    hash has already expired and no live worker can produce it.
 
     Returns:
         bool: True when at least one registered worker has a recent heartbeat.
@@ -166,8 +178,10 @@ def _parse_heartbeat(value: Any) -> datetime | None:
 def main() -> None:
     """Entry point for the worker container healthcheck.
 
-    Exits 0 when a live worker consumes the expected queue, 1 otherwise, so the
-    container healthcheck observes the worker rather than the broker.
+    Exits 0 when a live RQ worker is registered with a fresh heartbeat, 1
+    otherwise, so the container healthcheck observes the worker rather than the
+    broker. The registry check does not verify which queue the worker consumes;
+    that agreement is pinned by the shared queue-name constant.
     """
     if check_worker_registered():
         sys.exit(0)
@@ -200,8 +214,10 @@ def start_rq_worker(redis_url: str | None = None) -> None:
     # Import data worker module (ensures task registration)
     import mkobi.workers.data_worker  # noqa: F401
 
-    # RQ Worker uses Redis connection directly via URL
-    queue = rq.Queue(connection=redis.Redis.from_url(redis_url))
+    # Consume the exact queue the producer enqueues into. Both sides read the
+    # one shared constant, so a queue-name divergence cannot go undetected now
+    # that the healthcheck no longer inspects the worker's ``queues`` field.
+    queue = rq.Queue(DEFAULT_QUEUE_NAME, connection=redis.Redis.from_url(redis_url))
     worker = rq.Worker([queue])
     worker.work()
 

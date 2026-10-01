@@ -244,7 +244,10 @@ services:
     restart: unless-stopped
     healthcheck:
       # Observe the worker registry, not the broker: a Redis ping is green even
-      # when the worker is dead, wedged, mis-subscribed or in a startup retry.
+      # when the worker is dead, wedged or in a startup retry. This checks that a
+      # live worker with a fresh heartbeat is registered; it does not verify which
+      # queue the worker consumes - that agreement is pinned by the shared
+      # DEFAULT_QUEUE_NAME constant in core/task_queue.py.
       test:
         - "CMD"
         - "/app/.venv/bin/python"

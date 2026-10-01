@@ -130,6 +130,45 @@ class TestRQWorkerRetry:
         assert sleep_calls == expected_delays
 
 
+class TestQueueNameAgreement:
+    """The producer and the worker must agree on a single queue name."""
+
+    def test_producer_and_worker_share_one_queue_constant(self):
+        """Both sides read the same constant rather than two literals.
+
+        If the producer enqueued to one queue and the worker consumed another,
+        every submission would sit unconsumed and - now that the healthcheck no
+        longer inspects the worker's ``queues`` field - nothing would detect it.
+        """
+        from mkobi.core.task_queue import DEFAULT_QUEUE_NAME
+        import mkobi.rq_worker_wrapper as wrapper
+
+        assert wrapper.DEFAULT_QUEUE_NAME is DEFAULT_QUEUE_NAME
+
+    def test_worker_subscribes_to_the_shared_queue_name(self, mocker, monkeypatch):
+        """start_rq_worker builds its queue with the shared constant."""
+        from mkobi.core.task_queue import DEFAULT_QUEUE_NAME
+
+        monkeypatch.setenv("REDIS__HOST", "confighost")
+        monkeypatch.setenv("REDIS__PORT", "6380")
+        monkeypatch.setenv("REDIS__DB", "1")
+
+        from mkobi.config import clear_config_cache
+
+        clear_config_cache()
+
+        mocker.patch(
+            "mkobi.rq_worker_wrapper.check_redis_connection", return_value=True
+        )
+        mock_queue = mocker.patch("mkobi.rq_worker_wrapper.rq.Queue")
+        mock_worker = mocker.patch("mkobi.rq_worker_wrapper.rq.Worker")
+
+        start_rq_worker("redis://localhost:6379/0")
+
+        assert mock_queue.call_args.args[0] == DEFAULT_QUEUE_NAME
+        assert mock_worker.call_args.args[0][0] is mock_queue.return_value
+
+
 class TestStartRQWorker:
     """Tests for start_rq_worker function."""
 
@@ -281,11 +320,26 @@ class TestCheckWorkerRegistered:
 
         assert check_worker_registered() is True
 
-    def test_stale_heartbeat_is_not_healthy(self, mocker):
-        """A heartbeat older than RQ's worker TTL fails the check."""
+    def test_heartbeat_within_worker_ttl_plus_60_is_healthy(self, mocker):
+        """A heartbeat past the bare worker TTL but inside worker_ttl + 60 is alive.
+
+        RQ's ``heartbeat`` sets the hash TTL to ``worker_ttl + 60``, and an idle
+        worker refreshes ``last_heartbeat`` only once per dequeue iteration whose
+        timeout is ``worker_ttl - 15``. A heartbeat this old is therefore
+        legitimate for a live idle worker and must not be reported unhealthy.
+        """
         self._patch_connection(
             mocker,
-            {"rq:worker:abc": {"last_heartbeat": self._heartbeat(age_seconds=3600)}},
+            {"rq:worker:abc": {"last_heartbeat": self._heartbeat(age_seconds=450)}},
+        )
+
+        assert check_worker_registered() is True
+
+    def test_stale_heartbeat_is_not_healthy(self, mocker):
+        """A heartbeat older than the hash TTL fails the check."""
+        self._patch_connection(
+            mocker,
+            {"rq:worker:abc": {"last_heartbeat": self._heartbeat(age_seconds=600)}},
         )
 
         assert check_worker_registered() is False

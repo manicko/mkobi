@@ -163,6 +163,8 @@ services:
     # Override production read_only for development (needs write access for processing)
     read_only: false
     # Real worker signal in the dev tier: the registry check, not a Redis ping.
+    # It confirms a live, freshly-heartbeating worker is registered; it does not
+    # inspect the consumed queue name (pinned by the shared DEFAULT_QUEUE_NAME).
     healthcheck:
       test:
         - "CMD"
