@@ -126,6 +126,90 @@ class TestAggregationService:
         for r in results:
             assert "dims" in r
 
+    async def test_aggregate_for_dashboard_deduplicates_shared_filter_name(
+        self, aggregation_service, sample_dataframe
+    ):
+        """Test a graph dimension and filter sharing a name do not duplicate the key.
+
+        Before the de-duplication fix the group key became ["region", "region"],
+        which made Polars raise DuplicateError and every upload fail.
+        """
+        dashboard_id = uuid4()
+        graph = self._make_graph_read(
+            graph_id=uuid4(),
+            dashboard_id=dashboard_id,
+            dimensions=["region"],
+            metrics=["sales"],
+        )
+        dashboard_filter = self._make_filter_read(name="region")
+
+        results = await aggregation_service.aggregate_for_dashboard(
+            df=sample_dataframe,
+            graphs=[graph],
+            dashboard_filters=[dashboard_filter],
+        )
+
+        # Aggregation completes and yields exactly one row per distinct region.
+        assert len(results) == 2
+        regions = sorted(r["dims"]["region"] for r in results)
+        assert regions == ["North", "South"]
+        for r in results:
+            assert list(r["dims"].keys()) == ["region"]
+
+    async def test_aggregate_for_dashboard_dedup_preserves_first_seen_order(
+        self, aggregation_service, sample_dataframe
+    ):
+        """Test the de-duplicated group key keeps graph dimensions first.
+
+        The group key is de-duplicated in first-seen order, so graph dimensions
+        stay ahead of filter-only names. An unordered construct such as set()
+        would lose this order; the dims key order exposes it.
+        """
+        dashboard_id = uuid4()
+        graph = self._make_graph_read(
+            graph_id=uuid4(),
+            dashboard_id=dashboard_id,
+            dimensions=["region", "category"],
+            metrics=["sales"],
+        )
+        dashboard_filter = self._make_filter_read(name="category")
+
+        results = await aggregation_service.aggregate_for_dashboard(
+            df=sample_dataframe,
+            graphs=[graph],
+            dashboard_filters=[dashboard_filter],
+        )
+
+        assert len(results) > 0
+        # Graph dimension "region" precedes "category"; "category" is not repeated.
+        for r in results:
+            assert list(r["dims"].keys()) == ["region", "category"]
+
+    async def test_aggregate_for_dashboard_no_overlap_is_unchanged(
+        self, aggregation_service, sample_dataframe
+    ):
+        """Test a dashboard with no overlapping filter keeps dims unchanged."""
+        dashboard_id = uuid4()
+        graph = self._make_graph_read(
+            graph_id=uuid4(),
+            dashboard_id=dashboard_id,
+            dimensions=["category"],
+            metrics=["sales"],
+        )
+        dashboard_filter = self._make_filter_read(name="region")
+
+        results = await aggregation_service.aggregate_for_dashboard(
+            df=sample_dataframe,
+            graphs=[graph],
+            dashboard_filters=[dashboard_filter],
+        )
+
+        # No overlap: both distinct dims are kept in first-seen order, so the
+        # de-duplication is a no-op for the common case (3 categories x 2 regions).
+        assert len(results) == 6
+        for r in results:
+            assert list(r["dims"].keys()) == ["category", "region"]
+
     async def test_aggregate_for_dashboard_skips_missing_columns(
         self, aggregation_service, sample_dataframe
     ):

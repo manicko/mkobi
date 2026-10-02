@@ -63,12 +63,17 @@ class AggregationService:
         results: list[dict[str, Any]] = []
 
         for graph in graphs:
-            # Collect columns for GROUP BY from graph dimensions and dashboard filters
-            groupby_cols = [
-                d
-                for d in (graph.dimensions + dashboard_filter_dim_names)
-                if d in df.columns
-            ]
+            # Collect columns for GROUP BY from graph dimensions and dashboard
+            # filters. De-duplicate in first-seen order so a filter named like a
+            # graph dimension does not repeat the key (Polars DuplicateError);
+            # graph dimensions stay ahead of filter-only names.
+            groupby_cols = list(
+                dict.fromkeys(
+                    d
+                    for d in (graph.dimensions + dashboard_filter_dim_names)
+                    if d in df.columns
+                )
+            )
 
             # Collect metric columns that exist in DataFrame
             metric_cols = [m for m in graph.metrics if m in df.columns]
