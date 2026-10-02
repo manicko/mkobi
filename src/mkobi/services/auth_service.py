@@ -212,6 +212,16 @@ class AuthService(IAuthService):
         if not verify_password(password, user_obj.password_hash):
             return None
 
+        # is_active is authoritative at login: a deactivated row is refused here
+        # exactly as a wrong password is, with the same None contract that
+        # api/routes/auth.py::_handle_login turns into AUTHENTICATION_FAILED.
+        # Compare the ORM row, not the projected UserRead.
+        if not user_obj.is_active:
+            logger.info(
+                "Login refused for deactivated user", extra={"email": email}
+            )
+            return None
+
         logger.info("User successfully authenticated", extra={"email": email})
         user_read = cast(UserRead, UserRead.model_validate(user_obj))
         return {

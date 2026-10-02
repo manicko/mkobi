@@ -374,6 +374,20 @@ async def refresh(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # The database row is co-authoritative with the marker on this path. This
+    # check sits strictly after the marker branch so a deactivated-and-marked
+    # user keeps receiving TOKEN_REVOKED byte-identically. The detail string
+    # matches api/deps.py's inactive case so the two sites are indistinguishable
+    # to a client. The refresh cookie is deliberately not cleared here; cookie
+    # lifecycle is a separate decision.
+    if not user.is_active:
+        logger.warning("Refresh refused for deactivated user: user_id=%s", user_id)
+        raise AppException(
+            code=ErrorCode.AUTHENTICATION_FAILED,
+            detail="User account is deactivated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     access_token = create_access_token(
         data={"user_id": str(user.id), "email": user.email, "role": user.role}
     )

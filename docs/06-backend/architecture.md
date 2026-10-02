@@ -139,8 +139,8 @@ first time, the authority for a deactivated account is **split**, and the split 
 | Surface | Authority | Consequence |
 | ------- | --------- | ----------- |
 | Every **protected** endpoint, via `api/deps.py::get_current_user_dependency` | the **database row** — the dependency re-reads the user on **every** authenticated request and rejects `is_active is False` | a committed deactivation stops the user immediately, independently of Redis |
-| `POST /auth/refresh` and the protected gate | the **Redis user-level marker** | revokes already-issued access *and* refresh tokens without touching the row |
-| `POST /auth/login`, `POST /auth/login/form` | **neither** | `is_active` is compared **nowhere** in `src/mkobi` except that one dependency, and neither login route consults the marker — so a deactivated user can still obtain freshly signed tokens, each of which the gate then rejects |
+| `POST /auth/refresh` | the **database row**, co-authoritative with the **Redis user-level marker** — the marker branch runs first and keeps its `TOKEN_REVOKED` contract, then the freshly re-read row is compared | revokes already-issued access *and* refresh tokens without touching the row, and independently refuses a deactivated row whose marker has expired or been flushed |
+| `POST /auth/login`, `POST /auth/login/form` | the **database row**, consulted at login | a deactivated user is refused **at login** with `401 AUTHENTICATION_FAILED`, indistinguishable from a wrong password; the marker is deliberately not consulted there, and no freshly signed tokens are issued |
 
 **The ordering is deliberate: the commit lands first, the revocation second.**
 `PATCH /admin/users/{user_id}/active` calls `update_user_active_status()`, which commits, and only
@@ -155,9 +155,14 @@ then revokes in Redis. Three reasons, in order of weight:
    same `is_active` and re-issues the marker. With the commit *after* the revocation, a database
    fault would leave `is_active` unchanged, the user would log in again, and nothing in the
    response would say the deactivation never happened.
-3. **The residual exposure is bounded and enumerated** — it is the login gap in the table above,
-   and nothing else. That gap is a separate finding in phase 04's revocation-marker zone; it is
-   unchanged by this design and is deliberately not fixed here.
+3. **The residual exposure is bounded and enumerated.** The login gap this paragraph used to name
+   was **closed in phase 04** — `is_active` is now authoritative at login and on `POST /auth/refresh`
+   — so what remains is narrower and honest. (i) The **reactivate branch never clears the Redis
+   user-level marker**: a reactivated account can log in and is then refused at the protected gate
+   until the marker expires. That asymmetry belongs to a **later phase** and is deliberately not
+   fixed here. (ii) A Redis flush between a deactivation and a request leaves the **database row**
+   as the only backstop, which is correct for protected access and for the two token-issuing paths,
+   but means the already-issued-token revocation is lost with the marker.
 
 The route's `await db.rollback()` in its `except Exception` handler **stays** and is still correct
 for the pre-commit window (a failure inside `update_user_active_status`, where the session does need

@@ -217,6 +217,63 @@ class TestRefreshToken:
         data = response.json()
         assert "User not found" in data["detail"]
 
+    async def test_inactive_user_refresh_rejected(
+        self, async_client: AsyncClient, async_db_session
+    ) -> None:
+        """A deactivated row is refused by /auth/refresh via the row, not the marker.
+
+        The refresh token is minted directly so the login change under test
+        cannot pre-empt the request. The app's own Redis instance is asserted to
+        carry no user-level revocation marker, so a pass here cannot come from
+        the marker branch and must exercise the new row comparison.
+        """
+        from mkobi.core.security import hash_password
+        from mkobi.db.repositories.user_repo import UserRepository
+        from mkobi.db.models import user as user_model
+        from sqlalchemy import select
+
+        # Create then deactivate a row. No Redis marker is written.
+        user_repo = UserRepository()
+        user_read = await user_repo.create(
+            db=async_db_session,
+            email="deactivated_refresh_test@example.com",
+            password_hash=hash_password("TestPass123!"),
+            role=UserRole.VIEWER,
+            is_active=True,
+        )
+        await async_db_session.commit()
+
+        result = await async_db_session.execute(
+            select(user_model.User).where(user_model.User.id == user_read.id)
+        )
+        user_obj = result.scalar_one_or_none()
+        assert user_obj is not None
+        user_obj.is_active = False
+        await async_db_session.commit()
+
+        # The app's own Redis instance must have no user_tokens_revoked marker,
+        # so the marker branch cannot be what refuses the request.
+        mock_redis = async_client._transport.app.state.mock_redis
+        marker_key = f"user_tokens_revoked:{user_read.id}"
+        assert await mock_redis.exists(marker_key) == 0
+
+        refresh_token = create_refresh_token(
+            data={
+                "sub": str(user_read.id),
+                "email": user_read.email,
+                "role": user_read.role,
+            }
+        )
+
+        response = await async_client.post(
+            "/auth/refresh",
+            cookies={"mkobi_refresh_token": refresh_token},
+        )
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        data = response.json()
+        assert data["code"] == "AUTHENTICATION_FAILED"
+        assert data["detail"] == "User account is deactivated"
+
 
 class TestDeactivatedUser:
     """Tests for deactivated user authentication."""
@@ -259,6 +316,54 @@ class TestDeactivatedUser:
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
         data = response.json()
         assert "deactivated" in data["detail"].lower()
+
+    async def test_inactive_user_login(
+        self, async_client: AsyncClient, async_db_session
+    ) -> None:
+        """A deactivated row is refused at login, not only at the gate.
+
+        This is the login half of the deactivation contract: ``is_active`` is
+        authoritative on the token-issuing path, so a deactivated account cannot
+        obtain freshly signed tokens at all.
+        """
+        from mkobi.core.security import hash_password
+        from mkobi.db.repositories.user_repo import UserRepository
+        from mkobi.db.models import user as user_model
+        from sqlalchemy import select
+
+        user_repo = UserRepository()
+        user_read = await user_repo.create(
+            db=async_db_session,
+            email="deactivated_login_test@example.com",
+            password_hash=hash_password("TestPass123!"),
+            role=UserRole.VIEWER,
+            is_active=True,
+        )
+        await async_db_session.commit()
+
+        # Deactivate the row directly on the ORM model.
+        result = await async_db_session.execute(
+            select(user_model.User).where(user_model.User.id == user_read.id)
+        )
+        user_obj = result.scalar_one_or_none()
+        assert user_obj is not None
+        user_obj.is_active = False
+        await async_db_session.commit()
+
+        # Correct credentials, but the account is deactivated.
+        response = await async_client.post(
+            "/auth/login",
+            json={
+                "email": "deactivated_login_test@example.com",
+                "password": "TestPass123!",
+            },
+        )
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        data = response.json()
+        # The detail is the same "Invalid credentials" a wrong password yields,
+        # so the endpoint is not an account-existence oracle.
+        assert data["detail"] == "Invalid credentials"
+        assert "access_token" not in data
 
 
 class TestRateLimiting:
