@@ -282,14 +282,17 @@ The production image runs uvicorn with `--workers 4`, so every worker process ex
 
 ### Connection-Pool Budget
 
-There are **three** `AsyncEngine` objects, created in three different places and
-deliberately carrying three different pool budgets:
+There are **five** `AsyncEngine` construction sites, but only **three** of them
+participate in the steady-state budget. Two are per-call and test-tier gated, so
+they never coexist with the production workload; the table classifies all five:
 
-| # | Engine | Location | Pool |
-| --- | --- | --- | --- |
-| 1 | **Application engine** | `db/session.py::get_async_engine` | `QueuePool`, parameters from `DATABASE__POOL_SIZE` / `MAX_OVERFLOW` / `POOL_TIMEOUT` / `POOL_RECYCLE` |
-| 2 | **Starter GRANT engine** | `db/starter.py::DatabaseStarter.startup` (`_main_engine`) | `QueuePool` with its own pinned constants `5 + 10 = 15` |
-| 3 | **Migration engine** | `alembic/env.py` | `NullPool` — one connection per migration run, no budget |
+| # | Engine | Location | Pool | Lifetime |
+| --- | --- | --- | --- | --- |
+| 1 | **Application engine** | `db/session.py::get_async_engine` | `QueuePool`, parameters from `DATABASE__POOL_SIZE` / `MAX_OVERFLOW` / `POOL_TIMEOUT` / `POOL_RECYCLE` | **per-process**, steady-state |
+| 2 | **Starter GRANT engine** | `db/starter.py::DatabaseStarter.startup` (`_main_engine`) | `QueuePool` with its own pinned constants `5 + 10 = 15` | **per-process**, steady-state |
+| 3 | **Migration engine** | `alembic/env.py` | `NullPool` — one connection per migration run, no budget | **per-call** (migrate container only) |
+| 4 | **Test-recreation admin engine** | `db/starter.py::recreate_test_database` (`admin_engine`) | AUTOCOMMIT, SQLAlchemy defaults `5 + 10 = 15` | **per-call**, disposed in `finally` |
+| 5 | **Test-recreation grant engine** | `db/starter.py::recreate_test_database` (`test_admin_engine`) | AUTOCOMMIT, SQLAlchemy defaults `5 + 10 = 15` | **per-call**, disposed in `finally` |
 
 Engine 2 exists for a reason that is not size. `DROP DATABASE` / `CREATE DATABASE`
 **require an AUTOCOMMIT connection**, and the starter must not share the
@@ -299,6 +302,17 @@ divergence is deliberate and its values are pinned as named constants in
 `db/starter.py`, which makes a future drift a visible diff rather than an
 accident of SQLAlchemy's defaults.
 
+Engines 4 and 5 cannot appear in the steady-state budget, on three independent
+grounds. `recreate_test_database` is reached only through `DatabaseStarter.startup`
+when the *configured* environment is `test` (or `RECREATE_TEST_DB` selects it within
+that tier) and refuses otherwise, so no production process ever constructs them;
+both are **per-call** — created inside the method and disposed in its `finally`
+before it returns — so even in the test tier they hold connections for the duration
+of one recreation, not for the process lifetime; and the migration engine is
+`NullPool`, so it carries no standing pool at all. They are listed for completeness,
+not omitted: the reader should be able to see that the steady-state count is three
+*by the code's lifetime*, not by an unstated assumption.
+
 Engine 2 is disposed only in `DatabaseStarter.shutdown()`, so it counts toward the
 **steady-state** budget, not merely a start-up spike. Its small ceiling is free
 only because its five call sites run **sequentially** — if one is ever made
@@ -307,21 +321,32 @@ budget.
 
 The arithmetic below uses the starting defaults and PostgreSQL 18's shipped
 `max_connections` of `100` (with `superuser_reserved_connections` of `3` inside
-that figure, leaving 97 for application roles):
+that figure, leaving 97 for application roles). `DatabaseStarter.startup` runs
+inside the FastAPI `lifespan` (`app.py`), so the starter engine exists once per
+uvicorn worker; it does **not** run in the `rq-worker`, which reaches the database
+only through `get_session()` and therefore carries the application engine, not a
+starter engine. The migration container runs `alembic upgrade head` and never the
+`lifespan`, so it contributes no application or starter engine.
 
 ```
 per uvicorn worker:  application engine 10 + 20 = 30    starter GRANT engine 5 + 10 = 15
-deployment:          4 × 30 = 120  +  4 × 1 = 4  +  1 (rq work horse)   = 125 reachable
-unconstrained:       120 + 4 × 15 = 60 + 30 (work-horse pool) + 1       = 211
+per rq work horse:   application engine 10 + 20 = 30    no starter engine (no lifespan)
+
+deployment:          4 × 30 = 120  +  4 × 1 = 4  +  1 (work horse, one job at a time)  = 125 reachable
+unconstrained:       5 × 30 = 150  +  4 × 15 = 60                                       = 210 ceiling
 PostgreSQL 18:       max_connections "typically 100", superuser_reserved_connections 3 inside it
 ```
 
-**125 > 100 is the finding.** These are *ceilings, not demand*: a `QueuePool`
-grows only to its concurrent high-water mark, so a quiet worker holds fewer
-connections than its budget. Note also that the production image runs
-`--workers 4`; the starter and application engines are **per-process** (each
-uvicorn worker runs `lifespan` independently), while the AUTOCOMMIT starter
-engines and the migration engine are **per-call**.
+**125 > 100 is the finding:** even the demand-shaped figure exceeds
+`max_connections`, and the unconstrained ceiling is higher still. These are
+*ceilings, not demand*: a `QueuePool` grows only to its concurrent high-water mark,
+so a quiet worker holds fewer connections than its budget. The `125` figure is the
+reachable estimate for the documented shape — the four uvicorn application pools at
+their full `30`, each starter engine at its sequential high-water of `1`, and the
+work horse at one connection because RQ processes one job at a time — not a claim
+that every pool fills. The `210` ceiling is what the pools may reach if every
+process saturates at once; the work horse's own ceiling is `30`, not the `1` of the
+reachable estimate.
 
 Operators can see the server-side half in `pg_stat_activity`:
 
