@@ -181,6 +181,24 @@ The `check_dashboard_access` function is the central enforcement mechanism:
 
 ---
 
+## Forced Password Change Gate
+
+`force_password_change` is enforced server-side in `get_current_user_dependency()` (`src/mkobi/api/deps.py`), the single dependency every protected route passes through. The check runs **after** the `is_active` check and refuses a flagged user with `403 PERMISSION_DENIED` on every protected route except a named allow-list: `POST /api/v1/auth/change-password`, `POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout`, and `GET /api/v1/auth/me`. The allow-list is expressed by the predicate `is_password_change_completion_path(method, path)` and unit-tested directly. `403` is used rather than `401` because the SPA signs a user out on any `401`, which would turn the refusal into a redirect loop. See [Authentication API](../01-auth/auth-api.md#1-login) for the reason behind each allow-list entry.
+
+---
+
+## Second Identity Path (Not a Live Gate)
+
+`src/mkobi/core/permissions.py::_get_current_user_with_session` (and its public wrapper `get_current_user`) is a second token-to-user path that mirrors part of the dependency's logic. It has **no production caller** — the only callers are its own wrapper and direct unit tests (`tests/test_permissions.py::TestGetCurrentUser`). It is **not** a second live gate:
+
+- It is never invoked by any route or dependency in `src/mkobi/`; the live gate is `get_current_user_dependency`.
+- Therefore the `force_password_change` gate described above is **not** enforced on this path, and cannot be, because nothing reaches it.
+- Another phase plans to **delete** both `_get_current_user_with_session` and `get_current_user`; this document records the situation rather than assuming a hidden enforcement point.
+
+> Do not treat this module as an alternative enforcement point when auditing access control. The authoritative identity path is `api/deps.py::get_current_user_dependency`.
+
+---
+
 ## Frontend Enforcement
 
 The frontend provides UX-level access control that mirrors the backend:

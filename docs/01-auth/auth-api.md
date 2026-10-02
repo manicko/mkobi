@@ -73,6 +73,17 @@ Authenticate a user by email and password.
 
 > The login response includes the full user profile (`TokenWithUser` model), eliminating the need for a separate `/auth/me` call after login. The `display_name` field is computed from the email prefix (text before `@`). The `force_password_change` field indicates whether the user must change their password on next login — when `true`, the frontend redirects to `/profile/change-password?force=true`.
 
+> **Server-side enforcement:** `force_password_change` is enforced by the **server**, not only by the frontend. The flag is evaluated in `get_current_user_dependency()` (the single dependency every protected route passes through, `src/mkobi/api/deps.py`) **after** the `is_active` check. A flagged user is refused on any protected route **outside the allow-list** with `403 PERMISSION_DENIED`. `403` is deliberate: the SPA's axios interceptor answers any `401` with a silent refresh and, on failure, a sign-out back to `/login`, so a `401` refusal would become a redirect loop. The allow-list is enumerated from the auth router and kept reachable for a flagged user:
+>
+> | Route | Reason |
+> | --- | --- |
+> | `POST /api/v1/auth/change-password` | The only way to complete the change; without it the user is trapped |
+> | `POST /api/v1/auth/refresh` | Keeps the SPA's silent refresh working, so the user is redirected rather than signed out |
+> | `POST /api/v1/auth/logout` | Lets a trapped user leave |
+> | `GET /api/v1/auth/me` | Carries the flag to the SPA, which is how the frontend decides to redirect |
+>
+> The allow-list is expressed by the named predicate `is_password_change_completion_path(method, path)`, which is unit-tested directly without a request pipeline. The flag is read from the already-loaded `UserRead`, so no extra database query is added.
+
 > **Cookie:** On success, the server also sets an httpOnly cookie `mkobi_refresh_token` containing the refresh token (7-day TTL). The cookie uses `Secure`, `HttpOnly`, and `SameSite=Strict` attributes.
 
 **Error responses:**
@@ -336,6 +347,7 @@ Change the current user's password.
 - The same revocation applies to the admin reset (`POST /api/v1/admin/users/{user_id}/reset-password`): the **target** user's tokens issued before the reset are revoked once it is committed, in addition to the temporary-password handoff described in [Admin API](../04-admin/admin-api.md#6-reset-user-password-admin). Account **deactivation** uses the same marker but is persistent — the `is_active` checks reject any later session until the account is reactivated.
 - New password must meet backend strength requirements: at least 8 characters, at least one letter, and at least one digit. Enforced by Pydantic `field_validator` — returns 422 if requirements are not met
 - The `force_password_change` flag is automatically cleared on the backend after a successful password change. This prevents an infinite force-change loop when a user is required to change their password (e.g., after admin reset or registration approval).
+- While `force_password_change` is `true`, the server refuses every protected route except the allow-list (`change-password`, `refresh`, `logout`, `me`) with `403 PERMISSION_DENIED`. After the password change clears the flag (and following a fresh login, which the timestamped revocation requires), normal access resumes.
 - If the user was in force-change mode (redirected via `?force=true`), they are redirected back to `/profile` after successfully changing their password.
 
 ---
@@ -515,6 +527,7 @@ Browser              FastAPI              Database
 - **CORS:** Explicit allowed methods and headers (no wildcards in production)
 - **Production credentials:** Default credentials (`admin`/`admin`) are rejected in production
 - **User deactivation:** Deactivated users (`is_active=false`) receive HTTP 401 on any authenticated endpoint, even with a valid JWT. The check is performed in `get_current_user_dependency()` on every request.
+- **Forced password change:** A user with `force_password_change=true` receives HTTP **403 `PERMISSION_DENIED`** on every protected route except the allow-list described in [Login](#1-login). The check runs in `get_current_user_dependency()` after the `is_active` check. `403` is used instead of `401` so the SPA's sign-out interceptor is not triggered into a redirect loop.
 
 ---
 

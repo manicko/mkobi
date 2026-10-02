@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import ExpiredSignatureError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +56,7 @@ __all__ = [
     "get_session",
     "get_current_user_dependency",
     "get_db_dependency",
+    "is_password_change_completion_path",
     "require_admin_role",
     "require_editor_role",
     "require_viewer_role",
@@ -472,7 +473,46 @@ def get_token_from_header(
     return str(credentials.credentials)
 
 
+# Paths that stay reachable while a user is under a forced password change.
+# Completing the change, refreshing the silent session, logging out, and reading
+# the flag that drives the redirect must all survive the gate below; blocking
+# any of them would trap the user or break the mechanism the gate depends on.
+# These are the full mounted paths, including the /api/v1 prefix that app.py
+# applies when it registers the auth router.
+_PASSWORD_CHANGE_EXEMPT_PATHS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("POST", "/api/v1/auth/change-password"),
+        ("POST", "/api/v1/auth/refresh"),
+        ("POST", "/api/v1/auth/logout"),
+        ("GET", "/api/v1/auth/me"),
+    }
+)
+
+
+def is_password_change_completion_path(method: str, path: str) -> bool:
+    """Return True when the request may proceed despite a forced password change.
+
+    The allow-list is enumerated from ``api/routes/auth.py`` rather than inferred.
+    It is keyed by HTTP method and full path because ``POST /auth/change-password``
+    is the only way to complete the change, ``POST /auth/refresh`` keeps the silent
+    refresh alive, ``POST /auth/logout`` lets a trapped user leave, and
+    ``GET /auth/me`` is what carries ``force_password_change`` to the SPA so it
+    can perform the redirect. The method and path are taken directly rather than
+    the whole request so the predicate is callable with no HTTP pipeline.
+
+    Args:
+        method: HTTP method of the request.
+        path: Request path including the API prefix, for example
+            ``/api/v1/auth/me``.
+
+    Returns:
+        bool: True if the route is exempt from the forced-change gate.
+    """
+    return (method, path) in _PASSWORD_CHANGE_EXEMPT_PATHS
+
+
 async def get_current_user_dependency(
+    request: Request,
     token: str = Depends(get_token_from_header),
     db: AsyncSession = Depends(get_db_dependency),
     redis_client: Any = Depends(get_redis_client_dependency),
@@ -486,12 +526,14 @@ async def get_current_user_dependency(
         token: JWT access token.
         db: Database session.
         redis_client: Async Redis client for token blacklist check.
+        request: Incoming request, used to apply the forced password change gate.
 
     Returns:
         UserRead: Current user data.
 
     Raises:
-        AppException: If token is invalid, revoked, or user not found.
+        AppException: If token is invalid, revoked, user not found, or the user
+            must complete a forced password change on a non-exempt route.
     """
     try:
         payload = decode_token(token)
@@ -554,6 +596,26 @@ async def get_current_user_dependency(
                 code=ErrorCode.AUTHENTICATION_FAILED,
                 detail="User account is deactivated",
                 headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # Server-side enforcement of the forced password change. The flag is
+        # already on the loaded UserRead, so this adds no query. A refused user
+        # receives 403 PERMISSION_DENIED rather than 401: the SPA's axios
+        # interceptor answers any 401 with a silent refresh and, on failure,
+        # signs the user out through the login page, which would turn a refusal
+        # into a redirect loop. The allow-list keeps the completion path, the
+        # silent refresh, logout, and the flag-carrying /auth/me reachable.
+        if user.force_password_change and not is_password_change_completion_path(
+            request.method, request.url.path
+        ):
+            logger.warning(
+                "Password change required: user_id=%s path=%s",
+                user_id,
+                request.url.path,
+            )
+            raise AppException(
+                code=ErrorCode.PERMISSION_DENIED,
+                detail="Password change required",
             )
 
         logger.info("User authenticated: user_id=%s", user_id)
