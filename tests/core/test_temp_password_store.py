@@ -174,7 +174,10 @@ class TestTempPasswordStore:
         # Capture log output via mock
         with patch("mkobi.core.temp_password_store.logger") as mock_logger:
             # Should not raise - graceful degradation
-            await store.store("token", "password")
+            result = await store.store("token", "password")
+
+            # The failure is reported to the caller, not merely swallowed.
+            assert result is False
 
             # Verify error was logged
             mock_logger.error.assert_called_once()

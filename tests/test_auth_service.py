@@ -526,6 +526,7 @@ class TestAuthService:
         from mkobi.core.temp_password_store import TempPasswordStore
 
         mock_temp_password_store = AsyncMock(spec=TempPasswordStore)
+        mock_temp_password_store.store.return_value = True
         auth_service = AuthService(
             mock_user_repo, mock_reg_request_repo, temp_password_store=mock_temp_password_store
         )
@@ -642,14 +643,18 @@ class TestAuthService:
         mock_user_repo.update = AsyncMock()
 
         db = AsyncMock(spec=AsyncSession)
-
         async def _commit() -> None:
             order.append("commit")
 
         db.commit = AsyncMock(side_effect=_commit)
 
         store = AsyncMock()
-        store.store = AsyncMock(side_effect=lambda *a, **k: order.append("store"))
+
+        def _store(*a, **k) -> bool:
+            order.append("store")
+            return True
+
+        store.store = AsyncMock(side_effect=_store)
 
         auth_service = AuthService(
             mock_user_repo, mock_reg_request_repo, temp_password_store=store
@@ -737,9 +742,9 @@ class TestAuthService:
         db = AsyncMock(spec=AsyncSession)
         db.commit = AsyncMock()
 
-        # Mirrors TempPasswordStore.store's fail-open contract: log and return.
+        # Mirrors TempPasswordStore.store's fail-open contract: log and return False.
         store = AsyncMock()
-        store.store = AsyncMock(return_value=None)
+        store.store = AsyncMock(return_value=False)
 
         auth_service = AuthService(
             mock_user_repo, mock_reg_request_repo, temp_password_store=store
@@ -752,6 +757,7 @@ class TestAuthService:
         assert result is not None
         assert "user_id" in result
         assert "retrieval_token" in result
+        assert result["credential_stored"] is False
         mock_user_repo.create.assert_called_once()
         db.commit.assert_called()
         store.store.assert_called_once()
@@ -816,7 +822,12 @@ class TestAuthService:
         db.commit = AsyncMock(side_effect=_commit)
 
         store = AsyncMock()
-        store.store = AsyncMock(side_effect=lambda *a, **k: order.append("store"))
+
+        def _store(*a, **k) -> bool:
+            order.append("store")
+            return True
+
+        store.store = AsyncMock(side_effect=_store)
 
         auth_service = AuthService(
             mock_user_repo, mock_reg_request_repo, temp_password_store=store
@@ -830,6 +841,229 @@ class TestAuthService:
 
         assert result is not None
         assert order == ["update", "commit", "store"]
+
+    # --- credential_stored reporting ---
+
+    async def test_reset_password_admin_reports_credential_stored(
+        self, mock_user_repo, mock_reg_request_repo
+    ):
+        """A successful store must report credential_stored True.
+
+        This guards against polarity inversion - the most likely silent defect
+        in the reporting path.
+        """
+        target_user_id = uuid4()
+        admin_user_id = uuid4()
+        mock_user = MagicMock()
+        mock_user.id = target_user_id
+        mock_user_repo.get_with_hash = AsyncMock(return_value=mock_user)
+        mock_user_repo.update = AsyncMock()
+
+        db = AsyncMock(spec=AsyncSession)
+        db.commit = AsyncMock()
+
+        store = AsyncMock()
+        store.store = AsyncMock(return_value=True)
+
+        auth_service = AuthService(
+            mock_user_repo, mock_reg_request_repo, temp_password_store=store
+        )
+
+        result = await auth_service.reset_password_admin(
+            user_id=target_user_id,
+            admin_user_id=admin_user_id,
+            db=db,
+        )
+
+        assert result is not None
+        assert result["credential_stored"] is True
+        assert result["user_id"] == str(target_user_id)
+        assert "retrieval_token" in result
+        store.store.assert_awaited_once()
+
+    async def test_reset_password_admin_reports_credential_not_stored(
+        self, mock_user_repo, mock_reg_request_repo
+    ):
+        """A swallowed Redis fault must report False and name both ids in a log.
+
+        The committed user must survive: commit and update still happen.
+        """
+        from unittest.mock import patch
+
+        target_user_id = uuid4()
+        admin_user_id = uuid4()
+        mock_user = MagicMock()
+        mock_user.id = target_user_id
+        mock_user_repo.get_with_hash = AsyncMock(return_value=mock_user)
+        mock_user_repo.update = AsyncMock()
+
+        db = AsyncMock(spec=AsyncSession)
+        db.commit = AsyncMock()
+
+        store = AsyncMock()
+        store.store = AsyncMock(return_value=False)
+
+        auth_service = AuthService(
+            mock_user_repo, mock_reg_request_repo, temp_password_store=store
+        )
+
+        with patch("mkobi.services.auth_service.logger") as mock_logger:
+            result = await auth_service.reset_password_admin(
+                user_id=target_user_id,
+                admin_user_id=admin_user_id,
+                db=db,
+            )
+
+        assert result is not None
+        assert result["credential_stored"] is False
+        # The committed user is untouched.
+        db.commit.assert_called_once()
+        mock_user_repo.update.assert_called_once()
+        assert mock_user_repo.update.call_args.kwargs["force_password_change"] is True
+
+        # The ERROR must name both ids and neither secret.
+        error_calls = [c for c in mock_logger.error.call_args_list]
+        assert any(
+            str(target_user_id) in str(c[0][0] % c[0][1:])
+            and str(admin_user_id) in str(c[0][0] % c[0][1:])
+            for c in error_calls
+        ), "no ERROR named both the affected user and the administrator"
+        formatted = [str(c[0][0] % c[0][1:]) for c in error_calls]
+        generated_password = mock_user_repo.update.call_args.kwargs.get("password_hash")
+        assert generated_password is not None
+        for text in formatted:
+            assert str(generated_password) not in text
+        token = result["retrieval_token"]
+        for text in formatted:
+            assert token not in text
+
+    async def test_reset_password_admin_no_store_wired_reports_not_stored(
+        self, mock_user_repo, mock_reg_request_repo
+    ):
+        """With no store wired the response must report False and log both ids.
+
+        This is the third failure variant: the None branch is a wiring defect,
+        not a Redis outage.
+        """
+        from unittest.mock import patch
+
+        target_user_id = uuid4()
+        admin_user_id = uuid4()
+        mock_user = MagicMock()
+        mock_user.id = target_user_id
+        mock_user_repo.get_with_hash = AsyncMock(return_value=mock_user)
+        mock_user_repo.update = AsyncMock()
+
+        db = AsyncMock(spec=AsyncSession)
+        db.commit = AsyncMock()
+
+        auth_service = AuthService(
+            mock_user_repo, mock_reg_request_repo, temp_password_store=None
+        )
+
+        with patch("mkobi.services.auth_service.logger") as mock_logger:
+            result = await auth_service.reset_password_admin(
+                user_id=target_user_id,
+                admin_user_id=admin_user_id,
+                db=db,
+            )
+
+        assert result is not None
+        assert result["credential_stored"] is False
+        assert any(
+            str(target_user_id) in str(c[0][0] % c[0][1:])
+            and str(admin_user_id) in str(c[0][0] % c[0][1:])
+            for c in mock_logger.error.call_args_list
+        ), "no ERROR named both the affected user and the administrator"
+
+    async def test_approve_registration_request_reports_credential_stored(
+        self, mock_user_repo, mock_reg_request_repo
+    ):
+        """A successful store on the approval path must report True."""
+        mock_reg_request_repo.get_by_id = AsyncMock(return_value=self._make_pending_request())
+        mock_reg_request_repo.update_status = AsyncMock()
+
+        mock_user_repo.get_by_email = AsyncMock(return_value=None)
+        mock_user_repo.create = AsyncMock(
+            return_value=MagicMock(
+                id=uuid4(),
+                email="approve@example.com",
+                role=UserRole.VIEWER,
+                is_active=True,
+                password_hash=hash_password("TempPass123!"),
+            )
+        )
+        mock_user_repo.update = AsyncMock()
+
+        db = AsyncMock(spec=AsyncSession)
+        db.commit = AsyncMock()
+
+        store = AsyncMock()
+        store.store = AsyncMock(return_value=True)
+
+        auth_service = AuthService(
+            mock_user_repo, mock_reg_request_repo, temp_password_store=store
+        )
+
+        result = await auth_service.approve_registration_request(
+            request_id=uuid4(), admin_user_id=uuid4(), db=db
+        )
+
+        assert result is not None
+        assert result["credential_stored"] is True
+        assert "user_id" in result
+        assert "retrieval_token" in result
+        store.store.assert_awaited_once()
+
+    async def test_approve_registration_request_reports_credential_not_stored(
+        self, mock_user_repo, mock_reg_request_repo
+    ):
+        """A swallowed Redis fault on approval reports False and logs both ids."""
+        from unittest.mock import patch
+
+        admin_user_id = uuid4()
+        created = MagicMock(
+            id=uuid4(),
+            email="approve@example.com",
+            role=UserRole.VIEWER,
+            is_active=True,
+            password_hash=hash_password("TempPass123!"),
+        )
+        mock_reg_request_repo.get_by_id = AsyncMock(return_value=self._make_pending_request())
+        mock_reg_request_repo.update_status = AsyncMock()
+
+        mock_user_repo.get_by_email = AsyncMock(return_value=None)
+        mock_user_repo.create = AsyncMock(return_value=created)
+        mock_user_repo.update = AsyncMock()
+
+        db = AsyncMock(spec=AsyncSession)
+        db.commit = AsyncMock()
+
+        store = AsyncMock()
+        store.store = AsyncMock(return_value=False)
+
+        auth_service = AuthService(
+            mock_user_repo, mock_reg_request_repo, temp_password_store=store
+        )
+
+        with patch("mkobi.services.auth_service.logger") as mock_logger:
+            result = await auth_service.approve_registration_request(
+                request_id=uuid4(), admin_user_id=admin_user_id, db=db
+            )
+
+        assert result is not None
+        assert result["credential_stored"] is False
+        assert result["user_id"] == str(created.id)
+        # The committed user survives.
+        mock_user_repo.create.assert_called_once()
+        db.commit.assert_called()
+        store.store.assert_awaited_once()
+
+        assert any(
+            str(created.id) in str(c[0][0] % c[0][1:])
+            and str(admin_user_id) in str(c[0][0] % c[0][1:])
+            for c in mock_logger.error.call_args_list
+        ), "no ERROR named both the affected user and the administrator"
 
 
 class TestApproveRegistrationRouteOrdering:
@@ -956,9 +1190,9 @@ class TestApproveRegistrationRouteOrdering:
         )
         mock_user_repo.update = AsyncMock()
 
-        # Mirrors TempPasswordStore.store's fail-open contract.
+        # Mirrors TempPasswordStore.store's fail-open contract: log and return False.
         store = AsyncMock()
-        store.store = AsyncMock(return_value=None)
+        store.store = AsyncMock(return_value=False)
 
         service = AuthService(
             mock_user_repo, mock_reg_request_repo, temp_password_store=store
@@ -979,4 +1213,5 @@ class TestApproveRegistrationRouteOrdering:
         assert body["message"] == "Registration request approved"
         assert "user_id" in body
         assert "retrieval_token" in body
+        assert body["credential_stored"] is False
         store.store.assert_called_once()

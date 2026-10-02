@@ -221,7 +221,8 @@ Admin-triggered password reset. Generates a temporary password for the target us
 {
   "message": "Password reset successfully",
   "user_id": "880e8400-e29b-41d4-a716-446655440003",
-  "retrieval_token": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+  "retrieval_token": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "credential_stored": true
 }
 ```
 
@@ -239,6 +240,7 @@ Admin-triggered password reset. Generates a temporary password for the target us
 - Sets `force_password_change=True` on the target user
 - Stores the **plaintext** temporary password in Redis via `TempPasswordStore` under the `retrieval_token`
 - Returns `retrieval_token` (UUID) in the response instead of `temp_password`
+- Returns `credential_stored`: `false` when the Redis write failed or no store was wired, in which case the returned `retrieval_token` is **not** a working handle and a second reset is required; the status stays `200` because the password change itself is committed and durable
 
 > **Security:** The temporary password is **never returned in the response**. Instead, a `retrieval_token` is returned. The admin retrieves the password via `GET /api/v1/admin/temp-passwords/{retrieval_token}` when needed. This ensures the plaintext password never appears in API response logs. The password is stored in Redis with TTL (default: 24h, configurable via `TEMP_PASSWORD_TTL_SECONDS`) and is deleted upon retrieval (single-use).
 
@@ -374,7 +376,8 @@ Approve a pending registration request. Creates a new user account with a random
 {
   "message": "Registration approved",
   "user_id": "880e8400-e29b-41d4-a716-446655440003",
-  "retrieval_token": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+  "retrieval_token": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "credential_stored": true
 }
 ```
 
@@ -392,6 +395,7 @@ Approve a pending registration request. Creates a new user account with a random
 - Sets `force_password_change=True` on the new user
 - Updates the `registration_requests` record: status → `approved`, `reviewed_by` → admin user ID, `reviewed_at` → current timestamp
 - **Commits**, and only then stores the plaintext temporary password in Redis via `TempPasswordStore` under the `retrieval_token`
+- The response also carries `credential_stored`, which is `false` when the Redis write faulted or no store was wired
 
 The first four steps happen inside a single transaction owned by
 `AuthService.approve_registration_request`; the route does not open, commit or
@@ -640,13 +644,23 @@ failure now leaves a real, committed user whose temporary password is not yet
 retrievable. That state is visible to an admin and recoverable; the old one was
 neither.
 
-`TempPasswordStore.store` fails open: it catches every exception and returns. The
-service therefore neither treats a non-raising call as proof that the credential
-is retrievable, nor rolls the user back.
+`TempPasswordStore.store` still fails open and never raises: it catches every
+exception and returns. It now also **reports**: it returns `true` on a write that
+did not fault and `false` on a swallowed fault, and `AuthService` propagates that
+verdict twice — as `credential_stored` in the response body and as an `ERROR` log
+naming both the affected user and the administrator. The user is never rolled
+back, because a post-commit failure must not undo a committed account; a read of
+the same store does the opposite and raises, because there is nothing to protect
+there.
 
-The response shape, the status code and every error code are unchanged by this
-move. Other admin routes still commit in the transport layer; that inconsistency
-is recorded, not resolved here.
+The status code and every error code are unchanged by this move (still `200`).
+The body gains one key, `credential_stored`, which says whether the plaintext
+temporary password actually reached Redis under the returned `retrieval_token`.
+It is `false` whenever the store swallowed a Redis fault **or** no store was
+wired. A `false` value means the token is **not** a working handle — the account
+exists with a new password nobody can read, and a second reset is required.
+Other admin routes still commit in the transport layer; that inconsistency is
+recorded, not resolved here.
 
 `AuthService.reset_password_admin` — behind
 `POST /api/v1/admin/users/{user_id}/reset-password` — was reordered the same way.

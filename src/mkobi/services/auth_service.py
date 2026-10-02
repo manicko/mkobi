@@ -560,12 +560,14 @@ class AuthService(IAuthService):
         password in Redis so the credential is never durable before the commit
         that makes it valid.
 
-        The store fails open by design, so a non-raising call is not proof that
-        the credential is retrievable; it is logged by the store only.
+        The store fails open by design and never raises, but it reports whether
+        the write was attempted without a Redis fault. This method propagates
+        that verdict as ``credential_stored`` in the result and logs an ERROR
+        naming the affected user and the administrator when it is False.
 
         Returns:
-            dict with message, user_id, retrieval_token on success.
-            None if user not found.
+            dict with message, user_id, retrieval_token and credential_stored
+            on success. None if user not found.
 
         Raises:
             ValueError: If admin resets own password.
@@ -602,8 +604,25 @@ class AuthService(IAuthService):
         # Durable side effect placed after the commit on purpose: only now is
         # the credential tied to a committed user record.
         retrieval_token = str(uuid4())
+        credential_stored = False
         if self.temp_password_store is not None:
-            await self.temp_password_store.store(retrieval_token, temp_password)
+            credential_stored = await self.temp_password_store.store(
+                retrieval_token, temp_password
+            )
+        else:
+            logger.error(
+                "Password reset: no temp password store wired; credential not "
+                "stored: user_id=%s, admin_id=%s",
+                user_id,
+                admin_user_id,
+            )
+        if self.temp_password_store is not None and not credential_stored:
+            logger.error(
+                "Password reset: Redis write failed; credential not stored: "
+                "user_id=%s, admin_id=%s",
+                user_id,
+                admin_user_id,
+            )
 
         logger.info(
             "Password reset successful: user_id=%s, token=%s...", user_id, retrieval_token[:8],
@@ -612,6 +631,7 @@ class AuthService(IAuthService):
             "message": "Password reset successfully",
             "user_id": str(user_id),
             "retrieval_token": retrieval_token,
+            "credential_stored": credential_stored,
         }
 
     async def approve_registration_request(
@@ -630,12 +650,14 @@ class AuthService(IAuthService):
         with a not-yet-retrievable credential (recoverable) instead of a live
         retrieval token pointing at a user who does not exist.
 
-        The store fails open by design, so a non-raising call is not proof that
-        the credential is retrievable; it is logged by the store only.
+        The store fails open by design and never raises, but it reports whether
+        the write was attempted without a Redis fault. This method propagates
+        that verdict as ``credential_stored`` in the result and logs an ERROR
+        naming the affected user and the administrator when it is False.
 
         Returns:
-            dict with message, user_id and retrieval_token on success.
-            None if the registration request does not exist.
+            dict with message, user_id, retrieval_token and credential_stored
+            on success. None if the registration request does not exist.
         """
         logger.info(
             "Approving registration request: id=%s, admin_id=%s",
@@ -675,8 +697,25 @@ class AuthService(IAuthService):
         # Durable side effect placed after the commit on purpose: only now is
         # the credential tied to a user that exists.
         retrieval_token = str(uuid4())
+        credential_stored = False
         if self.temp_password_store is not None:
-            await self.temp_password_store.store(retrieval_token, temp_password)
+            credential_stored = await self.temp_password_store.store(
+                retrieval_token, temp_password
+            )
+        else:
+            logger.error(
+                "Registration approval: no temp password store wired; credential "
+                "not stored: user_id=%s, admin_id=%s",
+                user.id,
+                admin_user_id,
+            )
+        if self.temp_password_store is not None and not credential_stored:
+            logger.error(
+                "Registration approval: Redis write failed; credential not "
+                "stored: user_id=%s, admin_id=%s",
+                user.id,
+                admin_user_id,
+            )
 
         logger.info(
             "Registration request approved: id=%s, user_id=%s",
@@ -686,4 +725,5 @@ class AuthService(IAuthService):
             "message": "Registration request approved",
             "user_id": str(user.id),
             "retrieval_token": retrieval_token,
+            "credential_stored": credential_stored,
         }

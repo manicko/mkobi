@@ -27,14 +27,21 @@ class TempPasswordStore:
         self._redis = redis_client
         self._ttl = ttl_seconds
 
-    async def store(self, token: str, password: str) -> None:
+    async def store(self, token: str, password: str) -> bool:
         """Store a temporary password under the given token with TTL.
 
-        Fails open on Redis errors - logs the error but does not raise.
+        Fails open on Redis errors - logs the error but does not raise, and
+        returns False so the caller can report the fault. ``True`` means no
+        client-visible Redis error occurred; it is not proof that the value is
+        durable and readable.
 
         Args:
             token: Unique token identifier for the password.
             password: The password to store temporarily.
+
+        Returns:
+            bool: True if the SET completed without raising, False if a Redis
+                fault was caught and swallowed. Never raises.
         """
         key = f"{_KEY_PREFIX}{token}"
         try:
@@ -44,8 +51,10 @@ class TempPasswordStore:
                 token[:8],
                 self._ttl,
             )
+            return True
         except Exception as exc:
             logger.error("Failed to store temp password in Redis: %s", exc)
+            return False
 
     async def retrieve(self, token: str) -> str | None:
         """Retrieve and delete a temporary password.
