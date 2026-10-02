@@ -422,8 +422,15 @@ class DatabaseStarter:
         Idempotent — safe to run multiple times.
         Uses atomic UPSERT to avoid race conditions on concurrent startup.
 
+        When the configured admin address is already occupied by a user whose
+        role is not the admin role, the outcome is environment-scoped: a
+        production tier refuses to start, a development tier warns and
+        proceeds. The occupant's id and role are logged; no credential is.
+
         Raises:
-            ValueError: If the admin password matches a known placeholder value.
+            ValueError: If the admin password matches a known placeholder value,
+                or if a production tier finds the address occupied by a
+                non-admin user.
         """
         from mkobi.db.session import get_async_sessionlocal
 
@@ -458,7 +465,7 @@ class DatabaseStarter:
 
         async with SessionLocal() as db:
             async with db.begin():
-                await db.execute(
+                insert_result = await db.execute(
                     text(
                         "INSERT INTO users (id, email, password_hash, role, is_active) "
                         "VALUES (:id, :email, :password, :role, true) "
@@ -471,7 +478,51 @@ class DatabaseStarter:
                         "role": UserRole.ADMIN,
                     },
                 )
-            logger.info("Admin user ensured: %s", admin_email)
+                # No SAVEPOINT or nested transaction: the single begin() block is
+                # the documented transaction shape. The insert's rowcount is read
+                # here, inside the same block, so the read is part of the same
+                # transaction as the write it describes.
+                created = insert_result.rowcount > 0
+                occupant: tuple[object, object] | None = None
+                if not created:
+                    # The conflict clause matched an existing row for this
+                    # address. Query only the role (plus id, to name the
+                    # occupant); do not fetch or compare password_hash.
+                    existing = await db.execute(
+                        text("SELECT id, role FROM users WHERE email = :email"),
+                        {"email": admin_email},
+                    )
+                    row = existing.fetchone()
+                    if row is not None:
+                        occupant = (row[0], row[1])
+
+            if created:
+                logger.info("Admin user created: %s", admin_email)
+            elif occupant is not None and occupant[1] == UserRole.ADMIN:
+                logger.info(
+                    "Admin user already existed: %s (id=%s, role=%s)",
+                    admin_email,
+                    occupant[0],
+                    occupant[1],
+                )
+            elif occupant is not None:
+                # The address is occupied by a non-admin user. Report the truth
+                # in both tiers, but only production refuses to continue, the
+                # same environment scoping as the weak-password guard above.
+                message = (
+                    "Admin address is occupied by a non-admin user: %s "
+                    "(id=%s, role=%s)"
+                )
+                if self._config.env == EnvironmentEnum.PRODUCTION:
+                    raise ValueError(
+                        message % (admin_email, occupant[0], occupant[1])
+                    )
+                logger.warning(message, admin_email, occupant[0], occupant[1])
+            else:
+                # A conflict was reported but no row could be read back. This
+                # should not happen under a DO NOTHING conflict; log the truth
+                # rather than claim a creation.
+                logger.info("Admin user already existed: %s", admin_email)
 
     async def _verify_role_privileges(self) -> None:
         """Verify mkobi_app does not have excessive privileges (defense-in-depth)."""

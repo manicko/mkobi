@@ -39,11 +39,32 @@ By default, the application uses JSON formatting for machine-readable logs:
   "timestamp": "2026-01-15 10:30:00",
   "level": "INFO",
   "service": "mkobi",
-  "message": "Admin user created successfully: admin@example.com",
+  "message": "Admin user created: admin@example.com",
   "module": "mkobi.db.starter",
   "function": "ensure_admin_user"
 }
 ```
+
+`ensure_admin_user` distinguishes the two outcomes of its `INSERT ... ON
+CONFLICT DO NOTHING`. A row that was created logs `Admin user created: <email>`;
+a row that the conflict clause matched logs `Admin user already existed:
+<email> (id=<id>, role=<role>)`, naming the occupant's id and role and never a
+credential:
+
+```json
+{
+  "timestamp": "2026-01-15 10:30:01",
+  "level": "INFO",
+  "service": "mkobi",
+  "message": "Admin user already existed: admin@example.com (id=3f..., role=admin)",
+  "module": "mkobi.db.starter",
+  "function": "ensure_admin_user"
+}
+```
+
+If the address is occupied by a **non-admin** user, the same message is emitted
+at `WARNING` in development and raised as a `ValueError` (aborting startup) in
+production:
 
 ### JSON Formatter Fields
 

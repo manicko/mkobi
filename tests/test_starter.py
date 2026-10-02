@@ -159,6 +159,235 @@ class TestEnsureAdminUserPlaceholderCheck:
         )
 
 
+class _FakeResult:
+    """Minimal statement result carrying a rowcount and optional row."""
+
+    def __init__(self, rowcount: int = 0, row=None) -> None:
+        self.rowcount = rowcount
+        self._row = row
+
+    def fetchone(self):
+        return self._row
+
+
+class _FakeBegin:
+    """Async context manager standing in for ``db.begin()``."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+class _FakeAdminSession:
+    """Fake session for ensure_admin_user.
+
+    ``insert_rowcount`` and ``occupant`` drive the branch under test. The
+    INSERT returns ``insert_rowcount``; when the insert did not create a row,
+    the SELECT returns ``occupant`` as an ``(id, role)`` tuple.
+    """
+
+    def __init__(self, insert_rowcount: int, occupant=None) -> None:
+        self._insert_rowcount = insert_rowcount
+        self._occupant = occupant
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    def begin(self) -> _FakeBegin:
+        return _FakeBegin()
+
+    async def execute(self, statement, params=None):
+        rendered = str(statement)
+        if "INSERT INTO users" in rendered:
+            return _FakeResult(rowcount=self._insert_rowcount)
+        if "SELECT id, role FROM users" in rendered:
+            return _FakeResult(rowcount=0, row=self._occupant)
+        return _FakeResult(rowcount=0)
+
+
+def _pin_admin_session(monkeypatch, session: _FakeAdminSession) -> None:
+    """Pin the session factory to a sentinel returning ``session``."""
+
+    async def _sessionlocal():
+        return lambda: session
+
+    monkeypatch.setattr(
+        "mkobi.db.session.get_async_sessionlocal", _sessionlocal
+    )
+
+
+def _capture_starter_logs():
+    """Attach a collector handler to the starter logger.
+
+    The application's logging setup runs with disable_existing_loggers=True and
+    propagate=False, so caplog is not reliable here. Returns the collector list
+    and a restore callable.
+    """
+    import logging
+
+    starter_logger = logging.getLogger("mkobi.db.starter")
+    captured: list[logging.LogRecord] = []
+
+    class _Collector(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    collector = _Collector(level=logging.DEBUG)
+    original_level = starter_logger.level
+    was_disabled = starter_logger.disabled
+    starter_logger.addHandler(collector)
+    starter_logger.setLevel(logging.DEBUG)
+    starter_logger.disabled = False
+
+    def restore() -> None:
+        starter_logger.removeHandler(collector)
+        starter_logger.setLevel(original_level)
+        starter_logger.disabled = was_disabled
+
+    return captured, restore
+
+
+class TestEnsureAdminUserConflictOutcome:
+    """Tests for the D-04-L ensure_admin_user conflict outcomes."""
+
+    def test_created_row_logs_created_message(self, monkeypatch):
+        """A fresh address takes the created branch and logs creation."""
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongT3stP@ss!")
+        monkeypatch.setenv("ADMIN_USERNAME", "fresh_admin@example.com")
+
+        from mkobi.config import clear_config_cache
+
+        clear_config_cache()
+
+        _pin_admin_session(monkeypatch, _FakeAdminSession(insert_rowcount=1))
+        captured, restore = _capture_starter_logs()
+
+        starter = DatabaseStarter(
+            DatabaseStarterConfig(env=EnvironmentEnum.DEVELOPMENT)
+        )
+
+        import asyncio
+
+        try:
+            asyncio.run(starter.ensure_admin_user())
+        finally:
+            restore()
+
+        messages = [r.getMessage() for r in captured]
+        assert any(
+            m == "Admin user created: fresh_admin@example.com" for m in messages
+        ), messages
+        # The already-exists message must not be emitted on the created path.
+        assert not any(
+            "already existed" in m for m in messages
+        ), messages
+
+    def test_existing_admin_row_is_reported_not_raised(self, monkeypatch):
+        """An existing admin row is reported by id and role and not raised."""
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongT3stP@ss!")
+        monkeypatch.setenv("ADMIN_USERNAME", "existing_admin@example.com")
+
+        from mkobi.config import clear_config_cache
+
+        clear_config_cache()
+
+        occupant = ("00000000-0000-0000-0000-0000000000aa", "admin")
+        _pin_admin_session(
+            monkeypatch,
+            _FakeAdminSession(insert_rowcount=0, occupant=occupant),
+        )
+        captured, restore = _capture_starter_logs()
+
+        # Even at the production tier an existing admin row is not refused.
+        starter = DatabaseStarter(
+            DatabaseStarterConfig(env=EnvironmentEnum.PRODUCTION)
+        )
+
+        import asyncio
+
+        try:
+            asyncio.run(starter.ensure_admin_user())
+        finally:
+            restore()
+
+        messages = [r.getMessage() for r in captured]
+        already = [m for m in messages if "already existed" in m]
+        assert already, messages
+        assert occupant[0] in already[0], already[0]
+        assert occupant[1] in already[0], already[0]
+        assert not any("created:" in m for m in messages), messages
+
+    def test_existing_non_admin_warns_and_proceeds_in_development(
+        self, monkeypatch
+    ):
+        """A non-admin occupant warns, names its id and role, and proceeds."""
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongT3stP@ss!")
+        monkeypatch.setenv("ADMIN_USERNAME", "occupied_admin@example.com")
+
+        from mkobi.config import clear_config_cache
+
+        clear_config_cache()
+
+        occupant = ("00000000-0000-0000-0000-0000000000bb", "viewer")
+        _pin_admin_session(
+            monkeypatch,
+            _FakeAdminSession(insert_rowcount=0, occupant=occupant),
+        )
+        captured, restore = _capture_starter_logs()
+
+        starter = DatabaseStarter(
+            DatabaseStarterConfig(env=EnvironmentEnum.DEVELOPMENT)
+        )
+
+        import asyncio
+
+        try:
+            # Development only warns; no exception is raised.
+            asyncio.run(starter.ensure_admin_user())
+        finally:
+            restore()
+
+        warnings = [
+            r.getMessage() for r in captured if r.levelno >= 30
+        ]
+        occupied = [m for m in warnings if "non-admin user" in m]
+        assert occupied, warnings
+        assert occupant[0] in occupied[0], occupied[0]
+        assert occupant[1] in occupied[0], occupied[0]
+
+    def test_existing_non_admin_raises_in_production(self, monkeypatch):
+        """A non-admin occupant raises ValueError in production, naming role."""
+        monkeypatch.setenv("ADMIN_PASSWORD", "StrongT3stP@ss!")
+        monkeypatch.setenv("ADMIN_USERNAME", "occupied_prod@example.com")
+
+        from mkobi.config import clear_config_cache
+
+        clear_config_cache()
+
+        occupant = ("00000000-0000-0000-0000-0000000000cc", "viewer")
+        _pin_admin_session(
+            monkeypatch,
+            _FakeAdminSession(insert_rowcount=0, occupant=occupant),
+        )
+
+        starter = DatabaseStarter(
+            DatabaseStarterConfig(env=EnvironmentEnum.PRODUCTION)
+        )
+
+        import asyncio
+
+        with pytest.raises(ValueError, match="non-admin user") as exc_info:
+            asyncio.run(starter.ensure_admin_user())
+
+        assert occupant[1] in str(exc_info.value)
+        assert occupant[0] in str(exc_info.value)
+
+
 class _RecordingTransaction:
     """Fake transaction context manager recording begin()/commit-ish entry.
 
