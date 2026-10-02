@@ -28,6 +28,7 @@ from mkobi.workers.data_worker import (
     _update_processing_log_status,
     cleanup_stale_processing_logs,
     mark_orphaned_uploaded_logs_failed,
+    process_csv_background,
     start_stale_processing_cleanup_task,
     _store_aggregates,
     _validate_processing_config,
@@ -1228,7 +1229,9 @@ class TestConcurrentAppendUploads:
         """Verify two concurrent APPEND uploads complete without errors.
 
         Both uploads use clear_old=False (append mode) and should complete
-        successfully without race conditions or deadlocks.
+        successfully without race conditions or deadlocks. The aggregation mock
+        returns a record so these uploads exercise the append path; the
+        empty-selection failure case is covered by TestEmptySelectionGuard.
         """
         from mkobi.models.enums import GraphType
 
@@ -1272,7 +1275,15 @@ class TestConcurrentAppendUploads:
             "mkobi.db.repositories.dashboard_filter_values_repo.DashboardFilterValuesRepository"
         ) as mock_repo:
             mock_service_instance = AsyncMock()
-            mock_service_instance.aggregate_for_dashboard = AsyncMock(return_value=[])
+            mock_service_instance.aggregate_for_dashboard = AsyncMock(
+                return_value=[
+                    {
+                        "graph_id": graph_id,
+                        "dims": {"region": "North"},
+                        "metrics": {"a_sum": 1},
+                    }
+                ]
+            )
             mock_service_instance.extract_filter_values = AsyncMock(return_value={})
             mock_agg_service.return_value = mock_service_instance
 
@@ -1549,3 +1560,291 @@ class TestConcurrentAppendUploadsIntegration:
 
         # Verify no data corruption - all 4 records should exist
         assert len(all_records) == 4, f"Expected 4 records, got {len(all_records)}"
+
+
+# --- DP-005 dtype matrix ---
+
+
+@pytest.mark.asyncio
+class TestStoreAggregatesDtypeMatrix:
+    """DP-005: the filter-value write coerces native scalars to text.
+
+    ``asyncpg`` refuses a Python ``int`` / ``float`` / ``bool`` at parameter
+    binding, before SQLAlchemy or PostgreSQL coercion, so a dashboard whose
+    filter dimension carries a year, amount or flag value cannot ingest. The
+    landed fix (commit ``8953bf7``) is
+    ``str_values = [str(value) for value in fvalues]`` in ``_store_aggregates``
+    before each ``save_filter_values`` call. This matrix exercises that boundary
+    for every native scalar type and asserts the write also stays readable
+    through ``get_by_graph_id``'s ``dims[key].astext == str(value)`` comparison,
+    which applies the same ``str()`` on the read side.
+
+    Residual read-path divergence found while building this matrix, recorded and
+    not fixed here (out of DP-005's write-boundary scope): a Polars Boolean
+    dimension is written to ``dims`` as a JSONB boolean, whose ``astext``
+    renders lower-case (``true``), while the filter-value list stores
+    ``str(True)`` = ``"True"``. ``get_by_graph_id(filters={"value": "True"})``
+    therefore matches nothing; only the lower-case ``"true"`` matches. Text,
+    integer, float and null-to-empty all round-trip through the same comparison.
+    The boolean write-boundary is still exercised below -- that is DP-005's
+    reach -- and the read-side mismatch is reported, not papered over.
+    """
+
+    @pytest.fixture
+    async def matrix_dashboard(self, async_db_session):
+        """Create a dashboard, graph and bound filter for the dtype matrix."""
+        from mkobi.db.repositories.dashboard_filter_repo import DashboardFilterRepository
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+        from mkobi.db.repositories.filter_repo import FilterRepository
+        from mkobi.db.repositories.graph_repo import GraphRepository
+        from mkobi.models.enums import FilterType, GraphType
+
+        dashboard = await DashboardRepository().create(
+            db=async_db_session,
+            name=f"dtype_matrix_{uuid4().hex[:8]}",
+            description="dtype matrix dashboard",
+        )
+        graph = await GraphRepository().create(
+            db=async_db_session,
+            dashboard_id=dashboard.id,
+            name="Matrix Graph",
+            type=GraphType.TABLE,
+            config={},
+            dimensions=["value"],
+            metrics=["sales"],
+        )
+        matrix_filter = await FilterRepository().get_by_name("value", async_db_session)
+        if matrix_filter is None:
+            matrix_filter = await FilterRepository().create(
+                db=async_db_session,
+                name="value",
+                type=FilterType.SELECT,
+                config={"field": "value"},
+            )
+        await DashboardFilterRepository().bind_filter(
+            dashboard_id=dashboard.id,
+            filter_id=matrix_filter.id,
+            db=async_db_session,
+        )
+        await async_db_session.commit()
+        return dashboard, graph
+
+    async def test_native_dtypes_do_not_raise_at_repository_boundary(
+        self, async_db_session, matrix_dashboard
+    ):
+        """Every native scalar dimension dtype round-trips without raising.
+
+        ``asyncpg`` rejects a non-``str`` parameter at binding, so each row's
+        write exercises the ``str_values`` coercion before
+        ``save_filter_values``. The stored filter value is the ``str()`` form,
+        except ``None`` which ``_coerce_dim_value`` maps to ``""``.
+        """
+        from mkobi.db.repositories.dashboard_filter_values_repo import (
+            DashboardFilterValuesRepository,
+        )
+
+        dashboard, graph = matrix_dashboard
+        cases: list[tuple[pl.DataFrame, str]] = [
+            (pl.DataFrame({"value": ["Electronics"], "sales": [100]}), "Electronics"),
+            (pl.DataFrame({"value": [2026], "sales": [100]}), "2026"),
+            (pl.DataFrame({"value": [19.5], "sales": [100]}), "19.5"),
+            (pl.DataFrame({"value": [True], "sales": [100]}), "True"),
+            (pl.DataFrame({"value": [None], "sales": [100]}), ""),
+        ]
+
+        for frame, expected_value in cases:
+            await _store_aggregates(
+                df=frame,
+                dashboard_id=dashboard.id,
+                task_id=str(uuid4()),
+                mode="overwrite",
+                db_session=async_db_session,
+            )
+
+            values = await DashboardFilterValuesRepository().get_filter_values(
+                dashboard_id=dashboard.id,
+                filter_name="value",
+                db=async_db_session,
+            )
+            assert all(isinstance(value, str) for value in values), (
+                "filter values are stored as text; asyncpg rejects native scalars"
+            )
+            assert expected_value in values, (
+                f"expected the str() form {expected_value!r} in {values!r}"
+            )
+
+    async def test_native_dtypes_match_via_get_by_graph_id(
+        self, async_db_session, matrix_dashboard
+    ):
+        """Each stored scalar matches through the read path's astext comparison.
+
+        ``get_by_graph_id`` compares ``dims[key].astext == str(value)``. The
+        stored aggregate dim for text/int/float renders in JSONB as the same
+        text ``str(value)`` produces, so the same coercion fixes the write and
+        the read direction. ``None`` is stored as ``""`` by the write path.
+        """
+        from mkobi.db.repositories.aggregated_data_repo import AggregatedDataRepository
+
+        dashboard, graph = matrix_dashboard
+        cases: list[tuple[pl.DataFrame, str]] = [
+            (pl.DataFrame({"value": ["Electronics"], "sales": [100]}), "Electronics"),
+            (pl.DataFrame({"value": [2026], "sales": [100]}), "2026"),
+            (pl.DataFrame({"value": [19.5], "sales": [100]}), "19.5"),
+            (pl.DataFrame({"value": [None], "sales": [100]}), ""),
+        ]
+
+        for frame, read_value in cases:
+            await _store_aggregates(
+                df=frame,
+                dashboard_id=dashboard.id,
+                task_id=str(uuid4()),
+                mode="overwrite",
+                db_session=async_db_session,
+            )
+
+            rows = await AggregatedDataRepository().get_by_graph_id(
+                graph_id=graph.id,
+                db=async_db_session,
+                filters={"value": read_value},
+            )
+            assert rows, (
+                f"get_by_graph_id should match the stored dim for {read_value!r} "
+                f"through dims[key].astext == {str(read_value)!r}"
+            )
+
+
+# --- DP-004 empty-selection guard ---
+
+
+@pytest.mark.asyncio
+class TestEmptySelectionGuard:
+    """DP-004 / D-05-N(a): an empty overwrite selection fails, keeping state.
+
+    An upload that matches no graph dimension must not silently succeed: the
+    previous aggregate rows and the filter values are preserved, the run is
+    written FAILED, and the message names the skipped graphs.
+    """
+
+    async def test_empty_overwrite_selection_fails_and_preserves_state(
+        self, async_db_session
+    ):
+        import tempfile
+        from pathlib import Path
+
+        from mkobi.db.models.aggregated_data import AggregatedData
+        from mkobi.db.models.dashboard_filter_values import DashboardFilterValue
+        from mkobi.db.repositories.dashboard_filter_repo import DashboardFilterRepository
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+        from mkobi.db.repositories.filter_repo import FilterRepository
+        from mkobi.db.repositories.graph_repo import GraphRepository
+        from mkobi.db.repositories.processing_log_repo import ProcessingLogRepository
+        from mkobi.models.enums import FilterType, GraphType
+
+        dashboard = await DashboardRepository().create(
+            db=async_db_session,
+            name=f"empty_selection_{uuid4().hex[:8]}",
+            description="empty selection dashboard",
+        )
+        graph = await GraphRepository().create(
+            db=async_db_session,
+            dashboard_id=dashboard.id,
+            name="Skipped Graph",
+            type=GraphType.TABLE,
+            config={},
+            dimensions=["category"],
+            metrics=["sales"],
+        )
+        empty_filter = await FilterRepository().get_by_name(
+            "category", async_db_session
+        )
+        if empty_filter is None:
+            empty_filter = await FilterRepository().create(
+                db=async_db_session,
+                name="category",
+                type=FilterType.SELECT,
+                config={"field": "category"},
+            )
+        await DashboardFilterRepository().bind_filter(
+            dashboard_id=dashboard.id,
+            filter_id=empty_filter.id,
+            db=async_db_session,
+        )
+
+        # Previous state that must survive the failed overwrite.
+        async_db_session.add(
+            AggregatedData(
+                dashboard_id=dashboard.id,
+                graph_id=graph.id,
+                dims={"category": "Alpha"},
+                metrics={"sales": 100},
+            )
+        )
+        async_db_session.add(
+            DashboardFilterValue(
+                dashboard_id=dashboard.id,
+                filter_name="category",
+                filter_value="Alpha",
+            )
+        )
+        log = await ProcessingLogRepository().create_log(
+            dashboard_id=dashboard.id,
+            status=ProcessingStatus.UPLOADED,
+            message="Uploaded",
+            db=async_db_session,
+        )
+        await async_db_session.commit()
+        task_id = str(log.id)
+
+        # A frame whose columns match no graph dimension or metric.
+        with tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".csv", delete=False
+        ) as handle:
+            handle.write(b"region,amount\nNorth,10\n")
+            csv_path = Path(handle.name)
+
+        try:
+            with pytest.raises(AppException) as exc_info:
+                await process_csv_background(
+                    file_path_str=str(csv_path),
+                    task_id=task_id,
+                    dashboard_id_str=str(dashboard.id),
+                    processing_config_dict=None,
+                    mode="overwrite",
+                    db_session=async_db_session,
+                )
+
+            assert exc_info.value.code == ErrorCode.PROCESSING_FAILED
+            assert "Skipped Graph" in exc_info.value.detail
+
+            # Ruled status and message: FAILED, naming the skipped graph.
+            refreshed_log = await ProcessingLogRepository().get_by_id(
+                log.id, async_db_session
+            )
+            assert refreshed_log is not None
+            assert refreshed_log.status == ProcessingStatus.FAILED
+            assert "Skipped Graph" in (refreshed_log.message or "")
+            assert "no aggregates" in (refreshed_log.message or "")
+
+            # Previous aggregate rows are preserved, never silently cleared.
+            from sqlalchemy import select
+
+            stored = await async_db_session.execute(
+                select(AggregatedData).where(
+                    AggregatedData.dashboard_id == dashboard.id
+                )
+            )
+            stored_rows = list(stored.scalars().all())
+            assert len(stored_rows) == 1
+            assert stored_rows[0].dims == {"category": "Alpha"}
+
+            # Previous filter values are preserved too.
+            stored_filters = await async_db_session.execute(
+                select(DashboardFilterValue).where(
+                    DashboardFilterValue.dashboard_id == dashboard.id
+                )
+            )
+            filter_rows = list(stored_filters.scalars().all())
+            assert len(filter_rows) == 1
+            assert filter_rows[0].filter_value == "Alpha"
+        finally:
+            csv_path.unlink(missing_ok=True)

@@ -94,11 +94,30 @@ class StorageManager:
             ValueError: Validation error.
             SQLAlchemyError: Database error.
         """
+        # The empty-list check must not short-circuit a clear_old=True call
+        # before its own delete. Returning early here while the caller's
+        # separate clear_dashboard_values still ran produced a torn state: the
+        # old aggregate rows survived, the filter-value list was wiped, and the
+        # run reported success (DP-004). An empty list with clear_old=True
+        # therefore still performs the clear -- no rows are inserted and the
+        # method returns 0, but the clear is not skipped. Callers that must
+        # preserve the previous rows (the worker's empty-selection guard) fail
+        # before reaching this method.
         if not aggregates:
             logger.info(
                 "Empty aggregates list for dashboard_id=%s",
                 dashboard_id,
             )
+
+            if clear_old:
+                deleted = await self.delete_by_dashboard(dashboard_id)
+
+                logger.info(
+                    "Deleted %d old records for dashboard_id=%s",
+                    deleted,
+                    dashboard_id,
+                )
+
             return 0
 
         self._validate_aggregates(aggregates)

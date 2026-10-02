@@ -933,8 +933,9 @@ class TestTempFileCleanup:
             dashboard_id=test_dashboard_for_cleanup.id,
             permission=DashboardPermission.EDIT,
         )
-        # Create a graph with dimensions that don't match CSV columns
-        # This will cause the graph to be skipped during aggregation (not an error)
+        # Create a graph whose dimension does not match any CSV column. The
+        # graph is skipped during aggregation, which under D-05-N(a) fails the
+        # run rather than silently completing with nothing rebuilt.
         graph_repo = GraphRepository()
         _ = await graph_repo.create(
             db=async_db_session,
@@ -967,20 +968,23 @@ class TestTempFileCleanup:
             task_file = upload_dir / f"{task_id}.csv"
             task_file.write_bytes(csv_content)
 
-            # Processing will succeed but graph will be skipped due to invalid dimensions
-            result = await _process_csv_file_async(
-                file_path_str=str(task_file),
-                task_id=str(task_id),
-                dashboard_id_str=str(test_dashboard_for_cleanup.id),
-                processing_config_dict=None,
-                mode="overwrite",
-                db_session=async_db_session,
-            )
+            # The skipped graph is now an error: D-05-N(a) fails the run rather
+            # than silently completing with nothing rebuilt, and names the graph.
+            from mkobi.utils.exceptions import AppException
 
-            # Processing succeeds but skipped graph warning was logged
-            assert result["success"] is True
+            with pytest.raises(AppException) as exc_info:
+                await _process_csv_file_async(
+                    file_path_str=str(task_file),
+                    task_id=str(task_id),
+                    dashboard_id_str=str(test_dashboard_for_cleanup.id),
+                    processing_config_dict=None,
+                    mode="overwrite",
+                    db_session=async_db_session,
+                )
 
-            # Temp file should still be cleaned up
+            assert "error_graph" in exc_info.value.detail
+
+            # Temp file should still be cleaned up on the failure path
             task_files = list(upload_dir.glob(f"*{task_id}*.csv*"))
             assert len(task_files) == 0, (
                 f"Expected no task files after processing, found: {task_files}"

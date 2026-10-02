@@ -158,6 +158,118 @@ async def test_clear_dashboard_data_with_data(
 
 
 @pytest.mark.asyncio
+async def test_save_aggregates_empty_with_clear_old_still_clears(
+    manager: StorageManager, async_db_session: AsyncSession
+):
+    """An empty list under clear_old=True must not return before the clear.
+
+    DP-004: StorageManager.save_aggregates returned 0 at its ``if not
+    aggregates:`` branch before its own ``clear_old: delete_by_dashboard``, so a
+    caller that relied on the clear (and separately cleared filter values) was
+    left with the previous aggregate rows still present. The clear now runs even
+    for an empty list, so the method no longer silently skips it.
+    """
+    dashboard_repo = DashboardRepository()
+    dashboard = await dashboard_repo.create(
+        db=async_db_session,
+        name="test_dashboard_empty_clear",
+        description="Dashboard for empty clear_old test",
+    )
+    await async_db_session.commit()
+
+    graph_repo = GraphRepository()
+    graph = await graph_repo.create(
+        db=async_db_session,
+        dashboard_id=dashboard.id,
+        name="test_graph_empty_clear",
+        type=GraphType.TABLE,
+        config={},
+        dimensions=[],
+        metrics=[],
+    )
+    await async_db_session.commit()
+
+    async_db_session.add(
+        AggregatedData(
+            dashboard_id=dashboard.id,
+            graph_id=graph.id,
+            dims={"category": "A"},
+            metrics={"sales": 100},
+        )
+    )
+    await async_db_session.commit()
+
+    # Sanity: the previous row exists before the empty overwrite.
+    result = await async_db_session.execute(
+        select(AggregatedData).where(AggregatedData.dashboard_id == dashboard.id)
+    )
+    assert len(result.scalars().all()) == 1
+
+    saved = await manager.save_aggregates(
+        dashboard_id=dashboard.id,
+        aggregates=[],
+        clear_old=True,
+    )
+
+    assert saved == 0
+
+    # The clear ran: no previous rows survive an empty overwrite call.
+    result = await async_db_session.execute(
+        select(AggregatedData).where(AggregatedData.dashboard_id == dashboard.id)
+    )
+    assert len(result.scalars().all()) == 0
+
+
+@pytest.mark.asyncio
+async def test_save_aggregates_empty_without_clear_old_keeps_rows(
+    manager: StorageManager, async_db_session: AsyncSession
+):
+    """An empty list under clear_old=False keeps the previous rows."""
+    dashboard_repo = DashboardRepository()
+    dashboard = await dashboard_repo.create(
+        db=async_db_session,
+        name="test_dashboard_empty_append",
+        description="Dashboard for empty append test",
+    )
+    await async_db_session.commit()
+
+    graph_repo = GraphRepository()
+    graph = await graph_repo.create(
+        db=async_db_session,
+        dashboard_id=dashboard.id,
+        name="test_graph_empty_append",
+        type=GraphType.TABLE,
+        config={},
+        dimensions=[],
+        metrics=[],
+    )
+    await async_db_session.commit()
+
+    async_db_session.add(
+        AggregatedData(
+            dashboard_id=dashboard.id,
+            graph_id=graph.id,
+            dims={"category": "A"},
+            metrics={"sales": 100},
+        )
+    )
+    await async_db_session.commit()
+
+    saved = await manager.save_aggregates(
+        dashboard_id=dashboard.id,
+        aggregates=[],
+        clear_old=False,
+    )
+
+    assert saved == 0
+
+    result = await async_db_session.execute(
+        select(AggregatedData).where(AggregatedData.dashboard_id == dashboard.id)
+    )
+    assert len(result.scalars().all()) == 1
+
+
+@pytest.mark.asyncio
 async def test_clear_graph_data_compat_deprecated(async_db_session: AsyncSession):
     """Test clear_graph_data_compat emits deprecation warning."""
     graph_id = uuid4()

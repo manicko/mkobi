@@ -71,6 +71,25 @@ class DashboardFilterValuesRepository(IDashboardFilterValuesRepository):
     ) -> int:
         """Save filter values (clear-then-insert for idempotency).
 
+        Residual annotation gap (PB-3 / DP-005), answered "no": this method does
+        not coerce ``values`` itself, and the ``list[str]`` annotation is not a
+        runtime guard. The single owner of the coercion is
+        ``workers/data_worker.py::_store_aggregates``, which does
+        ``str_values = [str(value) for value in fvalues]`` before each call.
+        That boundary is the only place a native Polars scalar (``int`` /
+        ``float`` / ``bool``) can be turned into text before ``asyncpg`` binding,
+        which refuses a non-``str`` at parameter binding *before* SQLAlchemy or
+        PostgreSQL coercion.
+
+        Coercing here as well would create a second owner for one contract and
+        hide the gap rather than record it. What would break this: a future
+        caller that reaches this method without going through
+        ``_store_aggregates`` and passes native scalars. ``mypy`` cannot detect
+        that case for the worker's own calls, because ``asyncio.to_thread``
+        erases the argument types, so the ``list[str]`` signature is the only
+        guard and a bypassing caller would lose the coercion with nothing to
+        catch it. Any such caller must coerce before calling this method.
+
         Args:
             dashboard_id: Dashboard identifier (UUID).
             filter_name: Name of the filter.

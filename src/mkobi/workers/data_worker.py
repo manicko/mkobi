@@ -732,6 +732,39 @@ async def _process_csv_file_async(
             raise
 
 
+# Upper bound on graph names embedded in a skipped-selection detail. The
+# terminal message is written to processing_logs.message (String(1000)) with a
+# "Processing failed: " prefix, so the detail is bounded rather than unbounded.
+_MAX_SKIPPED_GRAPH_NAMES = 20
+
+
+def _empty_selection_detail(skipped_graph_names: list[str]) -> str:
+    """Build the failure detail for an upload that matched no data for graphs.
+
+    A graph is "skipped" when ``AggregationService.aggregate_for_dashboard``
+    returns no records for it -- no graph dimension or metric column matched the
+    uploaded frame. Under OVERWRITE the dashboard's rows are cleared before the
+    rebuild, so a skipped graph's previous aggregates would be deleted and never
+    replaced. The detail names the skipped graphs so a client reading the failed
+    run knows which charts lost their input.
+
+    Args:
+        skipped_graph_names: Names of the graphs that produced no records.
+
+    Returns:
+        A bounded, human-readable detail naming the skipped graphs.
+    """
+    shown = skipped_graph_names[:_MAX_SKIPPED_GRAPH_NAMES]
+    names = ", ".join(shown)
+    remaining = len(skipped_graph_names) - len(shown)
+    if remaining > 0:
+        names = f"{names}, and {remaining} more"
+    return (
+        f"Upload selection produced no aggregates for graph(s): {names}. "
+        "Existing data was kept; no aggregates were rebuilt."
+    )
+
+
 async def _store_aggregates(
     df: pl.DataFrame,
     dashboard_id: UUID,
@@ -758,6 +791,12 @@ async def _store_aggregates(
             transaction boundary (SAVEPOINT pattern in tests).
         mode: Upload mode - "overwrite" clears old data, "append" keeps it.
         processing_config_dict: Processing configuration for extracting metric_agg.
+
+    Raises:
+        AppException: If the aggregation produced no records for one or more
+            dashboard graphs (an empty selection). The run is failed before
+            either clear, so the previous aggregate rows and filter values are
+            preserved rather than silently mixed with an empty rebuild.
     """
     from mkobi.data.storage.manager import StorageManager
     from mkobi.models.enums import AggregationFunctionEnum, UploadMode
@@ -828,6 +867,37 @@ async def _store_aggregates(
         {"graph_id": r["graph_id"], "dims": r["dims"], "metrics": r["metrics"]}
         for r in records
     ]
+
+    # Empty-selection guard. A graph is "skipped" when the aggregation produced
+    # no records for it, which means no graph dimension or metric column matched
+    # the uploaded frame. This guard must sit before BOTH clears: the
+    # ``clear_old=True`` delete inside StorageManager.save_aggregates and the
+    # ``clear_dashboard_values`` below. The filter-value list is wiped
+    # independently of the aggregate rows, so guarding only one of them still
+    # loses data (DP-004).
+    #
+    # The filter-value clear is what makes an otherwise-harmless overwrite
+    # destructive: the previous aggregate rows are kept by save_aggregates'
+    # early return while clear_dashboard_values wipes the filter list, and the
+    # run then writes COMPLETED. Failing here keeps the previous rows AND the
+    # previous filter values, and reports the skipped graphs to the client
+    # (D-05-N(a): fail the run, naming the graphs that were skipped).
+    produced_graph_ids = {record["graph_id"] for record in records}
+    skipped_graph_names = [
+        graph.name for graph in graph_reads if graph.id not in produced_graph_ids
+    ]
+    if skipped_graph_names:
+        detail = _empty_selection_detail(skipped_graph_names)
+        logger.error(
+            "No aggregates produced for graphs=%s, dashboard_id=%s, task_id=%s",
+            skipped_graph_names,
+            dashboard_id,
+            task_id,
+        )
+        raise AppException(
+            code=ErrorCode.PROCESSING_FAILED,
+            detail=detail,
+        )
 
     manager = StorageManager(db_session)
     clear_old = (mode == UploadMode.OVERWRITE)
