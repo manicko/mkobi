@@ -1,6 +1,7 @@
 """Tests for TempPasswordStore class."""
 
 import asyncio
+import os
 
 import pytest
 
@@ -254,3 +255,54 @@ class TestTempPasswordStore:
         winners = [r for r in results if r is not None]
         assert len(winners) == 1
         assert winners[0] == password
+
+
+@pytest.mark.asyncio
+async def test_retrieve_concurrent_claimants_single_winner_real_redis() -> None:
+    """The single-use guarantee observed against a real redis.asyncio server.
+
+    The in-process test above proves the call sequence; it cannot fail by
+    construction, because its fake discards ``transaction`` and serialises the
+    GET-then-DELETE pair by the absence of an await. This test drives the same
+    two concurrent ``retrieve`` calls against a real ``redis.asyncio`` client
+    with ``pipeline(transaction=True)``, where MULTI/EXEC, not single-threaded
+    scheduling, is what makes exactly one claimant win.
+
+    The test skips cleanly when no real Redis is reachable, so a host without
+    the test stack reports a skip rather than a false pass. It does not fall
+    back to the fake: an unavailable server must be visible as a skip.
+    """
+    import redis.asyncio as aioredis
+
+    redis_url = os.environ.get("MKOBI_TEST_REDIS_URL", "redis://test-redis:6379/0")
+    client = aioredis.from_url(redis_url)
+    try:
+        await client.ping()
+    except Exception as exc:  # noqa: BLE001 - any connection fault means skip
+        await client.aclose()
+        pytest.skip(f"real Redis not reachable at {redis_url}: {exc}")
+
+    store = TempPasswordStore(client, ttl_seconds=60)
+    token = f"integration_concurrent_{os.getpid()}"
+    password = "ConcurrentPass1"
+    try:
+        await store.store(token, password)
+
+        results = await asyncio.gather(
+            store.retrieve(token),
+            store.retrieve(token),
+        )
+    finally:
+        await client.delete(f"temp_pwd:{token}")
+        await client.aclose()
+
+    winners = [r for r in results if r is not None]
+    assert len(winners) == 1, (
+        "the real pipeline(transaction=True) must resolve to exactly one winner"
+    )
+    # redis.asyncio returns bytes; the store's fake returns str. Decode so the
+    # winner is compared against the plaintext that was stored.
+    winner = winners[0]
+    if isinstance(winner, bytes):
+        winner = winner.decode("utf-8")
+    assert winner == password

@@ -243,9 +243,13 @@ Admin-triggered password reset. Generates a temporary password for the target us
 - Returns `credential_stored`: `false` when the Redis write failed or no store was wired, in which case the returned `retrieval_token` is **not** a working handle and a second reset is required; the status stays `200` because the password change itself is committed and durable
 - **Revokes the target user's existing tokens.** Once the new password is committed every credential
   the target holds is stale, so a timestamped user-level marker is written **after** the commit —
-  the same ordering and the same non-transactional-write caveat as
+  the same ordering, and the same non-transactional-write caveat, as
   `PATCH /admin/users/{id}/active`. A token issued before the reset is refused; the target logs in
-  again with the new credential and works immediately. This is **orthogonal** to `credential_stored`:
+  again with the new credential and works immediately. A Redis fault at this step is **guarded
+  separately**, exactly as it is on the deactivation path: the endpoint answers `500` with the
+  distinct detail `Password was reset successfully, but revoking the user's sessions failed; a
+  second reset is required.` rather than falling into the blanket handler, so the operator is told
+  the reset landed and must be repeated. This is **orthogonal** to `credential_stored`:
   the reset landed either way, even when the temporary-password handoff did not. See
   [Authentication API → Change Password](../01-auth/auth-api.md#8-change-password).
 
@@ -484,7 +488,7 @@ Retrieve a one-time temporary password by its retrieval token. Admin only. The p
 
 | Status | Condition                                | Detail                                        |
 | ------ | ---------------------------------------- | --------------------------------------------- |
-| `403`  | Caller is not admin                       | Forbidden (`PERMISSION_DENIED`)               |
+| `403`  | Caller is not admin                       | Forbidden (`INSUFFICIENT_PERMISSIONS`)        |
 | `404`  | Token not found / expired / already used | `Temporary password not found or already retrieved` (`NOT_FOUND`) |
 | `503`  | Temporary-password store unreachable     | Temporary password store is temporarily unavailable (`SERVICE_UNAVAILABLE`) |
 
@@ -516,7 +520,7 @@ design and all answer `404`; a **store fault is not one of them** and answers
 **Side effects (both operations):**
 - The password is **deleted** from Redis (single-use via atomic GET+DELETE pipeline)
 - Subsequent requests with the same token return 404
-- The retrieval **token**'s first 8 characters are logged at INFO level; the plaintext password is **never** written to a log. The admin issuance routes (`POST /admin/users/{user_id}/reset-password`, `POST /admin/registration-requests/:id/approve`) log the same 8-character **prefix** — a prefix is not the handle and cannot be replayed.
+- The retrieval **token**'s first 8 characters are logged at INFO level; the plaintext password is **never** written to a log. The reset issuance route (`POST /admin/users/{user_id}/reset-password`) logs the same 8-character **prefix** — a prefix is not the handle and cannot be replayed. The approve route does **not**: it logs the request id, not a token prefix.
 
 > **Security:** This is the **only** API operation that returns the plaintext `temp_password`. It requires admin authentication. The password is accessible only once — after retrieval, it is permanently deleted from Redis. Tokens auto-expire after `TEMP_PASSWORD_TTL_SECONDS` (default: 24h) if never retrieved. If Redis is unreachable the operation answers `503`, not `404`; the store's `GET`+`DELETE` run inside one Redis transaction.
 >

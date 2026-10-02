@@ -335,7 +335,7 @@ A fault reading the revocation store is a **dependency outage**, not a credentia
   raises `401 AUTHENTICATION_FAILED` / `"User account is deactivated"`.
 
 Which surface consults which authority is tabulated in
-[Backend Architecture → Account Deactivation: Two Authorities](../06-backend/architecture.md#account-deactivation-two-authorities).
+[Backend Architecture → Account Deactivation: The Database Row Is Authoritative](../06-backend/architecture.md#account-deactivation-the-database-row-is-authoritative).
 
 ---
 
@@ -354,7 +354,7 @@ The system uses a **retrieval-token pattern** for secure temporary password deli
 | Storage backend | Redis (`asyncio`) | Uses `redis.asyncio` pipeline for atomic operations |
 | Key pattern | `temp_pwd:{token}` | Token-prefixed keys for namespacing |
 | TTL | Configurable via `TEMP_PASSWORD_TTL_SECONDS` (default: 86400 = 24h, minimum: 60s) | Auto-expiring entries prevent indefinite Redis growth |
-| Retrieval semantics | Atomic GET+DELETE inside one `pipeline(transaction=True)` | Single-use: the password is deleted on retrieval, and a two-claimant race has exactly one winner |
+| Retrieval semantics | Atomic GET+DELETE inside one `pipeline(transaction=True)` | Single-use: the password is deleted on retrieval. The one-winner outcome is structural — Redis's MULTI/EXEC decides the race. The in-process test runs against a fake that does not model transactions and so cannot fail by construction; a separate integration test observes the guarantee against a real server and **skips** when one is not available. |
 
 ### Operations
 

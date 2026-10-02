@@ -129,12 +129,16 @@ The application is fully stateless:
 
 This enables horizontal scaling and simplifies deployment.
 
-### Account Deactivation: Two Authorities
+### Account Deactivation: The Database Row Is Authoritative
 
 Deactivating a user pairs two effects that cannot be made transactional together: the `is_active`
 write on the `users` row, and a Redis **user-level** revocation marker
-(`core/security.py::revoke_all_user_tokens`). Since the database half became **durable** for the
-first time, the authority for a deactivated account is **split**, and the split is load-bearing:
+(`core/security.py::revoke_all_user_tokens`). The database half is **durable**, and after `AB-4`
+nothing is split: the **`is_active` row is authoritative on all three surfaces** below. The marker
+is the mechanism that withdraws already-issued credentials, and it is **co-authoritative only at
+refresh** — where it runs before the row and keeps its own `TOKEN_REVOKED` contract. On the
+protected gate and at login the row alone decides; the marker is not consulted. The table beneath
+is the enumeration of which surface consults which.
 
 > **The marker is not deactivation-specific.** `revoke_all_user_tokens` also writes it on a
 > successful password change and on a successful admin password reset, with a different intent:
