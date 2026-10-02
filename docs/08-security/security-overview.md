@@ -249,7 +249,17 @@ Tokens can be immediately revoked before their natural expiration. This is imple
 - Revoked tokens are rejected immediately with HTTP 401, even if they have not yet expired
 - Both access and refresh tokens can be individually revoked
 - The blacklist is checked before any business logic executes (in the auth dependency)
-- If Redis is unavailable, the revocation check degrades gracefully (logged at WARNING level) — see [Rate Limiter Failure Behavior](#rate-limiter-failure-behavior-high-risk) for the general Redis degradation pattern
+
+### Revocation-Read Failure Behavior [HIGH-RISK]
+
+A fault reading the revocation store is a **dependency outage**, not a credential verdict. The readers `is_token_revoked`, `is_refresh_token_revoked`, and `is_user_tokens_revoked` (`src/mkobi/core/security.py`) raise a dedicated `RevocationStoreUnavailableError` when the store cannot be read; callers map that to `503 SERVICE_UNAVAILABLE`. The direction is **fail-closed** — a Redis outage never silently re-admits a revoked session — but the outcome is distinguishable from a refusal:
+
+| Path | Store healthy | Store fault |
+| --- | --- | --- |
+| Protected request (`get_current_user_dependency`) | 401 `TOKEN_REVOKED` if revoked, otherwise proceeds | 503 `SERVICE_UNAVAILABLE` |
+| `POST /api/v1/auth/refresh` | 401 `TOKEN_REVOKED` if revoked, otherwise proceeds | 503 `SERVICE_UNAVAILABLE` |
+
+> A Redis outage therefore produces **`503`, not a mass `401`**. Converting a store fault into `401` would turn a Redis degradation into an API-wide sign-out, because the SPA answers any `401` with a silent refresh and, on failure, a sign-out back to `/login`. The "cannot answer" case must never be blurred into "the answer is no". The value semantics of the readers are unchanged: the per-`jti` readers keep their literal `"revoked"` + `exists` semantics, and the user-level marker keeps its timestamped comparison with both fail-closed arms.
 
 ---
 

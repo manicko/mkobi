@@ -38,7 +38,12 @@ from mkobi.core.permissions import (
     AuthenticationError,
 )
 from mkobi.core.redis_client import get_async_redis_client
-from mkobi.core.security import decode_token, is_token_revoked, is_user_tokens_revoked
+from mkobi.core.security import (
+    RevocationStoreUnavailableError,
+    decode_token,
+    is_token_revoked,
+    is_user_tokens_revoked,
+)
 from mkobi.interfaces.repository_interfaces import IDashboardFilterValuesRepository
 from mkobi.core.temp_password_store import TempPasswordStore
 from mkobi.db.session import get_db, get_session  # noqa: F401
@@ -635,6 +640,15 @@ async def get_current_user_dependency(
             code=ErrorCode.AUTHENTICATION_FAILED,
             detail=str(e),
             headers={"WWW-Authenticate": "Bearer"},
+        ) from e
+    except RevocationStoreUnavailableError as e:
+        # A store fault is a dependency outage, not a credential verdict. It must
+        # sit above the blanket arm below so a Redis degradation does not surface
+        # as a mass 401 sign-out on every request.
+        logger.error("Revocation store unavailable: %s", e)
+        raise AppException(
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail="Authentication service is temporarily unavailable",
         ) from e
     except Exception as e:
         logger.error("Error getting current user: %s", e, exc_info=True)

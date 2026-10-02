@@ -45,6 +45,18 @@ COOKIE_SAMESITE: str = "strict"
 COOKIE_NAME: str = "mkobi_refresh_token"
 
 
+class RevocationStoreUnavailableError(Exception):
+    """Raised when the token revocation store cannot be read.
+
+    This is a store fault, not a credential verdict: it says nothing about
+    whether the token is valid or revoked, only that the store could not answer.
+    Callers must map it to a dependency-outage response rather than to an
+    authentication failure, so a degraded Redis does not become a mass logout.
+    """
+
+    pass
+
+
 def _generate_jti() -> str:
     """Generate a unique JWT ID for token identification.
 
@@ -515,9 +527,18 @@ async def is_token_revoked(redis_client: aioredis.Redis, jti: str) -> bool:
 
     Returns:
         bool: True if token is revoked, False otherwise.
+
+    Raises:
+        RevocationStoreUnavailableError: If the revocation store cannot be read.
     """
     key = f"{BLACKLIST_PREFIX}{jti}"
-    exists = await redis_client.exists(key)
+    try:
+        exists = await redis_client.exists(key)
+    except Exception as e:
+        logger.error("Revocation store unavailable checking token jti=%s: %s", jti, e)
+        raise RevocationStoreUnavailableError(
+            "Token revocation store is unavailable"
+        ) from e
     return bool(exists)
 
 
@@ -530,9 +551,20 @@ async def is_refresh_token_revoked(redis_client: aioredis.Redis, jti: str) -> bo
 
     Returns:
         bool: True if token is revoked, False otherwise.
+
+    Raises:
+        RevocationStoreUnavailableError: If the revocation store cannot be read.
     """
     key = f"{REFRESH_TOKEN_BLACKLIST_PREFIX}{jti}"
-    exists = await redis_client.exists(key)
+    try:
+        exists = await redis_client.exists(key)
+    except Exception as e:
+        logger.error(
+            "Revocation store unavailable checking refresh token jti=%s: %s", jti, e
+        )
+        raise RevocationStoreUnavailableError(
+            "Refresh token revocation store is unavailable"
+        ) from e
     return bool(exists)
 
 
@@ -586,9 +618,22 @@ async def is_user_tokens_revoked(
 
     Returns:
         bool: True if the credential must be rejected, False otherwise.
+
+    Raises:
+        RevocationStoreUnavailableError: If the revocation store cannot be read.
     """
     key = f"user_tokens_revoked:{user_id}"
-    value = await redis_client.get(key)
+    try:
+        value = await redis_client.get(key)
+    except Exception as e:
+        logger.error(
+            "Revocation store unavailable checking user marker user_id=%s: %s",
+            user_id,
+            e,
+        )
+        raise RevocationStoreUnavailableError(
+            "User token revocation store is unavailable"
+        ) from e
     if value is None:
         return False
     try:

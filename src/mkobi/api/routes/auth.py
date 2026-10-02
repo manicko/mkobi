@@ -37,6 +37,7 @@ from mkobi.core import redis_client
 from mkobi.core.security import (
     AsyncRateLimiter,
     COOKIE_NAME,
+    RevocationStoreUnavailableError,
     create_access_token,
     create_refresh_token,
     decode_token,
@@ -340,7 +341,15 @@ async def refresh(
     # Check if refresh token is revoked
     jti = payload.get("jti")
     if jti:
-        if await is_refresh_token_revoked(redis_client, jti):
+        try:
+            refresh_revoked = await is_refresh_token_revoked(redis_client, jti)
+        except RevocationStoreUnavailableError as exc:
+            logger.error("Revocation store unavailable during refresh: %s", exc)
+            raise AppException(
+                code=ErrorCode.SERVICE_UNAVAILABLE,
+                detail="Authentication service is temporarily unavailable",
+            ) from exc
+        if refresh_revoked:
             logger.warning("Revoked refresh token used: jti=%s", jti)
             raise AppException(
                 code=ErrorCode.TOKEN_REVOKED,
@@ -370,9 +379,17 @@ async def refresh(
     # marker. A token minted after it (for example, a fresh login following a
     # password change) is newer than the withdrawal and is allowed.
     issued_at = payload.get("iat")
-    if await is_user_tokens_revoked(
-        redis_client, UUID(user_id), issued_at if isinstance(issued_at, int) else None
-    ):
+    try:
+        user_tokens_revoked = await is_user_tokens_revoked(
+            redis_client, UUID(user_id), issued_at if isinstance(issued_at, int) else None
+        )
+    except RevocationStoreUnavailableError as exc:
+        logger.error("Revocation store unavailable during refresh: %s", exc)
+        raise AppException(
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail="Authentication service is temporarily unavailable",
+        ) from exc
+    if user_tokens_revoked:
         logger.warning("User tokens revoked: user_id=%s", user_id)
         delete_secure_cookie(response, COOKIE_NAME)
         raise AppException(
