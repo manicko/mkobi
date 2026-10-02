@@ -63,14 +63,15 @@ error_415 = {
 }
 
 # Auth endpoints - public endpoints (no auth required for some, but can return 401/422).
-# ``POST /auth/refresh`` now answers 503 when the revocation store is unreachable,
-# so 503 is declared here.
+# Only ``POST /auth/refresh`` can answer 503 when the revocation store is
+# unreachable, so that route unpacks 503 in its own decorator rather than this
+# shared dict. The other public routes fail closed on a Redis fault and answer
+# 429, so declaring 503 here would misdocument their OpenAPI surface.
 auth_public_responses = {
     401: error_401,
     422: error_422,
     429: error_429,
     500: error_500,
-    503: error_503,
 }
 
 # Auth endpoints - protected endpoints (require authentication). Every route

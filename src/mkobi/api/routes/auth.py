@@ -30,6 +30,7 @@ from mkobi.api.schemas.responses import (
     admin_responses,
     auth_protected_responses,
     auth_public_responses,
+    error_503,
 )
 from mkobi.db.repositories.user_repo import UserRepository
 from mkobi.config import get_config
@@ -386,7 +387,7 @@ async def register(
     status_code=status.HTTP_200_OK,
     summary="Refresh token",
     description="Refreshes expired JWT access token using httpOnly refresh token cookie.",
-    responses=auth_public_responses,
+    responses={**auth_public_responses, 503: error_503},
 )
 async def refresh(
     request: Request,
