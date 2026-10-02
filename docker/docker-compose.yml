@@ -137,6 +137,15 @@ services:
       # silently serving a permissive policy.
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173"]}
       LOGGING__LEVEL: ${LOGGING__LEVEL:-INFO}
+      # uvicorn's ProxyHeadersMiddleware consults X-Forwarded-For only when the
+      # peer is in this trusted set. The value must be the compose network's
+      # subnet; the default is the subnet mkobi_default uses on the reference
+      # host and is operator-overridable without an image rebuild. A mismatched
+      # value fails safe (no peer trusted, no forwarding header read) and
+      # produces no log output, because the proxy-headers module does not log.
+      # Never set this to "*": wildcard trust returns the left-most,
+      # client-controlled forwarded entry with no untrusted-hop walk.
+      FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-172.21.0.0/16}"
       # Security controls the production tier relies on; supplied with the
       # production defaults docker/.env.production declares.
       RATE_LIMITER_FAIL_CLOSED: ${RATE_LIMITER_FAIL_CLOSED:-true}

@@ -74,6 +74,13 @@ services:
     environment:
       ENV: development
       APP__COOKIE_SECURE: "false"
+      # Trust nothing: no path in the dev tier sets a forwarding header. The
+      # Vite proxy has no xfwd option and there is no nginx in dev, so both dev
+      # ingress paths (browser -> Vite container, browser -> host 8010) deliver
+      # no X-Forwarded-For. Stating 127.0.0.1 explicitly makes the tier
+      # difference visible, so it cannot drift silently if a subnet or xfwd is
+      # ever added. See the base app service for the production value.
+      FORWARDED_ALLOW_IPS: "127.0.0.1"
       DATABASE__HOST: db
       DATABASE__PORT: 5432
       DATABASE__USER: mkobi_app

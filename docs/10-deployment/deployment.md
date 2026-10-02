@@ -310,6 +310,38 @@ tier. See [Security Checklist](security-checklist.md#required-production-variabl
 the per-variable detail and the names that carry a default but are still required in
 practice.
 
+### Trusted Proxy Addresses (`FORWARDED_ALLOW_IPS`)
+
+Rate limiting keys on the client IP that uvicorn puts in the ASGI scope. In production
+only `nginx` publishes a port and proxies to `app:8000`, so without a trusted-proxy
+declaration every external request arrives with the nginx container's address and the
+entire internet shares one `login:` bucket.
+
+The base compose file sets, on the `app` service:
+
+```yaml
+FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-172.21.0.0/16}"
+```
+
+uvicorn's `ProxyHeadersMiddleware` consults `X-Forwarded-For` only when the direct peer
+is in this trusted set; when it is, uvicorn walks the forwarded chain in reverse and
+returns the first host **not** in the set — the correct, non-attacker-controlled
+behaviour. The value is passed via the environment (not a `CMD` argument), so it is
+tier-scoped in compose and overridable without an image rebuild.
+
+- The value **must be the compose network's subnet**. The default
+  `172.21.0.0/16` is the subnet the `mkobi_default` network uses on the reference host
+  — a documented, overridable default, not a constant.
+- The `docker-compose.override.yml` development tier sets `FORWARDED_ALLOW_IPS:
+  "127.0.0.1"`, i.e. trust nothing: no dev ingress path sets a forwarding header.
+- **A mismatched value fails safe.** If the value does not match the host's actual
+  subnet, no peer is trusted, `X-Forwarded-For` is never consulted, and behaviour
+  degrades to the single-bucket state — no bypass. There is **no diagnostic signal**:
+  uvicorn's `proxy_headers` module does not log, so a mismatch produces zero output.
+- **Never set this to `*`.** Wildcard trust returns the left-most,
+  fully client-controlled forwarded entry with no untrusted-hop walk, converting this
+  availability defect into a brute-force bypass at internet scale.
+
 ### Database Migrations
 
 - `AUTO_MIGRATE` — **off by default**, and off everywhere in the shipped Compose files. The `auto_migrate` setting is `false` in `src/mkobi/settings/app.yaml` and in the `Settings` field, and `AUTO_MIGRATE=true` makes the **application process** run `alembic upgrade head` during startup (`DatabaseStarter.startup`). It therefore takes effect only where a process actually receives the variable, and in the base compose file none does: `app` is not given `AUTO_MIGRATE` at all, and `rq-worker` receives a literal `AUTO_MIGRATE: "false"`. Setting `AUTO_MIGRATE=true` in an env file changes nothing — use the `migrate` service below.

@@ -517,6 +517,7 @@ placeholders are allowed.
 | `RECREATE_TEST_DB` | Recreate the test database on startup. Supplied only by the test compose (`test-app`); the base and dev stacks leave it at `false`. See the note below |
 | `APP__COOKIE_SECURE` | Cookie `Secure` attribute. Defaults to `true`; the dev override sets `false` |
 | `REDIS__HOST`, `REDIS__PORT` | Redis address. Must be `redis` inside a container, since the default `localhost` resolves to the container itself |
+| `FORWARDED_ALLOW_IPS` | uvicorn trusted-proxy set for `X-Forwarded-For`. Base `app` defaults to the compose network subnet (`172.21.0.0/16`); the dev override sets `127.0.0.1` (trust nothing). Must be the compose network's subnet and is operator-overridable; a mismatch fails safe with no log output. **Never `*`** — see the note below |
 | `APP_HOST_PORT` | Host port for the dev `app` (default `8010`) |
 | `TEST_DB_HOST_PORT`, `TEST_REDIS_HOST_PORT`, `TEST_APP_HOST_PORT` | Host ports for the test stack (defaults `5434`, `6381`, `8001`) |
 | `CORS_ORIGINS` | Allowed origins. Defaults to `["http://localhost:5173"]` in the base file, `["http://localhost:3000"]` in the dev override. The base default is a placeholder the production tier refuses — see [Required Variables](#cors_origins-is-required-in-practice) |
@@ -529,6 +530,39 @@ placeholders are allowed.
 > unreachable in every shipped compose file — only the test compose sets the flag,
 > and it also supplies the admin credentials — but it is a behaviour change if you
 > had set the variable by hand.
+
+#### `FORWARDED_ALLOW_IPS` (trusted proxy addresses)
+
+The base `app` service declares
+`FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-172.21.0.0/16}"`, and the
+development override sets `127.0.0.1`. uvicorn's `ProxyHeadersMiddleware`
+consults `X-Forwarded-For` only when the direct peer is inside this set; when
+it is, uvicorn walks the forwarded chain in reverse and returns the first host
+**not** in the set — not the client-supplied left-most entry.
+
+- **The value must be the compose network's subnet.** The `172.21.0.0/16`
+  default is the subnet `mkobi_default` uses on the reference host; it is a
+  documented, overridable default, not a constant. A deployment on a host that
+  auto-assigns a different subnet **must** set `FORWARDED_ALLOW_IPS`
+  explicitly.
+- **The value is tier-scoped in compose, not baked into the image.** It is an
+  environment value on the service, so an operator can override it without an
+  image rebuild. The Dockerfile is unchanged.
+- **A mismatch fails safe but silently.** If the value does not match the
+  host's actual subnet, no peer is trusted, the forwarded header is never read,
+  and behaviour reverts to the single-bucket state. uvicorn's `proxy_headers`
+  module does not log, so there is **no diagnostic output** for a mismatch.
+- **The development tier trusts nothing, explicitly.** No dev ingress path sets
+  a forwarding header: the Vite proxy has no `xfwd` option and there is no
+  `nginx` container in the dev stack. `127.0.0.1` states this so the tier
+  difference is visible and cannot drift silently.
+- **Never use `*`.** Wildcard trust returns the left-most, client-controlled
+  forwarded entry with no untrusted-hop walk, turning this availability defect
+  into a brute-force bypass. Do not write it, not even in a comment.
+
+This setting depends on `docker/nginx/nginx.conf` continuing to emit
+`X-Forwarded-For` on the production path; that file is owned elsewhere and is
+not changed here.
 
 ## Docker Internals
 
