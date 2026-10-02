@@ -6,8 +6,10 @@ from uuid import uuid4
 import polars as pl
 import pytest
 
+from mkobi.models.enums import AggregationFunctionEnum, ErrorCode
 from mkobi.models.filters import FilterRead
 from mkobi.services.aggregation_service import AggregationService
+from mkobi.utils.exceptions import AppException
 
 
 class TestAggregationService:
@@ -466,10 +468,26 @@ class TestAggregationService:
             metric_key = next(k for k in r["metrics"].keys() if k.endswith("_count"))
             assert r["metrics"][metric_key] == 2  # Two rows per category in sample data
 
-    async def test_aggregate_for_dashboard_unknown_agg_falls_back_to_sum(
-        self, aggregation_service, sample_dataframe
+    @pytest.mark.parametrize(
+        ("metric_agg", "expected_values"),
+        [
+            ("median", {"A": 125.0, "B": 225.0, "C": 325.0}),
+            ("std", {"A": 35.35533905932738, "B": 35.35533905932738, "C": 35.35533905932738}),
+            ("var", {"A": 1250.0, "B": 1250.0, "C": 1250.0}),
+            ("first", {"A": 100, "B": 200, "C": 300}),
+            ("last", {"A": 150, "B": 250, "C": 350}),
+        ],
+    )
+    async def test_aggregate_for_dashboard_newly_reachable_members_use_own_function(
+        self, aggregation_service, sample_dataframe, metric_agg, expected_values
     ):
-        """Test that unknown aggregation type falls back to sum."""
+        """DP-018: every declared member stores its own value, not a sum.
+
+        Before the fix ``_agg_fn_map`` held only five entries and unknown names
+        fell back to sum while the output column kept the requested name, so a
+        dashboard configured for ``median`` stored a sum under ``sales_median``.
+        Each row here asserts the stored value is the named function's value.
+        """
         dashboard_id = uuid4()
         graph = self._make_graph_read(
             graph_id=uuid4(),
@@ -482,13 +500,106 @@ class TestAggregationService:
             df=sample_dataframe,
             graphs=[graph],
             dashboard_filters=[],
-            metric_agg="unknown_func",
+            metric_agg=metric_agg,
         )
 
-        assert len(results) > 0
+        assert len(results) == 3
+        by_category = {r["dims"]["category"]: r["metrics"] for r in results}
+        for category, expected in expected_values.items():
+            # The key keeps the requested name and the value is that function's.
+            assert by_category[category][f"sales_{metric_agg}"] == pytest.approx(expected)
+
+    async def test_aggregate_for_dashboard_unknown_agg_falls_back_to_sum(
+        self, aggregation_service, sample_dataframe
+    ):
+        """An unrecognised aggregation name raises VALIDATION_ERROR.
+
+        Reversal of previously-asserted behaviour: this test was named
+        ``..._falls_back_to_sum`` and asserted that an unknown name stored a sum
+        under ``sales_unknown_func``. That silence *was* DP-018. The ruled
+        policy resolves the name against ``AggregationFunctionEnum`` and raises
+        ``AppException`` with ``VALIDATION_ERROR`` when it is not a member, so
+        the test name is kept and its expectation is inverted.
+        """
+        dashboard_id = uuid4()
+        graph = self._make_graph_read(
+            graph_id=uuid4(),
+            dashboard_id=dashboard_id,
+            dimensions=["category"],
+            metrics=["sales"],
+        )
+
+        with pytest.raises(AppException) as exc_info:
+            await aggregation_service.aggregate_for_dashboard(
+                df=sample_dataframe,
+                graphs=[graph],
+                dashboard_filters=[],
+                metric_agg="unknown_func",
+            )
+
+        assert exc_info.value.code == ErrorCode.VALIDATION_ERROR
+
+    async def test_aggregate_for_dashboard_normalises_case_and_whitespace(
+        self, aggregation_service, sample_dataframe
+    ):
+        """A differently-cased, padded but otherwise valid name is accepted."""
+        dashboard_id = uuid4()
+        graph = self._make_graph_read(
+            graph_id=uuid4(),
+            dashboard_id=dashboard_id,
+            dimensions=["category"],
+            metrics=["sales"],
+        )
+
+        results = await aggregation_service.aggregate_for_dashboard(
+            df=sample_dataframe,
+            graphs=[graph],
+            dashboard_filters=[],
+            metric_agg="  MEAN  ",
+        )
+
+        assert len(results) == 3
         for r in results:
-            # Check that metric key uses "unknown_func" suffix (falling back to sum behavior)
-            assert any(k.endswith("_unknown_func") for k in r["metrics"].keys())
+            assert any(k.endswith("_mean") for k in r["metrics"].keys())
+
+    async def test_aggregate_for_dashboard_accepts_enum_member(
+        self, aggregation_service, sample_dataframe
+    ):
+        """The enum reaches the function map both as enum and as string.
+
+        ``AggregationFunctionEnum`` is a ``StrEnum`` and compares equal to its
+        value, so a string-keyed lookup cannot tell an enum member from a string
+        and a type regression would be invisible. This asserts an enum member is
+        accepted and produces the same result as its string value.
+        """
+        dashboard_id = uuid4()
+        graph = self._make_graph_read(
+            graph_id=uuid4(),
+            dashboard_id=dashboard_id,
+            dimensions=["category"],
+            metrics=["sales"],
+        )
+
+        enum_results = await aggregation_service.aggregate_for_dashboard(
+            df=sample_dataframe,
+            graphs=[graph],
+            dashboard_filters=[],
+            metric_agg=AggregationFunctionEnum.MEAN,
+        )
+        string_results = await aggregation_service.aggregate_for_dashboard(
+            df=sample_dataframe,
+            graphs=[graph],
+            dashboard_filters=[],
+            metric_agg="mean",
+        )
+
+        # group_by does not guarantee row order, so compare by category.
+        enum_by_category = {r["dims"]["category"]: r["metrics"] for r in enum_results}
+        string_by_category = {r["dims"]["category"]: r["metrics"] for r in string_results}
+        assert enum_by_category == string_by_category
+        expected = {"A": 125.0, "B": 225.0, "C": 325.0}
+        for category, metrics in enum_by_category.items():
+            assert metrics["sales_mean"] == pytest.approx(expected[category])
 
     # --- _apply_chart_sorting tests ---
 

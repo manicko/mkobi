@@ -1052,6 +1052,88 @@ class TestStoreAggregates:
             # Verify filter values are cleared in append mode (idempotent rebuild per SPEC.md)
             mock_repo_instance.clear_dashboard_values.assert_called_once()
 
+    async def test_store_aggregates_reads_metric_agg_from_producer_shape(
+        self, mock_session
+    ):
+        """DP-002: the worker reads ``metric_agg`` from the shape the producer writes.
+
+        ``DataService._execute_upload`` builds ``dict(config_response.settings)``,
+        so ``metric_agg`` sits at the **top level** of the dict handed to the
+        worker. Before the fix the worker read ``["settings"]["metric_agg"]``,
+        which never exists, so ``_agg_fn_map`` always received ``"sum"`` and a
+        dashboard configured for ``mean`` stored a sum under ``revenue_mean``.
+        This asserts both the key and the value.
+        """
+        from mkobi.models.enums import GraphType
+
+        df = pl.DataFrame({"category": ["A", "A", "B"], "sales": [100, 200, 400]})
+        dashboard_id = uuid4()
+        task_id = str(uuid4())
+
+        mock_graph = MagicMock()
+        mock_graph.id = uuid4()
+        mock_graph.name = "Test Graph"
+        mock_graph.type = GraphType.BAR
+        mock_graph.dashboard_id = dashboard_id
+        mock_graph.config = {}
+        mock_graph.dimensions = []
+        mock_graph.metrics = []
+
+        mock_filter = MagicMock()
+        mock_filter.id = uuid4()
+        mock_filter.name = "Test Filter"
+        mock_filter.type = FilterType.SELECT
+        mock_filter.config = {}
+        mock_filter.created_at = datetime.now(UTC)
+
+        mock_graph_result = MagicMock()
+        mock_graph_result.scalars.return_value.all.return_value = [mock_graph]
+
+        mock_filter_result = MagicMock()
+        mock_filter_result.scalars.return_value.all.return_value = [mock_filter]
+
+        mock_session.execute.side_effect = [mock_graph_result, mock_filter_result] * 3
+
+        with patch(
+            "mkobi.services.aggregation_service.AggregationService"
+        ) as mock_agg_service, patch(
+            "mkobi.data.storage.manager.StorageManager"
+        ) as mock_storage, patch(
+            "mkobi.db.repositories.dashboard_filter_values_repo.DashboardFilterValuesRepository"
+        ) as mock_repo:
+            mock_service_instance = AsyncMock()
+            mock_service_instance.aggregate_for_dashboard = AsyncMock(
+                return_value=[{"graph_id": mock_graph.id, "dims": {}, "metrics": {}}]
+            )
+            mock_service_instance.extract_filter_values = AsyncMock(return_value={})
+            mock_agg_service.return_value = mock_service_instance
+
+            mock_manager_instance = AsyncMock()
+            mock_manager_instance.save_aggregates = AsyncMock(return_value=1)
+            mock_storage.return_value = mock_manager_instance
+
+            mock_repo_instance = AsyncMock()
+            mock_repo_instance.save_filter_values = AsyncMock()
+            mock_repo_instance.clear_dashboard_values = AsyncMock()
+            mock_repo.return_value = mock_repo_instance
+
+            # The producer's shape: settings at the top level, metric_agg a key
+            # of that same dict -- exactly what DataService._execute_upload passes.
+            await _store_aggregates(
+                df=df,
+                dashboard_id=dashboard_id,
+                task_id=task_id,
+                mode="overwrite",
+                db_session=mock_session,
+                processing_config_dict={"metric_agg": "mean"},
+            )
+
+            agg_call = mock_service_instance.aggregate_for_dashboard.call_args
+            assert agg_call is not None, "aggregate_for_dashboard should have been called"
+            assert agg_call[1]["metric_agg"] == "mean", (
+                "metric_agg must be read from the top-level producer shape, not ['settings']"
+            )
+
     async def test_store_aggregates_logs_processed_count(
         self, mock_session
     ):

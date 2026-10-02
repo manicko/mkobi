@@ -9,10 +9,43 @@ from typing import Any
 
 import polars as pl
 
+from mkobi.data.processing.aggregate_transforms import AGG_FUNC_MAP
+from mkobi.models.enums import AggregationFunctionEnum, ErrorCode
 from mkobi.models.graph import GraphRead
 from mkobi.models.filters import FilterRead
+from mkobi.utils.exceptions import AppException
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_metric_agg(metric_agg: AggregationFunctionEnum | str) -> AggregationFunctionEnum:
+    """Normalise and validate an aggregation function name.
+
+    Accepts either an :class:`AggregationFunctionEnum` member or the stored
+    string. The string is normalised (``strip()`` + ``lower()``) and resolved
+    against the enum. An unrecognised name **fails loudly** with
+    :class:`AppException` and ``VALIDATION_ERROR`` rather than silently falling
+    back to ``sum`` under the requested name (DP-018).
+
+    Args:
+        metric_agg: Aggregation function as an enum member or a string.
+
+    Returns:
+        The matching AggregationFunctionEnum member.
+
+    Raises:
+        AppException: If the name is not a member of AggregationFunctionEnum.
+    """
+    if isinstance(metric_agg, AggregationFunctionEnum):
+        return metric_agg
+    normalised = str(metric_agg).strip().lower()
+    try:
+        return AggregationFunctionEnum(normalised)
+    except ValueError:
+        raise AppException(
+            code=ErrorCode.VALIDATION_ERROR,
+            detail=f"Unsupported aggregation function: '{metric_agg}'",
+        ) from None
 
 
 def _coerce_dim_value(value: Any) -> str | int | float | bool:
@@ -46,7 +79,7 @@ class AggregationService:
         df: pl.DataFrame,
         graphs: list[GraphRead],
         dashboard_filters: list[FilterRead],
-        metric_agg: str = "sum",
+        metric_agg: AggregationFunctionEnum | str = "sum",
     ) -> list[dict[str, Any]]:
         """Aggregate data for each graph in dashboard.
 
@@ -54,11 +87,17 @@ class AggregationService:
             df: Polars DataFrame with source data.
             graphs: List of GraphRead models for the dashboard.
             dashboard_filters: List of FilterRead models for the dashboard.
-            metric_agg: Aggregation type for metrics (default: "sum").
+            metric_agg: Aggregation function as an AggregationFunctionEnum
+                member or its string value (default: "sum").
 
         Returns:
             List of dicts with {dashboard_id, graph_id, dims: {native types}, metrics: {}}.
+
+        Raises:
+            AppException: If ``metric_agg`` is not a recognised function.
         """
+        agg_enum = _resolve_metric_agg(metric_agg)
+        agg_name = agg_enum.value
         dashboard_filter_dim_names = [f.name for f in dashboard_filters]
         results: list[dict[str, Any]] = []
 
@@ -85,17 +124,12 @@ class AggregationService:
                 )
                 continue
 
-            # Build aggregation expressions for metrics using metric_agg parameter
-            _agg_fn_map: dict[str, Any] = {
-                "sum": lambda c: c.sum(),
-                "mean": lambda c: c.mean(),
-                "min": lambda c: c.min(),
-                "max": lambda c: c.max(),
-                "count": lambda c: c.count(),
-            }
-            agg_fn = _agg_fn_map.get(metric_agg, lambda c: c.sum())
+            # Build aggregation expressions for metrics. The function map is
+            # consumed from data/processing/aggregate_transforms.py::AGG_FUNC_MAP,
+            # which already implements all ten AggregationFunctionEnum members.
+            # The value is keyed by the enum and called with a column name.
             agg_exprs = [
-                agg_fn(pl.col(m)).alias(f"{m}_{metric_agg}") for m in metric_cols
+                AGG_FUNC_MAP[agg_enum](m).alias(f"{m}_{agg_name}") for m in metric_cols
             ]
 
             # Perform GROUP BY aggregation
@@ -107,7 +141,7 @@ class AggregationService:
                 x_col=graph.config.get("x") if graph.config else None,
                 color_col=graph.config.get("color") if graph.config else None,
                 metric_cols=metric_cols,
-                metric_agg=metric_agg,
+                metric_agg=agg_name,
             )
 
             # Convert each row to record dict with coerced dimensions

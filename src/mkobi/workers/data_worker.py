@@ -586,8 +586,12 @@ async def _process_csv_file_async(
 
         # Store aggregates in database with mode (within same transaction)
         await _store_aggregates(
-            df, dashboard_id, task_id, mode, db_session=session,
-            processing_config_dict=processing_config_dict
+            df=df,
+            dashboard_id=dashboard_id,
+            task_id=task_id,
+            db_session=session,
+            mode=mode,
+            processing_config_dict=processing_config_dict,
         )
 
         # Clean up temp file
@@ -732,22 +736,31 @@ async def _store_aggregates(
     df: pl.DataFrame,
     dashboard_id: UUID,
     task_id: str,
+    db_session: AsyncSession,
     mode: str = "overwrite",
-    db_session: AsyncSession | None = None,
     processing_config_dict: dict[str, Any] | None = None,
 ) -> None:
     """Store aggregated data to database.
+
+    ``db_session`` is required by construction. The caller
+    (``_run_with_transaction``) always holds the main transaction, which holds
+    the dashboard's rebuild exclusion (:func:`acquire_dashboard_rebuild_lock`).
+    An optional session would let a caller open its own, bypassing that
+    exclusion and splitting the aggregate write from the terminal ``COMPLETED``
+    update into two transactions; making the parameter required removes that
+    hazard rather than documenting it.
 
     Args:
         df: Processed DataFrame.
         dashboard_id: Dashboard ID.
         task_id: Task ID for logging.
+        db_session: Caller-managed database session. The caller owns the
+            transaction boundary (SAVEPOINT pattern in tests).
         mode: Upload mode - "overwrite" clears old data, "append" keeps it.
-        db_session: Optional database session for testing. If None, creates a new session.
         processing_config_dict: Processing configuration for extracting metric_agg.
     """
     from mkobi.data.storage.manager import StorageManager
-    from mkobi.models.enums import UploadMode
+    from mkobi.models.enums import AggregationFunctionEnum, UploadMode
     from mkobi.models.graph import GraphRead
     from mkobi.models.filters import FilterRead
     from mkobi.services.aggregation_service import AggregationService
@@ -776,168 +789,92 @@ async def _store_aggregates(
             created_at=f.created_at,
         )
 
-    if db_session is not None:
-        # Test mode - use provided session without creating nested transaction.
-        # Caller manages the transaction (SAVEPOINT pattern in async_db_session fixture).
-        # StorageManager does not commit/rollback - transaction is managed externally.
-        result = await db_session.execute(
-            select(Graph).where(Graph.dashboard_id == dashboard_id)
+    # Query graphs for the dashboard. db_session is the caller's session, which
+    # holds the rebuild exclusion; StorageManager does not commit/rollback here.
+    result = await db_session.execute(
+        select(Graph).where(Graph.dashboard_id == dashboard_id)
+    )
+    graph_reads = [_to_graph_read(g) for g in result.scalars().all()]
+
+    if not graph_reads:
+        logger.warning("No graphs found for dashboard: %s", dashboard_id)
+        return
+
+    # Query dashboard filters via join table
+    result = await db_session.execute(
+        select(Filter).join(dashboard_filters).where(
+            dashboard_filters.c.dashboard_id == dashboard_id
         )
-        graph_reads = [_to_graph_read(g) for g in result.scalars().all()]
+    )
+    filter_reads = [_to_filter_read(f) for f in result.scalars().all()]
 
-        if not graph_reads:
-            logger.warning("No graphs found for dashboard: %s", dashboard_id)
-            return
+    # The producer (DataService._execute_upload) builds
+    # dict(config_response.settings), so metric_agg sits at the top level of
+    # processing_config_dict -- the same shape _run_with_transaction reads its
+    # settings from. Reading ["settings"]["metric_agg"] would always miss and
+    # silently force "sum" (DP-002).
+    metric_agg = (processing_config_dict or {}).get("metric_agg", "sum")
+    if not isinstance(metric_agg, AggregationFunctionEnum):
+        metric_agg = AggregationFunctionEnum(str(metric_agg).strip().lower())
 
-        # Query dashboard filters via join table
-        result = await db_session.execute(
-            select(Filter).join(dashboard_filters).where(
-                dashboard_filters.c.dashboard_id == dashboard_id
-            )
-        )
-        filter_reads = [_to_filter_read(f) for f in result.scalars().all()]
+    # Use AggregationService for per-chart GROUP BY aggregation
+    agg_service = AggregationService()
+    records = await agg_service.aggregate_for_dashboard(
+        df, graph_reads, filter_reads, metric_agg=metric_agg
+    )
 
-        # Use AggregationService for per-chart GROUP BY aggregation
-        agg_service = AggregationService()
-        metric_agg = (processing_config_dict or {}).get("settings", {}).get("metric_agg", "sum")
-        records = await agg_service.aggregate_for_dashboard(
-            df, graph_reads, filter_reads, metric_agg=metric_agg
-        )
+    # Convert records to StorageManager format
+    aggregates = [
+        {"graph_id": r["graph_id"], "dims": r["dims"], "metrics": r["metrics"]}
+        for r in records
+    ]
 
-        # Convert records to StorageManager format
-        aggregates = [
-            {"graph_id": r["graph_id"], "dims": r["dims"], "metrics": r["metrics"]}
-            for r in records
-        ]
+    manager = StorageManager(db_session)
+    clear_old = (mode == UploadMode.OVERWRITE)
+    processed = await manager.save_aggregates(
+        dashboard_id=dashboard_id,
+        aggregates=aggregates,
+        clear_old=clear_old,
+    )
 
-        manager = StorageManager(db_session)
-        clear_old = (mode == UploadMode.OVERWRITE)
-        processed = await manager.save_aggregates(
-            dashboard_id=dashboard_id,
-            aggregates=aggregates,
-            clear_old=clear_old,
-        )
+    logger.info(
+        "Aggregates stored: dashboard_id=%s, records=%d, mode=%s, processed=%d",
+        dashboard_id,
+        len(records),
+        mode,
+        processed,
+    )
 
-        logger.info(
-            "Aggregates stored: dashboard_id=%s, records=%d, mode=%s, processed=%d",
-            dashboard_id,
-            len(records),
-            mode,
-            processed,
-        )
+    # Extract and save filter values from ALL accumulated data
+    filter_names = [f.name for f in filter_reads]
+    if filter_names:
+        filter_values_repo = DashboardFilterValuesRepository()
+        # Clear all existing filter values before saving new ones (idempotent rebuild)
+        await filter_values_repo.clear_dashboard_values(dashboard_id, db_session)
 
-        # Extract and save filter values from ALL accumulated data
-        filter_names = [f.name for f in filter_reads]
-        if filter_names:
-            filter_values_repo = DashboardFilterValuesRepository()
-            # Clear all existing filter values before saving new ones (idempotent rebuild)
-            await filter_values_repo.clear_dashboard_values(dashboard_id, db_session)
+        # In APPEND mode, extract from all accumulated data in the database
+        # (save_aggregates already upserted the new data)
+        # In OVERWRITE mode, existing data was already cleared
+        if mode == UploadMode.APPEND:
+            combined_records = await manager.get_aggregates(dashboard_id)
+        else:
+            combined_records = records
 
-            # In APPEND mode, extract from all accumulated data in the database
-            # (save_aggregates already upserted the new data)
-            # In OVERWRITE mode, existing data was already cleared
-            if mode == UploadMode.APPEND:
-                combined_records = await manager.get_aggregates(dashboard_id)
-            else:
-                combined_records = records
-
-            filter_values = await agg_service.extract_filter_values(combined_records, filter_names)
-            for fname, fvalues in filter_values.items():
-                if fvalues:
-                    # Persist filter labels as text; the filter value column is
-                    # String-backed, so str() here keeps that contract honest.
-                    str_values = [str(value) for value in fvalues]
-                    await filter_values_repo.save_filter_values(
-                        dashboard_id, fname, str_values, db_session
-                    )
-                    logger.info(
-                        "Filter values saved: dashboard_id=%s, filter_name=%s, count=%d",
-                        dashboard_id,
-                        fname,
-                        len(fvalues),
-                    )
-    else:
-        # Production mode - create new session
-        async with get_session() as session:
-            async with session.begin():
-                # Query graphs for the dashboard
-                result = await session.execute(
-                    select(Graph).where(Graph.dashboard_id == dashboard_id)
+        filter_values = await agg_service.extract_filter_values(combined_records, filter_names)
+        for fname, fvalues in filter_values.items():
+            if fvalues:
+                # Persist filter labels as text; the filter value column is
+                # String-backed, so str() here keeps that contract honest.
+                str_values = [str(value) for value in fvalues]
+                await filter_values_repo.save_filter_values(
+                    dashboard_id, fname, str_values, db_session
                 )
-                graph_reads = [_to_graph_read(g) for g in result.scalars().all()]
-
-                if not graph_reads:
-                    logger.warning("No graphs found for dashboard: %s", dashboard_id)
-                    return
-
-                # Query dashboard filters via join table
-                result = await session.execute(
-                    select(Filter).join(dashboard_filters).where(
-                        dashboard_filters.c.dashboard_id == dashboard_id
-                    )
-                )
-                filter_reads = [_to_filter_read(f) for f in result.scalars().all()]
-
-                # Use AggregationService for per-chart GROUP BY aggregation
-                agg_service = AggregationService()
-                metric_agg = (processing_config_dict or {}).get("settings", {}).get("metric_agg", "sum")
-                records = await agg_service.aggregate_for_dashboard(
-                    df, graph_reads, filter_reads, metric_agg=metric_agg
-                )
-
-                # Convert records to StorageManager format
-                aggregates = [
-                    {"graph_id": r["graph_id"], "dims": r["dims"], "metrics": r["metrics"]}
-                    for r in records
-                ]
-
-                manager = StorageManager(session)
-                clear_old = (mode == UploadMode.OVERWRITE)
-                processed = await manager.save_aggregates(
-                    dashboard_id=dashboard_id,
-                    aggregates=aggregates,
-                    clear_old=clear_old,
-                )
-
                 logger.info(
-                    "Aggregates stored: dashboard_id=%s, records=%d, mode=%s, processed=%d",
+                    "Filter values saved: dashboard_id=%s, filter_name=%s, count=%d",
                     dashboard_id,
-                    len(records),
-                    mode,
-                    processed,
+                    fname,
+                    len(fvalues),
                 )
-
-                # Extract and save filter values from ALL accumulated data
-                filter_names = [f.name for f in filter_reads]
-                if filter_names:
-                    filter_values_repo = DashboardFilterValuesRepository()
-                    # Clear all existing filter values before saving new ones (idempotent rebuild)
-                    await filter_values_repo.clear_dashboard_values(dashboard_id, session)
-
-                    # In APPEND mode, extract from all accumulated data in the database
-                    # (save_aggregates already upserted the new data)
-                    # In OVERWRITE mode, existing data was already cleared
-                    if mode == UploadMode.APPEND:
-                        combined_records = await manager.get_aggregates(dashboard_id)
-                    else:
-                        combined_records = records
-
-                    filter_values = await agg_service.extract_filter_values(combined_records, filter_names)
-                    for fname, fvalues in filter_values.items():
-                        if fvalues:
-                            # Persist filter labels as text; the filter value
-                            # column is String-backed, so str() here keeps that
-                            # contract honest.
-                            str_values = [str(value) for value in fvalues]
-                            await filter_values_repo.save_filter_values(
-                                dashboard_id, fname, str_values, session
-                            )
-                            logger.info(
-                                "Filter values saved: dashboard_id=%s, filter_name=%s, count=%d",
-                                dashboard_id,
-                                fname,
-                                len(fvalues),
-                            )
 
 
 async def process_csv_background(
