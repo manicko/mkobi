@@ -123,6 +123,9 @@ Required modules: `aiofiles`, `fastapi`, `sqlalchemy`, `httpx`, `pydantic`, `pol
 - Applied automatically when `AUTO_MIGRATE=true`
 - Runs via `asyncio.to_thread()` to avoid blocking the event loop
 - Uses the `alembic.ini` configuration with the database URL overridden from settings
+- The migration run is guarded by a **session-scoped** `pg_try_advisory_lock` whose wait is **bounded** (30 attempts at 10 s, ≈4 m 50 s) and **logged at every refusal**
+- A lock that cannot be acquired in that window is a **refusal to migrate** — the process exits non-zero and the stack does not start
+- **What it does not cover** — everything `DatabaseStarter.startup` does after `alembic upgrade head` returns: the admin user, the development seeders, orphan temp-file cleanup, old-log cleanup and test-database recreation
 
 ### Step 4: Admin User Creation
 

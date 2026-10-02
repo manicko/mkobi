@@ -32,6 +32,12 @@ from mkobi.db.models import (  # noqa: F401, E402
     User,
 )
 from mkobi.db.base import Base  # noqa: E402
+from mkobi.db.migration_lock import (  # noqa: E402
+    MIGRATION_ADVISORY_LOCK_KEY,
+    MIGRATION_LOCK_MAX_ATTEMPTS,
+    MIGRATION_LOCK_RETRY_INTERVAL_SECONDS,
+    retry_migration_lock_acquisition,
+)
 
 target_metadata = Base.metadata
 
@@ -52,10 +58,6 @@ if db_url:
     config.set_main_option("sqlalchemy.url", db_url)
 
 logger = logging.getLogger("alembic.env")
-
-# Advisory lock key for migration synchronization
-# Used to prevent concurrent migrations in multi-instance deployments
-MIGRATION_ADVISORY_LOCK_KEY = 42
 
 
 def run_migrations_offline() -> None:
@@ -97,9 +99,20 @@ def do_run_migrations(sync_connection: Connection) -> None:
 async def run_async_migrations() -> None:
     """Run migrations in 'online' async mode.
 
-    Uses pg_advisory_lock to prevent concurrent migrations in multi-instance
-    deployments. The lock is acquired before running migrations and released
-    afterwards, even if migrations fail.
+    The run is guarded by a **session-scoped** ``pg_try_advisory_lock``, released
+    when the connection closes or the backend exits and explicitly released in a
+    ``finally``. The wait for the lock is **bounded** (30 attempts at a fixed 10.0 s
+    interval, ~4 m 50 s), no backoff, and **every refusal is logged**. A lock that
+    cannot be acquired in that window is a **refusal to migrate**: this function
+    raises and the process exits non-zero, rather than running migrations without
+    exclusion.
+
+    The lock guards the **migration run only**. It does **not** cover anything
+    ``DatabaseStarter.startup`` does *after* ``alembic upgrade head`` returns: the
+    admin user upsert, the development seeders, orphan temp-file cleanup, old-log
+    cleanup, and test-database recreation (drop/create plus a second migration run).
+    Those steps are idempotent today, which is why no exclusion is required for
+    them yet; this is not a design claim that they are safe.
     """
     db_url = config.get_main_option("sqlalchemy.url")
     if db_url is None:
@@ -110,31 +123,51 @@ async def run_async_migrations() -> None:
     )
 
     async with connectable.connect() as connection:
-        try:
-            # Acquire advisory lock to prevent concurrent migrations
-            await connection.execute(
-                text(f"SELECT pg_advisory_lock({MIGRATION_ADVISORY_LOCK_KEY})")
-            )
-            await connection.commit()
 
+        async def _try_acquire() -> bool:
+            """One non-blocking attempt at the session-scoped migration lock."""
+            result = await connection.execute(
+                text("SELECT pg_try_advisory_lock(:lock_key)"),
+                {"lock_key": MIGRATION_ADVISORY_LOCK_KEY},
+            )
+            return bool(result.scalar())
+
+        acquired = await retry_migration_lock_acquisition(_try_acquire)
+
+        # Raised before the try/finally below, so a refusal never issues an unlock
+        # for a lock this session never took.
+        if not acquired:
+            raise RuntimeError(
+                "Could not acquire migration advisory lock "
+                f"{MIGRATION_ADVISORY_LOCK_KEY} after "
+                f"{MIGRATION_LOCK_MAX_ATTEMPTS} attempts "
+                f"({MIGRATION_LOCK_RETRY_INTERVAL_SECONDS * (MIGRATION_LOCK_MAX_ATTEMPTS - 1)}s "
+                "waited); refusing to migrate without exclusion"
+            )
+
+        logger.info("Acquired migration advisory lock %s", MIGRATION_ADVISORY_LOCK_KEY)
+
+        try:
+            await connection.run_sync(do_run_migrations)
+        finally:
+            # Exactly one unlock, on both the success path and every migration
+            # failure. Its own failure is logged, not raised: the lock is
+            # session-scoped, so the connection closing immediately after releases
+            # it anyway, and an exception here would replace the migration's own
+            # (more informative) exception.
             try:
-                await connection.run_sync(do_run_migrations)
-            finally:
-                # Always release the advisory lock
                 await connection.execute(
-                    text(f"SELECT pg_advisory_unlock({MIGRATION_ADVISORY_LOCK_KEY})")
+                    text("SELECT pg_advisory_unlock(:lock_key)"),
+                    {"lock_key": MIGRATION_ADVISORY_LOCK_KEY},
                 )
                 await connection.commit()
-        except Exception:
-            # Ensure lock is released on any error
-            try:
-                await connection.execute(
-                    text(f"SELECT pg_advisory_unlock({MIGRATION_ADVISORY_LOCK_KEY})")
+            except Exception as exc:
+                logger.warning(
+                    "Failed to release migration advisory lock %s: %s; the session is "
+                    "closing and PostgreSQL releases session-scoped locks with it",
+                    MIGRATION_ADVISORY_LOCK_KEY,
+                    exc,
                 )
-                await connection.commit()
-            except Exception:
-                pass
-            raise
     await connectable.dispose()
 
 
