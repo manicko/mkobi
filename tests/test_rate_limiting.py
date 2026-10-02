@@ -107,6 +107,7 @@ class TestRateLimitingIntegration:
         self, async_client, async_db_session, strict_redis
     ) -> None:
         """Test that rate limiting works correctly with reset capability."""
+        from mkobi.api.routes.auth import _rate_limit_keys
         from mkobi.core.security import hash_password
         from mkobi.db.repositories.user_repo import UserRepository
 
@@ -121,22 +122,40 @@ class TestRateLimitingIntegration:
         )
         await async_db_session.commit()
 
-        rate_limit_key = "login:127.0.0.1"
         max_attempts = 5
 
-        # Exhaust the rate limit
-        for _ in range(max_attempts + 1):
-            await async_client.post(
+        # Exhaust the rate limit: max_attempts failures then one more. Prove the
+        # loop actually exhausts it before trusting the reset below.
+        for _ in range(max_attempts):
+            response = await async_client.post(
                 "/auth/login",
                 json={
                     "email": "rate_limit_reset_test@example.com",
                     "password": "wrong_password",
                 },
             )
+            assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
-        # Manually reset the rate limit by clearing the key
-        strict_redis._data.pop(rate_limit_key, None)
-        strict_redis._ttls.pop(rate_limit_key, None)
+        exhausted = await async_client.post(
+            "/auth/login",
+            json={
+                "email": "rate_limit_reset_test@example.com",
+                "password": "wrong_password",
+            },
+        )
+        assert exhausted.status_code == status.HTTP_429_TOO_MANY_REQUESTS, (
+            "the exhaustion loop must actually exhaust the limit"
+        )
+
+        # Clear both derived buckets on the app's OWN Redis instance. The route
+        # fills app.state.mock_redis; the strict_redis fixture is a different
+        # instance, so popping from it would clear nothing.
+        app_redis = async_client._transport.app.state.mock_redis
+        for key in _rate_limit_keys(
+            "login", "127.0.0.1", "rate_limit_reset_test@example.com"
+        ):
+            app_redis._data.pop(key, None)
+            app_redis._ttls.pop(key, None)
 
         # Next request should succeed (return 401 for wrong password)
         response = await async_client.post(
@@ -149,6 +168,125 @@ class TestRateLimitingIntegration:
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED, (
             f"Request should succeed after reset, got {response.status_code}"
+        )
+
+    async def test_two_identifiers_behind_one_peer_have_separate_buckets(
+        self, async_client, async_db_session, strict_redis
+    ) -> None:
+        """One identifier's failures do not consume another's quota.
+
+        The peer bound is deliberately not exhausted here, so this isolates the
+        per-identifier budget: failures on user A must not count against user B.
+        """
+        from mkobi.core.security import hash_password
+        from mkobi.db.repositories.user_repo import UserRepository
+
+        user_repo = UserRepository()
+        for email in (
+            "budget_user_a@example.com",
+            "budget_user_b@example.com",
+        ):
+            await user_repo.create(
+                db=async_db_session,
+                email=email,
+                password_hash=hash_password("TestPass123!"),
+                role="viewer",
+            )
+        await async_db_session.commit()
+
+        # Three failures on A leave its identifier bucket at 3 and the peer at 3.
+        for _ in range(3):
+            response = await async_client.post(
+                "/auth/login",
+                json={"email": "budget_user_a@example.com", "password": "wrong_password"},
+            )
+            assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+        # B has its own identifier bucket, so it is still processed (401, not 429).
+        response = await async_client.post(
+            "/auth/login",
+            json={"email": "budget_user_b@example.com", "password": "wrong_password"},
+        )
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED, (
+            "user B must have its own identifier budget"
+        )
+
+    async def test_one_peer_with_two_identifiers_still_hits_peer_bound(
+        self, async_client, async_db_session, strict_redis
+    ) -> None:
+        """Rotating identifiers from one peer must not escape the peer bound."""
+        from mkobi.core.security import hash_password
+        from mkobi.db.repositories.user_repo import UserRepository
+
+        user_repo = UserRepository()
+        for email in (
+            "rotate_user_a@example.com",
+            "rotate_user_b@example.com",
+        ):
+            await user_repo.create(
+                db=async_db_session,
+                email=email,
+                password_hash=hash_password("TestPass123!"),
+                role="viewer",
+            )
+        await async_db_session.commit()
+
+        # Five attempts alternating between two identifiers fill the shared peer
+        # bucket; each identifier only reached 3 and 2 of its own budget.
+        for i in range(5):
+            email = (
+                "rotate_user_a@example.com" if i % 2 == 0 else "rotate_user_b@example.com"
+            )
+            response = await async_client.post(
+                "/auth/login",
+                json={"email": email, "password": "wrong_password"},
+            )
+            assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+        # The sixth attempt is refused by the peer bound even though neither
+        # identifier bucket alone is exhausted.
+        response = await async_client.post(
+            "/auth/login",
+            json={"email": "rotate_user_c@example.com", "password": "wrong_password"},
+        )
+        assert response.status_code == status.HTTP_429_TOO_MANY_REQUESTS
+
+    async def test_malformed_peer_does_not_500(
+        self, async_client, async_db_session, strict_redis
+    ) -> None:
+        """A non-IP peer must rate-limit, not crash with a 500."""
+        from mkobi.core.security import hash_password
+        from mkobi.db.repositories.user_repo import UserRepository
+
+        user_repo = UserRepository()
+        await user_repo.create(
+            db=async_db_session,
+            email="malformed_peer_test@example.com",
+            password_hash=hash_password("TestPass123!"),
+            role="viewer",
+        )
+        await async_db_session.commit()
+
+        # Register-request derives its peer with ip_address(), which raises on a
+        # non-IP value. Override the transport peer with a malformed host.
+        transport = async_client._transport
+        original_client = transport.client
+        transport.client = ("not-an-ip", 12345)
+        try:
+            response = await async_client.post(
+                "/auth/register-request",
+                json={"email": "malformed_peer_test@example.com"},
+            )
+        finally:
+            transport.client = original_client
+
+        assert response.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR, (
+            "a malformed peer must not surface as a 500"
+        )
+        assert response.status_code in (
+            status.HTTP_201_CREATED,
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_429_TOO_MANY_REQUESTS,
         )
 
     async def test_different_ips_have_separate_limits(

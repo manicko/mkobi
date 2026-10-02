@@ -10,6 +10,7 @@ This module provides endpoints for:
 All endpoints return standardized JSON responses.
 """
 
+from hashlib import sha256
 from ipaddress import ip_address
 from typing import Annotated, Any
 from uuid import UUID
@@ -69,6 +70,84 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"], redirect_slashes=False)
 
+# Sentinel peer used when the request has no usable client address. It still
+# rate-limits, so a malformed or absent peer cannot become a bypass.
+_UNKNOWN_PEER = "unknown"
+
+
+def _rate_limit_keys(
+    site: str, peer: str | None, identifier: str
+) -> tuple[str, str]:
+    """Derive the dual rate-limit keys (per-peer, per-identifier) for a site.
+
+    Every auth rate-limit site enforces two bounds with the same threshold: a
+    per-peer bound that a botnet cannot escape by rotating accounts, and a
+    per-identifier bound that stops one user's failures from locking out a whole
+    NAT or gateway. This helper is the single place the key format is defined so
+    the dual bound is uniform across ``_handle_login``, ``refresh``, and
+    ``register_request``.
+
+    Scope: only the auth routes use this helper. ``api/routes/client_errors.py``
+    and ``api/routes/upload.py`` derive IP rate-limit keys the same way but
+    belong to another phase (C04-9) and are deliberately **not** migrated here;
+    this helper does not cover them.
+
+    Args:
+        site: Rate-limit site name, for example ``"login"``.
+        peer: Client peer address, or None when it is unavailable.
+        identifier: The bound subject (submitted email, or a session digest).
+
+    Returns:
+        tuple[str, str]: The per-peer key followed by the per-identifier key.
+    """
+    resolved_peer = peer if peer else _UNKNOWN_PEER
+    return f"{site}:{resolved_peer}", f"{site}:id:{identifier}"
+
+
+def _resolve_client_ip(request: Request) -> str:
+    """Resolve the client peer to a string safe for a rate-limit key.
+
+    ``ip_address`` raises ``ValueError`` on a non-IP peer, which would surface
+    as a 500 where a 429 is intended and let a malformed peer bypass the limit.
+    Fall back to the sentinel instead; the request is still rate-limited under
+    the shared fallback bucket.
+    """
+    if not request.client:
+        return _UNKNOWN_PEER
+    try:
+        return str(ip_address(request.client.host))
+    except ValueError:
+        logger.warning("Unparseable client peer: %s", request.client.host)
+        return _UNKNOWN_PEER
+
+
+async def _enforce_dual_rate_limit(
+    rate_limiter: AsyncRateLimiter,
+    site: str,
+    peer: str,
+    identifier: str,
+    max_attempts: int,
+    ttl: int,
+    detail: str,
+) -> None:
+    """Enforce both the per-peer and per-identifier bounds for a site.
+
+    Raises:
+        AppException: With ``RATE_LIMIT_EXCEEDED`` if either bound is exceeded.
+    """
+    peer_key, identifier_key = _rate_limit_keys(site, peer, identifier)
+    for key in (peer_key, identifier_key):
+        allowed, retry_after = await rate_limiter.check_rate_limit(
+            key, max_attempts=max_attempts, ttl=ttl
+        )
+        if not allowed:
+            logger.warning("Rate limit exceeded for key: %s", key)
+            raise AppException(
+                code=ErrorCode.RATE_LIMIT_EXCEEDED,
+                detail=detail,
+                headers={"Retry-After": str(retry_after)} if retry_after else None,
+            )
+
 
 async def _handle_login(
     email: str,
@@ -80,23 +159,25 @@ async def _handle_login(
     redis_client: Any,
 ) -> TokenWithUser:
     """Common login logic and error handling."""
-    # Apply rate limiting for login attempts based on client IP
-    # IP-based rate limiting prevents email enumeration via rate limit side-channel
-    client_ip = request.client.host if request.client else "unknown"
+    # Apply rate limiting for login attempts with a dual bound: per peer (so a
+    # botnet cannot spread by rotating accounts) and per submitted identifier
+    # (so one user's failures cannot lock out a shared NAT). The identifier is
+    # the submitted email; using it also prevents email enumeration via a rate
+    # limit side-channel.
+    client_ip = _resolve_client_ip(request)
     rate_limiter = AsyncRateLimiter(
         redis_client,
         fail_closed=get_config().rate_limiter_fail_closed,
     )
-    allowed, retry_after = await rate_limiter.check_rate_limit(
-        f"login:{client_ip}", max_attempts=5, ttl=300
+    await _enforce_dual_rate_limit(
+        rate_limiter,
+        site="login",
+        peer=client_ip,
+        identifier=email,
+        max_attempts=5,
+        ttl=300,
+        detail="Too many login attempts. Try again later.",
     )
-    if not allowed:
-        logger.warning("Login rate limit exceeded", extra={"ip": client_ip})
-        raise AppException(
-            code=ErrorCode.RATE_LIMIT_EXCEEDED,
-            detail="Too many login attempts. Try again later.",
-            headers={"Retry-After": str(retry_after)} if retry_after else None,
-        )
 
     logger.info("Login attempt", extra={"email": email})
 
@@ -306,26 +387,26 @@ async def refresh(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Apply rate limiting for refresh attempts based on client IP
-    # Only rate-limit requests that have a refresh token (actual auth attempts),
-    # not routine navigation without cookies which wastes quota unnecessarily
-    client_ip = request.client.host if request.client else "unknown"
+    # Apply rate limiting for refresh attempts with a dual bound: per peer and
+    # per presented session. The session identifier is a digest of the cookie
+    # value, not the value itself, so no credential is written into a Redis key.
+    # Only requests that have a refresh token (actual auth attempts) are counted,
+    # not routine navigation without cookies which wastes quota unnecessarily.
+    client_ip = _resolve_client_ip(request)
     rate_limiter = AsyncRateLimiter(
         redis_client,
         fail_closed=get_config().rate_limiter_fail_closed,
     )
-    rate_limit_key = f"refresh:{client_ip}" if client_ip else "refresh:unknown"
-    allowed, retry_after = await rate_limiter.check_rate_limit(rate_limit_key, max_attempts=10, ttl=300)
-    if not allowed:
-        logger.warning("Refresh rate limit exceeded", extra={"ip": client_ip})
-        headers = {"WWW-Authenticate": "Bearer"}
-        if retry_after is not None:
-            headers["Retry-After"] = str(retry_after)
-        raise AppException(
-            code=ErrorCode.RATE_LIMIT_EXCEEDED,
-            detail="Too many refresh attempts. Try again later.",
-            headers=headers,
-        )
+    session_digest = sha256(refresh_token_value.encode("utf-8")).hexdigest()[:32]
+    await _enforce_dual_rate_limit(
+        rate_limiter,
+        site="refresh",
+        peer=client_ip,
+        identifier=session_digest,
+        max_attempts=10,
+        ttl=300,
+        detail="Too many refresh attempts. Try again later.",
+    )
 
     logger.info("Token refresh attempt")
 
@@ -624,30 +705,28 @@ async def register_request(
     Raises:
         AppException 422: Request already exists.
     """
-    # Get client IP address
-    client_ip: str | None = None
-    if request.client:
-        client_ip = str(ip_address(request.client.host))
+    # Get client IP address. An unparseable peer is recorded as absent rather
+    # than raising: a malformed peer must not become a 500 (which would bypass
+    # the rate limit). The rate-limit peer falls back to a sentinel.
+    resolved_ip = _resolve_client_ip(request)
+    client_ip: str | None = None if resolved_ip == _UNKNOWN_PEER else resolved_ip
 
-    # Apply rate limiting for registration requests
+    # Apply rate limiting for registration requests with a dual bound: per peer
+    # and per submitted email. The email bound is now explicit rather than a
+    # fallback used only when the peer is absent.
     rate_limiter = AsyncRateLimiter(
         redis_client.get_async_redis_client(),
         fail_closed=get_config().rate_limiter_fail_closed,
     )
-    rate_limit_key = f"register-request:{client_ip}" if client_ip else f"register-request:{request_data.email}"
-    allowed, retry_after = await rate_limiter.check_rate_limit(
-        rate_limit_key, max_attempts=3, ttl=3600
+    await _enforce_dual_rate_limit(
+        rate_limiter,
+        site="register-request",
+        peer=resolved_ip,
+        identifier=request_data.email,
+        max_attempts=3,
+        ttl=3600,
+        detail="Too many registration requests. Try again later.",
     )
-    if not allowed:
-        logger.warning(
-            "Registration request rate limit exceeded",
-            extra={"email": request_data.email, "ip": client_ip},
-        )
-        raise AppException(
-            code=ErrorCode.RATE_LIMIT_EXCEEDED,
-            detail="Too many registration requests. Try again later.",
-            headers={"Retry-After": str(retry_after)} if retry_after else None,
-        )
 
     logger.info(
         "Registration request attempt",
