@@ -80,12 +80,14 @@ def _rate_limit_keys(
 ) -> tuple[str, str]:
     """Derive the dual rate-limit keys (per-peer, per-identifier) for a site.
 
-    Every auth rate-limit site enforces two bounds with the same threshold: a
+    Every auth rate-limit site enforces two bounds at *different* thresholds: a
     per-peer bound that a botnet cannot escape by rotating accounts, and a
     per-identifier bound that stops one user's failures from locking out a whole
-    NAT or gateway. This helper is the single place the key format is defined so
-    the dual bound is uniform across ``_handle_login``, ``refresh``, and
-    ``register_request``.
+    NAT or gateway. The peer ceiling is deliberately a multiple (10x) of the
+    identifier bound at each site, so a shared-egress population tolerates ten
+    times one user's failures before the peer bound engages. This helper is the
+    single place the key format is defined so the dual bound is uniform across
+    ``_handle_login``, ``refresh``, and ``register_request``.
 
     Scope: only the auth routes use this helper. ``api/routes/client_errors.py``
     and ``api/routes/upload.py`` derive IP rate-limit keys the same way but
@@ -127,18 +129,29 @@ async def _enforce_dual_rate_limit(
     peer: str,
     identifier: str,
     max_attempts: int,
+    peer_max_attempts: int,
     ttl: int,
     detail: str,
 ) -> None:
     """Enforce both the per-peer and per-identifier bounds for a site.
 
+    ``max_attempts`` bounds a single identifier (the security control that stops
+    credential guessing at one account); ``peer_max_attempts`` is the coarser
+    abuse ceiling for the peer as a whole. The peer ceiling is 10x the
+    identifier bound so a shared egress address does not lock out ordinary
+    users when one of them exhausts its own budget.
+
     Raises:
         AppException: With ``RATE_LIMIT_EXCEEDED`` if either bound is exceeded.
     """
     peer_key, identifier_key = _rate_limit_keys(site, peer, identifier)
-    for key in (peer_key, identifier_key):
+    bounds = (
+        (peer_key, peer_max_attempts),
+        (identifier_key, max_attempts),
+    )
+    for key, limit in bounds:
         allowed, retry_after = await rate_limiter.check_rate_limit(
-            key, max_attempts=max_attempts, ttl=ttl
+            key, max_attempts=limit, ttl=ttl
         )
         if not allowed:
             logger.warning("Rate limit exceeded for key: %s", key)
@@ -163,7 +176,10 @@ async def _handle_login(
     # botnet cannot spread by rotating accounts) and per submitted identifier
     # (so one user's failures cannot lock out a shared NAT). The identifier is
     # the submitted email; using it also prevents email enumeration via a rate
-    # limit side-channel.
+    # limit side-channel. Peer ceiling is 10x the identifier bound (50 vs 5)
+    # so a shared egress address still serves other users after one exhausts
+    # its own budget; the ratio, not three arbitrary numbers, keeps tuning
+    # reviewable.
     client_ip = _resolve_client_ip(request)
     rate_limiter = AsyncRateLimiter(
         redis_client,
@@ -175,6 +191,7 @@ async def _handle_login(
         peer=client_ip,
         identifier=email,
         max_attempts=5,
+        peer_max_attempts=50,
         ttl=300,
         detail="Too many login attempts. Try again later.",
     )
@@ -392,6 +409,9 @@ async def refresh(
     # value, not the value itself, so no credential is written into a Redis key.
     # Only requests that have a refresh token (actual auth attempts) are counted,
     # not routine navigation without cookies which wastes quota unnecessarily.
+    # Peer ceiling is 10x the identifier bound (100 vs 10), the same ratio as
+    # every other auth site, so a shared egress address does not lock out other
+    # sessions when one refresh digest exhausts its own budget.
     client_ip = _resolve_client_ip(request)
     rate_limiter = AsyncRateLimiter(
         redis_client,
@@ -404,6 +424,7 @@ async def refresh(
         peer=client_ip,
         identifier=session_digest,
         max_attempts=10,
+        peer_max_attempts=100,
         ttl=300,
         detail="Too many refresh attempts. Try again later.",
     )
@@ -713,7 +734,9 @@ async def register_request(
 
     # Apply rate limiting for registration requests with a dual bound: per peer
     # and per submitted email. The email bound is now explicit rather than a
-    # fallback used only when the peer is absent.
+    # fallback used only when the peer is absent. Peer ceiling is 10x the
+    # identifier bound (30 vs 3), the same ratio as every other auth site; the
+    # peer bound is an abuse ceiling, not a ration on ordinary requests.
     rate_limiter = AsyncRateLimiter(
         redis_client.get_async_redis_client(),
         fail_closed=get_config().rate_limiter_fail_closed,
@@ -724,6 +747,7 @@ async def register_request(
         peer=resolved_ip,
         identifier=request_data.email,
         max_attempts=3,
+        peer_max_attempts=30,
         ttl=3600,
         detail="Too many registration requests. Try again later.",
     )

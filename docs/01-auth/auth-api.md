@@ -43,7 +43,7 @@ Authenticate a user by email and password.
 | **Method**     | `POST`                                     |
 | **Path**       | `/api/v1/auth/login`                       |
 | **Auth level** | Public                                     |
-| **Rate limit** | 5 attempts per 5 minutes per IP **and** per email |
+| **Rate limit** | 5 attempts per 5 minutes per email, **50** per 5 minutes per IP (10x the identifier bound) |
 
 **Request body:**
 
@@ -104,7 +104,7 @@ Authenticate a user via OAuth2 password flow (form-encoded).
 | **Method**     | `POST`                                     |
 | **Path**       | `/api/v1/auth/login/form`                  |
 | **Auth level** | Public                                     |
-| **Rate limit** | 5 attempts per 5 minutes per IP **and** per email |
+| **Rate limit** | 5 attempts per 5 minutes per email, **50** per 5 minutes per IP (10x the identifier bound) |
 
 **Request:** `application/x-www-form-urlencoded` with `username` (email) and `password` fields.
 
@@ -121,7 +121,7 @@ Submit a registration request for a new account. The request must be approved by
 | **Method**     | `POST`                                     |
 | **Path**       | `/api/v1/auth/register-request`            |
 | **Auth level** | Public                                     |
-| **Rate limit** | 3 attempts per hour per IP **and** per email |
+| **Rate limit** | 3 attempts per hour per email, **30** per hour per IP (10x the identifier bound) |
 
 **Request body:**
 
@@ -202,7 +202,7 @@ Refresh an expired or soon-to-expire JWT access token using the httpOnly refresh
 | **Method**     | `POST`                                     |
 | **Path**       | `/api/v1/auth/refresh`                     |
 | **Auth level** | Public (requires valid refresh cookie)     |
-| **Rate limit** | 10 attempts per 5 minutes per IP **and** per presented session (cookie digest) |
+| **Rate limit** | 10 attempts per 5 minutes per presented session (cookie digest), **100** per 5 minutes per IP (10x the identifier bound) |
 
 **Request:** The refresh token is read from the `mkobi_refresh_token` httpOnly cookie. No request body is needed.
 
@@ -363,7 +363,8 @@ Browser                          FastAPI
   │ ──────────────────────────────►│
   │                                │ ┌─────────────────────────┐
   │                                │ │ Rate limit check         │
-  │                                │ │ (5 attempts / 5 min/IP)  │
+  │                                │ │ (5 / 5 min per email,    │
+  │                                │ │  50 / 5 min per IP)      │
   │                                │ └───────────┬─────────────┘
   │                                │             │
   │                                │ ┌───────────▼─────────────┐
@@ -389,7 +390,7 @@ Browser                          FastAPI
 ```
 
 1. User submits email and password via the login form (`/login` page)
-2. Server applies rate limiting (5 attempts per 5-minute window per IP)
+2. Server applies rate limiting (5 attempts per 5-minute window per email; the shared-IP ceiling is 50 per 5-minute window)
 3. Server looks up user by email and verifies the bcrypt password hash
 4. On success, server creates a JWT access token (15-minute expiration) and a refresh token (7-day expiration)
 5. Server sets the refresh token as an httpOnly cookie (`mkobi_refresh_token`) with `Secure`, `HttpOnly`, and `SameSite=Strict` attributes
@@ -462,7 +463,8 @@ Browser              FastAPI              Database
   │  request { email } │                    │
   │ ──────────────────►│                    │
   │                    │  Rate limit check  │
-  │                    │  (3/hour per IP)   │
+  │                    │  (3/hour per email,│
+  │                    │   30/hour per IP)  │
   │                    │                    │
   │                    │  Validate email    │
   │                    │  Check blocklist   │
@@ -503,7 +505,7 @@ Browser              FastAPI              Database
 ```
 
 1. User submits their email on the registration page (`/register`)
-2. Server applies rate limiting (3 requests per hour per IP/email)
+2. Server applies rate limiting (3 requests per hour per email; the shared-IP ceiling is 30 per hour)
 3. Server validates the email format and checks against the domain blocklist
 4. Server creates a `registration_requests` record with status `pending`
 5. Admin reviews pending requests via the admin panel (`/admin`)
@@ -523,7 +525,7 @@ Browser              FastAPI              Database
 - **JWT:** Signed tokens with expiration; payload contains `user_id`, `email`, `role`. Access tokens expire after **15 minutes**.
 - **Refresh tokens:** Stored in httpOnly cookies (`mkobi_refresh_token`) with `Secure`, `HttpOnly`, and `SameSite=Strict` attributes. 7-day expiration. Not accessible to JavaScript.
 - **Token revocation:** Redis-backed blacklist with auto-expiring entries. Revoked tokens are rejected immediately, even if they have not expired. Logout revokes both access and refresh tokens. A successful **password change** and an **admin password reset** record a timestamped revocation that rejects tokens issued at or before it, so other sessions must log in again while a fresh login works. On **refresh**, the refresh cookie is rotated but the presented token is not revoked. See [Token Revocation](../08-security/security-overview.md#token-revocation) for details.
-- **Rate limiting:** Redis-based and **fail-closed by default** (`Settings.rate_limiter_fail_closed` defaults to `True`; set `RATE_LIMITER_FAIL_CLOSED=false` for fail-open). Every auth site enforces **two bounds** with the same threshold: one keyed on the client **peer** (IP) and one keyed on an **identifier** — the submitted email for `login` and `register-request`, and a digest of the presented refresh cookie for `refresh`. The peer bound is the abuse bound (rotating accounts cannot escape it); the identifier bound keeps one identifier's failures from consuming another's budget. Thresholds are unchanged: `login` 5/300 s, `refresh` 10/300 s, `register-request` 3/3600 s. The key derivation lives in one place (`_rate_limit_keys` in `src/mkobi/api/routes/auth.py`); `client_errors.py` and `upload.py` are out of scope and derive their peer keys separately.
+- **Rate limiting:** Redis-based and **fail-closed by default** (`Settings.rate_limiter_fail_closed` defaults to `True`; set `RATE_LIMITER_FAIL_CLOSED=false` for fail-open). Every auth site enforces **two bounds at different thresholds**: one keyed on the client **peer** (IP) and one keyed on an **identifier** — the submitted email for `login` and `register-request`, and a digest of the presented refresh cookie for `refresh`. The identifier bound is the security control (it stops credential guessing at one account); the peer bound is a **coarse abuse ceiling** (rotating accounts cannot escape it) and is deliberately **10x** the identifier bound so a shared-egress population tolerates ten times one user's failures before it engages. The ratio, rather than three unrelated literals, makes the relationship legible and the tuning reviewable. Thresholds: `login` 5/300 s per identifier, **50/300 s** per peer; `refresh` 10/300 s per identifier, **100/300 s** per peer; `register-request` 3/3600 s per identifier, **30/3600 s** per peer. The key derivation lives in one place (`_rate_limit_keys` in `src/mkobi/api/routes/auth.py`); `client_errors.py` and `upload.py` are out of scope and derive their peer keys separately.
 - **Email blocklist:** Configurable domain blocklist for registration requests
 - **CORS:** Explicit allowed methods and headers (no wildcards in production)
 - **Production credentials:** Default credentials (`admin`/`admin`) are rejected in production

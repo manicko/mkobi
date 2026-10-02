@@ -102,7 +102,8 @@ Browser              FastAPI              Database
   │  { email }         │                    │
   │───────────────────►│                    │
   │                    │  Rate limit check  │
-  │                    │  (3/hour per IP)   │
+  │                    │  (3/hour per email,│
+  │                    │   30/hour per IP)  │
   │                    │                    │
   │                    │  Validate email    │
   │                    │  Check blocklist   │
