@@ -10,11 +10,31 @@ logger = logging.getLogger(__name__)
 _KEY_PREFIX: Final[str] = "temp_pwd:"
 
 
+# --- Exceptions ---
+
+
+class TempPasswordStoreUnavailableError(Exception):
+    """Raised when the temporary-password store cannot be reached.
+
+    A plain ``core``-level type: the store never imports the API or the error
+    enum layer, matching the co-located exceptions in ``core/permissions.py``.
+    """
+
+    pass
+
+
 class TempPasswordStore:
     """Redis-backed one-time temporary password storage.
 
     Passwords are stored with a TTL and deleted immediately upon retrieval.
     Uses Redis pipeline for atomic GET+DELETE to prevent TOCTOU races.
+
+    The two write/read contracts deliberately differ. ``store`` fails open
+    because by the time it runs the caller has already committed the credential
+    and raising would destroy a real account; ``retrieve`` fails loud because a
+    fault there costs nothing to surface and reporting "not found" is a lie the
+    caller cannot detect. A caller that wants the fail-open behaviour must ask
+    for it by handling the exception; the store never chooses it for them.
     """
 
     def __init__(self, redis_client: aioredis.Redis, ttl_seconds: int = 86400) -> None:
@@ -65,7 +85,13 @@ class TempPasswordStore:
             token: Unique token identifier to retrieve the password for.
 
         Returns:
-            The stored password string, or None if not found or on error.
+            The stored password string, or None if the key is absent, already
+            spent or expired.
+
+        Raises:
+            TempPasswordStoreUnavailableError: If the Redis pipeline faults. The
+                store fails loud on a read so a caller can never mistake an
+                outage for a missing or spent token.
         """
         key = f"{_KEY_PREFIX}{token}"
         try:
@@ -81,4 +107,6 @@ class TempPasswordStore:
             return password
         except Exception as exc:
             logger.error("Failed to retrieve temp password from Redis: %s", exc)
-            return None
+            raise TempPasswordStoreUnavailableError(
+                "Temporary password store is temporarily unavailable"
+            ) from exc

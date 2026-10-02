@@ -47,6 +47,11 @@ error_500 = {
     "model": ErrorResponse,
 }
 
+error_503 = {
+    "description": "Service Unavailable - Upstream dependency unreachable",
+    "model": ErrorResponse,
+}
+
 error_413 = {
     "description": "Payload Too Large - File size exceeds limit",
     "model": ErrorResponse,
@@ -108,6 +113,7 @@ __all__ = [
     "error_422",
     "error_429",
     "error_500",
+    "error_503",
     "auth_public_responses",
     "auth_protected_responses",
     "admin_responses",

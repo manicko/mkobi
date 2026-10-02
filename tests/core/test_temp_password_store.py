@@ -1,8 +1,13 @@
 """Tests for TempPasswordStore class."""
 
+import asyncio
+
 import pytest
 
-from mkobi.core.temp_password_store import TempPasswordStore
+from mkobi.core.temp_password_store import (
+    TempPasswordStore,
+    TempPasswordStoreUnavailableError,
+)
 
 
 class MockPipeline:
@@ -184,10 +189,68 @@ class TestTempPasswordStore:
             assert "Failed to store temp password in Redis" in mock_logger.error.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_retrieve_fail_graceful_on_error(self) -> None:
-        """Retrieve should return None gracefully on Redis failure."""
+    async def test_store_returns_true_on_success(self) -> None:
+        """Store against a healthy fake must return True, not merely not raise."""
+        mock_redis = MockRedis()
+        store = TempPasswordStore(mock_redis)
+
+        result = await store.store("healthy_token", "HealthyPass1")
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_retrieve_raises_on_store_fault(self) -> None:
+        """Retrieve must fail loud when the Redis pipeline faults.
+
+        The store no longer pretends a fault is a missing token: a caller
+        cannot tell an outage from an absent key if both return None.
+
+        ``FailingRedis`` needs no change - its only method is ``pipeline``, so
+        the fault arises from ``execute()``.
+        """
         store = TempPasswordStore(FailingRedis())
 
-        # Should not raise, returns None
-        result = await store.retrieve("token")
+        with pytest.raises(TempPasswordStoreUnavailableError):
+            await store.retrieve("token")
+
+    @pytest.mark.asyncio
+    async def test_retrieve_absent_key_returns_none_without_fault(self) -> None:
+        """An unseeded token against a healthy fake returns None, not an exception.
+
+        This passes at HEAD and exists only as the control for the fault test:
+        without it, a change that raised on *every* retrieve would look correct.
+        """
+        mock_redis = MockRedis()
+        store = TempPasswordStore(mock_redis)
+
+        result = await store.retrieve("never_stored_token")
+
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_retrieve_concurrent_claimants_single_winner(self) -> None:
+        """Exactly one of two concurrent retrieves on one token wins.
+
+        Scope statement: the local fake does NOT model ``transaction=True``.
+        ``MockRedis.pipeline`` accepts ``transaction`` and discards it, and
+        ``MockPipeline.execute()`` iterates its queued commands with no
+        ``await`` in the loop, so the GET-then-DELETE pair is serialised by the
+        absence of an await, not by MULTI/EXEC. This test therefore demonstrates
+        the call sequence is sound against a single-threaded event loop; it does
+        NOT observe Redis's transactional guarantee.
+        """
+        mock_redis = MockRedis()
+        store = TempPasswordStore(mock_redis)
+
+        token = "concurrent_claim_token"
+        password = "ConcurrentPass1"
+        await store.store(token, password)
+
+        results = await asyncio.gather(
+            store.retrieve(token),
+            store.retrieve(token),
+        )
+
+        winners = [r for r in results if r is not None]
+        assert len(winners) == 1
+        assert winners[0] == password

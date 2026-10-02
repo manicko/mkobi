@@ -16,7 +16,7 @@ from mkobi.api.deps import (
     get_redis_client_dependency,
     get_temp_password_store,
 )
-from mkobi.api.schemas.responses import admin_responses
+from mkobi.api.schemas.responses import admin_responses, error_503
 from mkobi.interfaces import IUserService
 from mkobi.models.enums import ErrorCode, RegistrationStatus
 from mkobi.utils.exceptions import AppException
@@ -24,7 +24,10 @@ from mkobi.models.user import UserRead, UserUpdateRequest, UserUpdateActiveReque
 from mkobi.models.auth import RegistrationRequestItem, SuccessResponse
 from mkobi.services.auth_service import AuthService
 from mkobi.core.security import revoke_all_user_tokens
-from mkobi.core.temp_password_store import TempPasswordStore
+from mkobi.core.temp_password_store import (
+    TempPasswordStore,
+    TempPasswordStoreUnavailableError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -424,7 +427,7 @@ async def reject_registration_request_admin_endpoint(
     status_code=status.HTTP_200_OK,
     summary="Retrieve temporary password (admin)",
     description="Returns a one-time temporary password. Admin only. Password is deleted after retrieval.",
-    responses=admin_responses,
+    responses={**admin_responses, 503: error_503},
 )
 async def retrieve_temp_password_admin_endpoint(
     retrieval_token: str,
@@ -433,7 +436,13 @@ async def retrieve_temp_password_admin_endpoint(
 ) -> dict[str, str]:
     """Retrieve a temporary password by its retrieval token (one-time, admin only)."""
     logger.info("Admin: retrieving temp password: token=%s...", retrieval_token[:8])
-    password = await temp_password_store.retrieve(retrieval_token)
+    try:
+        password = await temp_password_store.retrieve(retrieval_token)
+    except TempPasswordStoreUnavailableError as exc:
+        raise AppException(
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail="Temporary password store is temporarily unavailable",
+        ) from exc
     if password is None:
         raise AppException(
             code=ErrorCode.NOT_FOUND,

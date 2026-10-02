@@ -472,13 +472,18 @@ Retrieve a one-time temporary password by its retrieval token. Admin only. The p
 | Status | Condition                                | Detail                                        |
 | ------ | ---------------------------------------- | --------------------------------------------- |
 | `404`  | Token not found / expired / already used | `Temporary password not found or already retrieved` |
+| `503`  | Temporary-password store unreachable     | Temporary password store is temporarily unavailable |
+
+An expired, already-retrieved and never-existed token are indistinguishable by
+design and all answer `404`; a **store fault is not one of them** and answers
+`503`, so a retry loop against a `404` is never mistaken for an outage.
 
 **Side effects:**
 - The password is **deleted** from Redis (single-use via atomic GET+DELETE pipeline)
 - Subsequent requests with the same token return 404
-- The plaintext password is logged at INFO level for audit purposes
+- The retrieval **token** is logged at INFO level (first 8 characters only); the plaintext password is **never** written to a log
 
-> **Security:** This is the **only** API endpoint that returns the plaintext `temp_password`. It requires admin authentication. The password is accessible only once — after retrieval, it is permanently deleted from Redis. Tokens auto-expire after `TEMP_PASSWORD_TTL_SECONDS` (default: 24h) if never retrieved.
+> **Security:** This is the **only** API endpoint that returns the plaintext `temp_password`. It requires admin authentication. The password is accessible only once — after retrieval, it is permanently deleted from Redis. Tokens auto-expire after `TEMP_PASSWORD_TTL_SECONDS` (default: 24h) if never retrieved. If Redis is unreachable the endpoint answers `503`, not `404`; the store's `GET`+`DELETE` run inside one Redis transaction.
 
 ---
 
@@ -670,7 +675,7 @@ recorded, not resolved here.
 When a registration request is approved, `AuthService` generates a cryptographically secure 16-character temporary password (letters + digits, at least one of each) using its own private `_generate_temp_password()` helper. Generation is internal to the service: the route neither calls the helper nor handles the plaintext password. This password:
 
 - Is generated using `secrets.choice(string.ascii_letters + string.digits)` with up to 3 attempts to produce a password passing Pydantic validation
-- Is returned in the `temp_password` field of the approval response
+- Is **not** returned in plaintext by the approval response; that response carries a `retrieval_token` plus `credential_stored`, and the password is fetched separately from `GET /api/v1/admin/temp-passwords/{retrieval_token}`
 - Is stored as a bcrypt hash in the `users` table (never in plaintext)
 - The user's `force_password_change` flag is set to `True`, requiring a password change on first login
 - Must be communicated to the new user by the admin through an available channel
