@@ -4,11 +4,20 @@ Contains TypedDict and Pydantic models for typing structures
 that previously used dict[str, Any] or Any.
 """
 
-from typing import Any, TypedDict
+from typing import TypedDict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from mkobi.models.enums import AggregationFunctionEnum, YoyModeEnum
+from mkobi.models.transformation_configs import (
+    AggregationConfig as TransformationAggregationConfig,
+)
+from mkobi.models.transformation_configs import (
+    CustomMetricConfig,
+    FilterConfig,
+    ShareConfig,
+    YoyConfig,
+)
 
 
 # ==================== Aggregated Data Types ====================
@@ -169,28 +178,6 @@ class FilterConfigDict(TypedDict, total=False):
 # ==================== Processing Settings Types ====================
 
 
-class ProcessingSettingsDict(TypedDict, total=False):
-    """Processing settings (settings field)."""
-
-    loader: str  # "sales_loader", etc.
-    date_column: str | None
-    timezone: str  # "UTC", "Europe/Moscow", etc.
-    encoding: str | None  # "UTF-8", etc.
-    separator: str | None  # "," for CSV
-    renames: dict[str, str] | None  # column renaming map
-    column_types: dict[str, str] | None  # column type casting
-    date_format: str | None  # date format string
-    decimal_separator: str | None  # "," for EU format
-    computed_fields: list[dict[str, str]] | None  # computed column expressions
-    filters: list[dict[str, Any]] | None  # row filters
-    groupby: list[str] | None  # GROUP BY columns
-    aggregations: list[dict[str, str]] | None  # aggregation config
-    yoy_config: dict[str, Any] | None  # year-over-year config
-    share_config: dict[str, Any] | None  # share calculation config
-    custom_metrics: list[dict[str, Any]] | None  # custom metric formulas
-    metric_agg: str | None  # Default aggregation function for metrics (sum, mean, min, max, count)
-
-
 # ==================== Auth Token Types ====================
 
 
@@ -293,16 +280,61 @@ class FilterConfigModel(BaseModel):
 
 
 class ProcessingSettingsModel(BaseModel):
-    """Pydantic model for processing settings."""
+    """Pydantic model for processing settings.
 
-    loader: str | None = None
-    date_column: str | None = None
-    timezone: str = "UTC"
-    encoding: str | None = "UTF-8"
-    separator: str | None = ","
+    The single, strict settings boundary. It declares all **nineteen** keys the
+    worker reads, so an unknown key is rejected at the request boundary instead
+    of being silently dropped.
+
+    Read directly by ``workers/data_worker.py::_run_with_transaction``:
+    ``separator``, ``encoding``, ``column_types``, ``required_columns``,
+    ``decimal_separator``, ``date_format``, ``renames``, ``computed_fields``,
+    ``metric_agg``.
+
+    Reached through ``ProcessingConfig(**processing_config_dict)``:
+    ``filters``, ``groupby``, ``aggregations``, ``sort_by``, ``descending``,
+    ``limit``, ``yoy_config``, ``share_config``, ``custom_metrics``, ``metrics``.
+
+    ``loader``, ``date_column`` and ``timezone`` are read by nothing in ``src/``;
+    they are kept because the dev seeder writes ``date_column`` and stored
+    payloads may carry them. No default is given to ``timezone``, ``encoding``
+    or ``separator``: a default the stored column never had would make a read
+    model assert something the database does not say.
+    """
+
+    # CSV parsing (worker read)
+    separator: str | None = None
+    encoding: str | None = None
+    column_types: dict[str, str] | None = None
+    required_columns: list[str] | None = None
+    decimal_separator: str | None = None
+    date_format: str | None = None
+
+    # Frame reshaping (worker read)
+    renames: dict[str, str] | None = None
+    computed_fields: list[CustomMetricConfig] | None = None
+
+    # Aggregation defaults (worker read)
     metric_agg: AggregationFunctionEnum | None = None
 
-    model_config = {"extra": "allow"}
+    # Transformations (reached via ProcessingConfig)
+    filters: list[FilterConfig] | None = None
+    groupby: list[str] | None = None
+    aggregations: list[TransformationAggregationConfig] | None = None
+    sort_by: list[str] | None = None
+    descending: bool | None = None
+    limit: int | None = None
+    yoy_config: YoyConfig | None = None
+    share_config: ShareConfig | None = None
+    custom_metrics: list[CustomMetricConfig] | None = None
+    metrics: list[dict[str, str]] | None = None
+
+    # Declared but read by nothing in src/ (kept for the seeder's stored shape)
+    loader: str | None = None
+    date_column: str | None = None
+    timezone: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 

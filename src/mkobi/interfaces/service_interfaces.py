@@ -20,7 +20,7 @@ from mkobi.models.processing_configs import ProcessingConfigRead
 from mkobi.models.processing_logs import ProcessingLogRead
 from mkobi.models.types import (
     FilterConfigDict,
-    ProcessingSettingsDict,
+    ProcessingSettingsModel,
 )
 from mkobi.models.user import UserRead
 
@@ -520,7 +520,7 @@ class IProcessingConfigService(abc.ABC):
     async def create_processing_config(
         self,
         dashboard_id: UUID,
-        settings: ProcessingSettingsDict,
+        settings: ProcessingSettingsModel,
         db: AsyncSession,
     ) -> ProcessingConfigRead:
         """Create processing config for dashboard."""
@@ -539,7 +539,7 @@ class IProcessingConfigService(abc.ABC):
     async def update_processing_config(
         self,
         dashboard_id: UUID,
-        settings: ProcessingSettingsDict,
+        settings: ProcessingSettingsModel,
         db: AsyncSession,
     ) -> ProcessingConfigRead | None:
         """Update processing config."""

@@ -478,26 +478,6 @@ async def _process_csv_file_async(
         )
         logger.info("File loaded: %d rows, %d columns", df.shape[0], df.shape[1])
 
-        # Validate loaded data using DataValidator
-        loader_config = LoaderConfig(
-            required_columns=settings.get("required_columns", []) if settings else [],
-            column_types=column_types,
-        )
-        validator = DataValidator(config=loader_config)
-        validation_result = validator.validate(df)
-        if not validation_result.is_valid:
-            error_msg = f"Data validation failed: {'; '.join(validation_result.errors)}"
-            logger.error(error_msg)
-            await _update_processing_log_status(
-                task_id=task_id,
-                status=ProcessingStatus.FAILED,
-                message=error_msg,
-                finished_at=datetime.now(UTC),
-                session=session,
-                error_code=ErrorCode.VALIDATION_ERROR.value,
-            )
-            raise ValueError(error_msg)
-
         # Apply decimal separator transformation for float columns with comma decimal
         if settings and settings.get("decimal_separator") == ",":
             for col_name, col_type in column_types.items():
@@ -529,12 +509,46 @@ async def _process_csv_file_async(
                             df = df.with_columns(pl.col(col_name).cast(pl.Boolean))
                     except Exception as e:
                         logger.warning("Failed to cast column '%s' to %s: %s", col_name, col_type, e)
+                else:
+                    # A column_types key naming a column absent from the frame is
+                    # a settings-shape problem: name it and continue. Raising
+                    # here would create a new failure class for a configuration
+                    # that is merely inert today.
+                    logger.warning(
+                        "column_types key '%s' does not match any loaded column; skipping cast",
+                        col_name,
+                    )
 
         # Apply column renames from processing config
         if settings and settings.get("renames"):
             rename_map = settings["renames"]
             logger.debug("Applying column renames: %s", rename_map)
             df = df.rename(rename_map)
+
+        # Validate loaded data using DataValidator, AFTER the frame is cast and
+        # renamed. Validating the pre-rename, pre-cast frame made the validator
+        # inspect a namespace the frame no longer had: a configured
+        # ``required_columns`` naming a post-rename name failed, and a
+        # ``column_types`` check inspected Utf8 columns that are Int64 by
+        # aggregation time. One namespace, one order.
+        loader_config = LoaderConfig(
+            required_columns=settings.get("required_columns", []) if settings else [],
+            column_types=column_types,
+        )
+        validator = DataValidator(config=loader_config)
+        validation_result = validator.validate(df)
+        if not validation_result.is_valid:
+            error_msg = f"Data validation failed: {'; '.join(validation_result.errors)}"
+            logger.error(error_msg)
+            await _update_processing_log_status(
+                task_id=task_id,
+                status=ProcessingStatus.FAILED,
+                message=error_msg,
+                finished_at=datetime.now(UTC),
+                session=session,
+                error_code=ErrorCode.VALIDATION_ERROR.value,
+            )
+            raise ValueError(error_msg)
 
         # Apply computed fields from processing config
         if settings and settings.get("computed_fields"):

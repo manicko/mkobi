@@ -3,13 +3,13 @@ from pydantic import BaseModel, ConfigDict
 from uuid import UUID
 
 from mkobi.models.enums import AggregationFunctionEnum
-from mkobi.models.types import ProcessingSettingsDict
+from mkobi.models.types import ProcessingSettingsModel
 
 
 class ProcessingConfigBase(BaseModel):
     """Base model for processing settings."""
 
-    settings: ProcessingSettingsDict
+    settings: ProcessingSettingsModel
     metric_agg: AggregationFunctionEnum | None = None
 
     model_config = ConfigDict(
@@ -36,7 +36,7 @@ class ProcessingConfigCreate(ProcessingConfigBase):
 class ProcessingConfigUpdate(BaseModel):
     """Model for updating processing settings."""
 
-    settings: ProcessingSettingsDict | None = None
+    settings: ProcessingSettingsModel | None = None
     metric_agg: AggregationFunctionEnum | None = None
 
     model_config = ConfigDict(

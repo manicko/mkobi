@@ -22,6 +22,34 @@ logger = logging.getLogger(__name__)
 
 DASHBOARD_NAME = "test_media_dash"
 
+# The dev-only seeder's processing-config payload. Named so the settings
+# boundary test can assert the strict ProcessingSettingsModel accepts the only
+# non-API writer's stored shape.
+_SEEDED_PROCESSING_SETTINGS: dict[str, Any] = {
+    "separator": ";",
+    "encoding": "utf-8-sig",
+    "date_format": "%d/%m/%Y",
+    "decimal_separator": ",",
+    "column_types": {
+        "date": "date",
+        "TVR": "float",
+        "advertiser": "str",
+        "brand": "str",
+        "targetaudience": "str",
+        "category": "str",
+    },
+    "date_column": "date",
+    "computed_fields": [
+        {"name": "year", "expr": "pl.col('date').dt.year()"},
+        {"name": "month", "expr": "pl.col('date').dt.month()"},
+        {
+            "name": "month_label",
+            "expr": "pl.col('date').dt.strftime('%b %Y')",
+        },
+    ],
+    "renames": {"TVR": "tvr"},
+}
+
 
 async def ensure_test_media_dash(db: AsyncSession | None = None) -> dict[str, Any]:
     """Create or update test_media_dash dashboard with all related records.
@@ -204,30 +232,7 @@ async def ensure_test_media_dash(db: AsyncSession | None = None) -> dict[str, An
         # Upsert processing config
         upsert_proc = pg_insert(ProcessingConfig).values(
             dashboard_id=dashboard_id,
-            settings={
-                "separator": ";",
-                "encoding": "utf-8-sig",
-                "date_format": "%d/%m/%Y",
-                "decimal_separator": ",",
-                "column_types": {
-                    "date": "date",
-                    "TVR": "float",
-                    "advertiser": "str",
-                    "brand": "str",
-                    "targetaudience": "str",
-                    "category": "str",
-                },
-                "date_column": "date",
-                "computed_fields": [
-                    {"name": "year", "expr": "pl.col('date').dt.year()"},
-                    {"name": "month", "expr": "pl.col('date').dt.month()"},
-                    {
-                        "name": "month_label",
-                        "expr": "pl.col('date').dt.strftime('%b %Y')",
-                    },
-                ],
-                "renames": {"TVR": "tvr"},
-            },
+            settings=_SEEDED_PROCESSING_SETTINGS,
         )
         upsert_proc = upsert_proc.on_conflict_do_update(
             index_elements=["dashboard_id"],

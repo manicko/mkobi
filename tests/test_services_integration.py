@@ -25,10 +25,9 @@ from mkobi.services.layout_service import LayoutService
 from mkobi.services.processing_config_service import ProcessingConfigService
 from mkobi.services.processing_log_service import ProcessingLogService
 from mkobi.models.graph import GraphCreate
-from mkobi.models.enums import UserRole, GraphType, ErrorCode
+from mkobi.models.enums import UserRole, GraphType
 from mkobi.models.layout import LayoutUpdate
 from mkobi.models.filters import FilterUpdate
-from mkobi.utils.exceptions import AppException
 
 
 # ========== AuthService Integration Tests ==========
@@ -587,11 +586,10 @@ class TestProcessingConfigServiceIntegration:
 
     @pytest.fixture
     def valid_settings(self):
-        """Return valid processing settings."""
-        return {
-            "separator": ",",
-            "encoding": "UTF-8",
-        }
+        """Return valid processing settings as the strict boundary model."""
+        from mkobi.models.types import ProcessingSettingsModel
+
+        return ProcessingSettingsModel(separator=",", encoding="UTF-8")
 
     async def test_create_config_with_db(self, config_service, async_db_session, dashboard_id, valid_settings):
         """Test processing config creation."""
@@ -604,79 +602,68 @@ class TestProcessingConfigServiceIntegration:
         assert result.dashboard_id == dashboard_id
 
     async def test_create_config_invalid_settings(self, config_service, async_db_session, dashboard_id):
-        """Test config creation with invalid settings raises."""
-        # Empty settings should raise ValueError
+        """Test config creation with empty settings raises."""
+        from mkobi.models.types import ProcessingSettingsModel
+
+        # An empty model should raise ValueError at the service boundary.
         with pytest.raises(ValueError, match="Settings cannot be empty"):
             await config_service.create_processing_config(
                 dashboard_id=dashboard_id,
-                settings={},
+                settings=ProcessingSettingsModel(),
                 db=async_db_session,
             )
 
-    async def test_create_config_non_dict_settings(self, config_service, async_db_session, dashboard_id):
-        """Test config creation with non-dict settings raises."""
-        # Non-dict settings should raise ValueError
-        with pytest.raises(ValueError, match="Settings must be a dictionary"):
+    async def test_create_config_non_model_settings(self, config_service, async_db_session, dashboard_id):
+        """Test config creation with a non-model settings value raises."""
+        with pytest.raises(ValueError, match="Settings must be a ProcessingSettingsModel"):
             await config_service.create_processing_config(
                 dashboard_id=dashboard_id,
-                settings="not a dict",
+                settings="not a model",  # type: ignore[arg-type]
                 db=async_db_session,
             )
 
-    async def test_create_config_invalid_separator_type(self, config_service, async_db_session, dashboard_id):
-        """Test config creation with non-string separator raises validation error."""
-        with pytest.raises(AppException) as exc_info:
-            await config_service.create_processing_config(
-                dashboard_id=dashboard_id,
-                settings={"separator": 123},  # Should be str, not int
-                db=async_db_session,
-            )
-        assert exc_info.value.code == ErrorCode.VALIDATION_ERROR
-        assert "separator" in exc_info.value.detail
-        assert "str" in exc_info.value.detail
+    async def test_create_config_invalid_separator_type(self, async_db_session, dashboard_id):
+        """A non-string separator is rejected by the boundary model."""
+        from mkobi.models.types import ProcessingSettingsModel
+        from pydantic import ValidationError
 
-    async def test_create_config_invalid_decimal_separator_type(self, config_service, async_db_session, dashboard_id):
-        """Test config creation with non-string decimal_separator raises validation error."""
-        with pytest.raises(AppException) as exc_info:
-            await config_service.create_processing_config(
-                dashboard_id=dashboard_id,
-                settings={"decimal_separator": ["comma"]},  # Should be str, not list
-                db=async_db_session,
-            )
-        assert exc_info.value.code == ErrorCode.VALIDATION_ERROR
-        assert "decimal_separator" in exc_info.value.detail
+        with pytest.raises(ValidationError):
+            ProcessingSettingsModel.model_validate({"separator": 123})
 
-    async def test_create_config_invalid_column_types_type(self, config_service, async_db_session, dashboard_id):
-        """Test config creation with non-dict column_types raises validation error."""
-        with pytest.raises(AppException) as exc_info:
-            await config_service.create_processing_config(
-                dashboard_id=dashboard_id,
-                settings={"column_types": "not_a_dict"},  # Should be dict
-                db=async_db_session,
-            )
-        assert exc_info.value.code == ErrorCode.VALIDATION_ERROR
-        assert "column_types" in exc_info.value.detail
-        assert "dict" in exc_info.value.detail
+    async def test_create_config_invalid_decimal_separator_type(self, async_db_session, dashboard_id):
+        """A non-string decimal_separator is rejected by the boundary model."""
+        from mkobi.models.types import ProcessingSettingsModel
+        from pydantic import ValidationError
 
-    async def test_create_config_invalid_date_format_type(self, config_service, async_db_session, dashboard_id):
-        """Test config creation with non-string date_format raises validation error."""
-        with pytest.raises(AppException) as exc_info:
-            await config_service.create_processing_config(
-                dashboard_id=dashboard_id,
-                settings={"date_format": 2024},  # Should be str, not int
-                db=async_db_session,
-            )
-        assert exc_info.value.code == ErrorCode.VALIDATION_ERROR
-        assert "date_format" in exc_info.value.detail
+        with pytest.raises(ValidationError):
+            ProcessingSettingsModel.model_validate({"decimal_separator": ["comma"]})
+
+    async def test_create_config_invalid_column_types_type(self, async_db_session, dashboard_id):
+        """A non-dict column_types is rejected by the boundary model."""
+        from mkobi.models.types import ProcessingSettingsModel
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            ProcessingSettingsModel.model_validate({"column_types": "not_a_dict"})
+
+    async def test_create_config_invalid_date_format_type(self, async_db_session, dashboard_id):
+        """A non-string date_format is rejected by the boundary model."""
+        from mkobi.models.types import ProcessingSettingsModel
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            ProcessingSettingsModel.model_validate({"date_format": 2024})
 
     async def test_create_config_valid_type_settings(self, config_service, async_db_session, dashboard_id):
         """Test config creation with valid typed settings passes validation."""
-        valid_settings = {
-            "separator": ",",
-            "decimal_separator": ".",
-            "column_types": {"col1": "str", "col2": "int"},
-            "date_format": "%Y-%m-%d",
-        }
+        from mkobi.models.types import ProcessingSettingsModel
+
+        valid_settings = ProcessingSettingsModel(
+            separator=",",
+            decimal_separator=".",
+            column_types={"col1": "str", "col2": "int"},
+            date_format="%Y-%m-%d",
+        )
         result = await config_service.create_processing_config(
             dashboard_id=dashboard_id,
             settings=valid_settings,
@@ -687,11 +674,11 @@ class TestProcessingConfigServiceIntegration:
 
     async def test_create_config_missing_fields_no_type_validation(self, config_service, async_db_session, dashboard_id):
         """Test that missing optional fields are not type-validated (pass validation)."""
-        # Only provide a value that is not in the type_checks list
-        # Missing fields should not trigger type validation
+        from mkobi.models.types import ProcessingSettingsModel
+
         result = await config_service.create_processing_config(
             dashboard_id=dashboard_id,
-            settings={"encoding": "UTF-8"},
+            settings=ProcessingSettingsModel(encoding="UTF-8"),
             db=async_db_session,
         )
         assert result is not None
@@ -711,13 +698,14 @@ class TestProcessingConfigServiceIntegration:
 
     async def test_update_config_with_db(self, config_service, async_db_session, dashboard_id, valid_settings):
         """Test updating processing config."""
+        from mkobi.models.types import ProcessingSettingsModel
+
         await config_service.create_processing_config(
             dashboard_id=dashboard_id,
             settings=valid_settings,
             db=async_db_session,
         )
-        updated_settings = valid_settings.copy()
-        updated_settings["separator"] = ";"
+        updated_settings = ProcessingSettingsModel(separator=";", encoding="UTF-8")
         result = await config_service.update_processing_config(
             dashboard_id=dashboard_id,
             settings=updated_settings,

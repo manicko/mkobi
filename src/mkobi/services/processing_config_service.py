@@ -6,17 +6,15 @@ All operations are performed asynchronously through IProcessingConfigRepository.
 """
 
 import logging
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.interfaces.repository_interfaces import IProcessingConfigRepository
 from mkobi.interfaces.service_interfaces import IProcessingConfigService
-from mkobi.models.enums import ErrorCode
 from mkobi.models.processing_configs import ProcessingConfigRead
-from mkobi.models.types import ProcessingSettingsDict
-from mkobi.utils.exceptions import AppException
+from mkobi.models.types import ProcessingSettingsModel
 
 logger = logging.getLogger(__name__)
 
@@ -35,72 +33,70 @@ class ProcessingConfigService(IProcessingConfigService):
 
     def _merge_metric_agg_into_settings(
         self,
-        settings: ProcessingSettingsDict | None,
+        settings: ProcessingSettingsModel | None,
         metric_agg: str | None,
-    ) -> ProcessingSettingsDict | None:
-        """Merge metric_agg into settings dict.
+    ) -> ProcessingSettingsModel | None:
+        """Merge metric_agg into the settings model.
+
+        A raw ``{**settings, "metric_agg": ...}`` spread does not work on a
+        ``BaseModel``, so the merge is ``model_dump``-based: the stored settings
+        are dumped to a dict, the metric_agg is placed, and the result is
+        re-validated. Re-validation is the point -- the merged dict is the same
+        strict boundary as the request body.
 
         Args:
-            settings: Processing settings dict.
+            settings: Processing settings model.
             metric_agg: Optional metric aggregation function.
 
         Returns:
-            Settings dict with metric_agg merged in, or None.
+            Settings model with metric_agg merged in, or None.
         """
         if settings is None:
             return None
         if metric_agg is not None:
-            settings = {**settings, "metric_agg": metric_agg}
+            merged = settings.model_dump()
+            merged["metric_agg"] = metric_agg
+            return cast(ProcessingSettingsModel, ProcessingSettingsModel.model_validate(merged))
         return settings
 
     def _extract_metric_agg_from_settings(
         self,
-        settings: ProcessingSettingsDict,
+        settings: ProcessingSettingsModel,
     ) -> str | None:
-        """Extract metric_agg from settings dict.
+        """Extract metric_agg from the settings model.
 
         Args:
-            settings: Processing settings dict.
+            settings: Processing settings model.
 
         Returns:
             metric_agg value or None.
         """
-        metric_agg = settings.get("metric_agg")
+        metric_agg = settings.metric_agg
         if metric_agg is None:
             return None
-        return str(metric_agg) if isinstance(metric_agg, str) else None
+        return str(metric_agg)
 
-    async def _validate_settings(self, settings: ProcessingSettingsDict) -> None:
+    async def _validate_settings(self, settings: ProcessingSettingsModel) -> None:
         """Validate processing settings structure.
 
+        The type authority for every settings key is now
+        :class:`ProcessingSettingsModel`, which the request boundary enforces
+        with ``extra="forbid"``. Only the two structural checks remain here; the
+        per-key type loop was provably redundant once the boundary type became a
+        model, and extending it to all nineteen keys would create a second
+        source of truth.
+
         Args:
-            settings: Processing settings.
+            settings: Processing settings model.
 
         Raises:
-            ValueError: If settings structure is incorrect.
-            AppException: If settings field types are invalid.
+            ValueError: If the settings structure is incorrect.
         """
-        if not isinstance(settings, dict):
-            raise ValueError("Settings must be a dictionary")
+        if not isinstance(settings, ProcessingSettingsModel):
+            raise ValueError("Settings must be a ProcessingSettingsModel")
 
-        if not settings:
+        if not settings.model_dump(exclude_none=True):
             raise ValueError("Settings cannot be empty")
-
-        # Type validation for processing config fields
-        type_checks: dict[str, type] = {
-            "separator": str,
-            "decimal_separator": str,
-            "column_types": dict,
-            "date_format": str,
-        }
-        for field_name, expected_type in type_checks.items():
-            value = settings.get(field_name)
-            if value is not None and not isinstance(value, expected_type):
-                raise AppException(
-                    ErrorCode.VALIDATION_ERROR,
-                    detail=f"Field '{field_name}' must be of type {expected_type.__name__}, "
-                    f"got {type(value).__name__}",
-                )
 
     async def get_by_dashboard_id(
         self, dashboard_id: UUID, db: AsyncSession
@@ -122,14 +118,17 @@ class ProcessingConfigService(IProcessingConfigService):
             return None
 
         logger.info("Config retrieved: dashboard_id=%s", dashboard_id)
-        # Extract metric_agg from settings for the response
-        metric_agg = self._extract_metric_agg_from_settings(config_obj.settings)
+        # Extract metric_agg from settings for the response. The stored JSONB is
+        # re-validated against the strict model before it is used, so a stored
+        # payload cannot carry a key the boundary would reject.
+        stored_settings = ProcessingSettingsModel.model_validate(config_obj.settings)
+        metric_agg = self._extract_metric_agg_from_settings(stored_settings)
         return cast(
             ProcessingConfigRead,
             ProcessingConfigRead.model_validate(
                 {
                     "dashboard_id": config_obj.dashboard_id,
-                    "settings": config_obj.settings,
+                    "settings": stored_settings,
                     "updated_at": config_obj.updated_at,
                     "metric_agg": metric_agg,
                 }
@@ -140,7 +139,7 @@ class ProcessingConfigService(IProcessingConfigService):
         self,
         dashboard_id: UUID,
         db: AsyncSession,
-        settings: ProcessingSettingsDict | None = None,
+        settings: ProcessingSettingsModel | None = None,
         metric_agg: str | None = None,
     ) -> ProcessingConfigRead:
         """Create or update processing config.
@@ -148,7 +147,7 @@ class ProcessingConfigService(IProcessingConfigService):
         Args:
             dashboard_id: Dashboard identifier.
             db: Async database session.
-            settings: Processing settings.
+            settings: Processing settings model.
             metric_agg: Optional metric aggregation function to merge into settings.
 
         Returns:
@@ -165,24 +164,30 @@ class ProcessingConfigService(IProcessingConfigService):
         if settings is not None:
             await self._validate_settings(settings)
 
+        # JSONB stores a plain dict; the model is the boundary, not the column.
+        stored: dict[str, Any] | None = (
+            settings.model_dump(exclude_none=True) if settings is not None else None
+        )
+
         existing = await self.config_repo.get(dashboard_id, db)
         if existing:
             updated = await self.config_repo.update(
-                dashboard_id, db, settings=settings
+                dashboard_id, db, settings=stored
             )
             if updated is None:
                 raise ValueError(
                     f"Failed to update config for dashboard {dashboard_id}"
                 )
             logger.info("Config updated: dashboard_id=%s", dashboard_id)
+            updated_settings = ProcessingSettingsModel.model_validate(updated.settings)
             return cast(
                 ProcessingConfigRead,
                 ProcessingConfigRead.model_validate(
                     {
                         "dashboard_id": updated.dashboard_id,
-                        "settings": updated.settings,
+                        "settings": updated_settings,
                         "updated_at": updated.updated_at,
-                        "metric_agg": updated.settings.get("metric_agg"),
+                        "metric_agg": self._extract_metric_agg_from_settings(updated_settings),
                     }
                 ),
             )
@@ -190,21 +195,22 @@ class ProcessingConfigService(IProcessingConfigService):
             created = await self.config_repo.create(
                 db=db,
                 dashboard_id=dashboard_id,
-                settings=settings,
+                settings=stored,
             )
             if created is None:
                 raise ValueError(
                     f"Failed to create config for dashboard {dashboard_id}"
                 )
             logger.info("Config created: dashboard_id=%s", dashboard_id)
+            created_settings = ProcessingSettingsModel.model_validate(created.settings)
             return cast(
                 ProcessingConfigRead,
                 ProcessingConfigRead.model_validate(
                     {
                         "dashboard_id": created.dashboard_id,
-                        "settings": created.settings,
+                        "settings": created_settings,
                         "updated_at": created.updated_at,
-                        "metric_agg": created.settings.get("metric_agg"),
+                        "metric_agg": self._extract_metric_agg_from_settings(created_settings),
                     }
                 ),
             )
@@ -235,7 +241,7 @@ class ProcessingConfigService(IProcessingConfigService):
     async def create_processing_config(
         self,
         dashboard_id: UUID,
-        settings: ProcessingSettingsDict,
+        settings: ProcessingSettingsModel,
         db: AsyncSession,
         metric_agg: str | None = None,
     ) -> ProcessingConfigRead:
@@ -251,7 +257,7 @@ class ProcessingConfigService(IProcessingConfigService):
     async def update_processing_config(
         self,
         dashboard_id: UUID,
-        settings: ProcessingSettingsDict,
+        settings: ProcessingSettingsModel,
         db: AsyncSession,
         metric_agg: str | None = None,
     ) -> ProcessingConfigRead | None:
