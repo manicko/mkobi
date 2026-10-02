@@ -68,7 +68,7 @@ All environment variables use the double-underscore (`__`) delimiter for nesting
 | `DATABASE__USER`              | `database.user`          | `mkobi_app`    | Database user                   |
 | `DATABASE__PASSWORD`          | `database.password`      | `None`         | Database password (secret)      |
 | `DATABASE__TEST_DBNAME`       | `database.test_dbname`   | `bidb_test`    | Test database name              |
-| `DATABASE__LOCK_TIMEOUT_MS`   | `database.lock_timeout_ms` | `180000`     | Aggregate-rebuild lock wait bound (ms); `0` waits forever |
+| `DATABASE__LOCK_TIMEOUT_MS`   | `database.lock_timeout_ms` | `180000`     | Bound on the aggregate-rebuild advisory-lock wait (ms). `0` means **unbounded** (PostgreSQL's own sentinel — a wedged holder then holds a pooled connection indefinitely). PostgreSQL has no per-lock timeout, so the bound applies to **every lock wait in the worker's transaction**, not only the advisory one; keep it well below `STALE_PROCESSING_TIMEOUT_MINUTES`. Applied per transaction with `set_config(…, true)`, so it does not survive the commit on a pooled connection. See [Architecture](architecture.md#aggregate-rebuild-exclusion). |
 | `DATABASE__POOL_SIZE`         | `database.pool_size`     | `10`           | Application engine pool size. `0` is SQLAlchemy's unbounded sentinel and is refused — it removes the cap **and discards `max_overflow`**; use `NullPool` for no pooling. |
 | `DATABASE__MAX_OVERFLOW`      | `database.max_overflow`  | `20`           | Extra connections above `pool_size`. `0` is legitimate (a strict cap) and is **not** refused. |
 | `DATABASE__POOL_TIMEOUT`      | `database.pool_timeout`  | `30`           | Seconds to wait for a pooled connection. `0` means **fail immediately, never queue** — not "wait forever" — so it is refused; every burst would become an instant 500. |
@@ -84,6 +84,7 @@ All environment variables use the double-underscore (`__`) delimiter for nesting
 | `AUTO_MIGRATE`                | `auto_migrate`           | `false`        | Auto-apply Alembic migrations   |
 | `RECREATE_TEST_DB`            | `recreate_test_db`       | `false`        | Recreate test DB on startup. Set to `true` in test environment for automatic test database recreation. |
 | `STALE_FILE_THRESHOLD_HOURS`  | `stale_file_threshold_hours` | `24`      | Temp file cleanup threshold     |
+| `STALE_PROCESSING_TIMEOUT_MINUTES` | `stale_processing_timeout_minutes` | `30` | **The one stale horizon.** Ages a processing log past which "this job is stuck" is asserted, shared by the boot-time `UPLOADED` marker and the periodic `PROCESSING` sweep. It bounds time to *first report*, not job lifetime: a legitimately long rebuild can be flipped to `FAILED` at the horizon and later overwritten back to `COMPLETED` by the worker's own commit. See [Architecture](architecture.md#stale-processing-log-cleanup). |
 | `RATE_LIMITER_FAIL_CLOSED`    | `rate_limiter_fail_closed` | `true`      | Fail-closed on Redis outage     |
 | `CORS_ORIGINS`                | `cors_origins`           | `["http://localhost:3000", "http://localhost:5173"]` | Allowed CORS origins (from `app.yaml`) |
 | `TEMP_PASSWORD_TTL_SECONDS`   | `temp_password_ttl_seconds` | `86400`     | Temp password Redis TTL (min 60s) |

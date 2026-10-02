@@ -8,6 +8,8 @@ tags:
   - repository
   - startup-lifecycle
   - stateless-design
+  - transactions
+  - concurrency
 related:
   - configuration
   - logging
@@ -91,6 +93,31 @@ PostgreSQL
 - Pydantic v2 models for request/response validation
 - All constants and statuses defined as `StrEnum` (see `src/mkobi/models/enums.py`)
 
+## Transaction Ownership
+
+**A request's unit of work belongs to the service layer.** The seam is `IUserService`: its write
+methods — `create_user`, `update_user_role`, `update_user_active_status` and `delete_user` — each
+end their own transaction, so a write is durable when the method returns and nothing is committed
+when it raises.
+
+The transport layer holds **no** boundary of its own:
+
+- `api/deps.py::get_db_dependency` and `db/session.py::get_session` / `get_db` yield a session and
+  close it. They **commit nothing and roll nothing back**. **Closing the session is not a
+  transaction boundary** — a write that was never committed is discarded when the session closes,
+  and a route that adds a `commit()` of its own duplicates a boundary the service already owns.
+- Repositories (`db/repositories/`) `add`/`setattr` and then `flush()`; they do not commit. That is
+  why the driver's `IntegrityError` is raised at flush time and is classified in the service, which
+  is the layer that knows what the error *means*.
+- Nine `await db.commit()` call sites remain in six route modules under `api/routes/`. That
+  inconsistency is recorded, not resolved here; the rule above is the direction the codebase is
+  moving in.
+
+A caller that needs **two** writes in one transaction cannot get it from this seam and must open the
+transaction itself. The worker's aggregate rebuild is the notable case: it is a long
+multi-statement transaction owned by the worker rather than by a service, and is described under
+[Aggregate Rebuild Exclusion](#aggregate-rebuild-exclusion).
+
 ## Stateless Design
 
 The application is fully stateless:
@@ -101,6 +128,40 @@ The application is fully stateless:
 - **No sticky sessions** — any server instance can handle any request
 
 This enables horizontal scaling and simplifies deployment.
+
+### Account Deactivation: Two Authorities
+
+Deactivating a user pairs two effects that cannot be made transactional together: the `is_active`
+write on the `users` row, and a Redis **user-level** revocation marker
+(`core/security.py::revoke_all_user_tokens`). Since the database half became **durable** for the
+first time, the authority for a deactivated account is **split**, and the split is load-bearing:
+
+| Surface | Authority | Consequence |
+| ------- | --------- | ----------- |
+| Every **protected** endpoint, via `api/deps.py::get_current_user_dependency` | the **database row** — the dependency re-reads the user on **every** authenticated request and rejects `is_active is False` | a committed deactivation stops the user immediately, independently of Redis |
+| `POST /auth/refresh` and the protected gate | the **Redis user-level marker** | revokes already-issued access *and* refresh tokens without touching the row |
+| `POST /auth/login`, `POST /auth/login/form` | **neither** | `is_active` is compared **nowhere** in `src/mkobi` except that one dependency, and neither login route consults the marker — so a deactivated user can still obtain freshly signed tokens, each of which the gate then rejects |
+
+**The ordering is deliberate: the commit lands first, the revocation second.**
+`PATCH /admin/users/{user_id}/active` calls `update_user_active_status()`, which commits, and only
+then revokes in Redis. Three reasons, in order of weight:
+
+1. **It fails closed on the axis that matters.** A committed deactivation stops the user at every
+   protected endpoint on its own. The reverse order fails open: an account believed deactivated
+   stays fully usable and merely has its current tokens revoked.
+2. **This failure is reported; the reverse one is silent.** A Redis fault after the commit is a
+   **500** naming the condition (`INTERNAL_ERROR`, "User was deactivated successfully, but
+   revoking the user's tokens failed"), and the endpoint is idempotent, so a retry re-commits the
+   same `is_active` and re-issues the marker. With the commit *after* the revocation, a database
+   fault would leave `is_active` unchanged, the user would log in again, and nothing in the
+   response would say the deactivation never happened.
+3. **The residual exposure is bounded and enumerated** — it is the login gap in the table above,
+   and nothing else. That gap is a separate finding in phase 04's revocation-marker zone; it is
+   unchanged by this design and is deliberately not fixed here.
+
+The route's `await db.rollback()` in its `except Exception` handler **stays** and is still correct
+for the pre-commit window (a failure inside `update_user_active_status`, where the session does need
+one). It can no longer undo the write, and its docstring says so.
 
 ## Application Startup Lifecycle
 
@@ -130,9 +191,18 @@ Required modules: `aiofiles`, `fastapi`, `sqlalchemy`, `httpx`, `pydantic`, `pol
 ### Step 4: Admin User Creation
 
 - Idempotent — safe to run on every startup
-- Uses a SAVEPOINT (nested transaction) to handle race conditions cleanly
+- `ensure_admin_user()` opens **one top-level transaction** (`async with db.begin()`) and issues a
+  single `INSERT ... ON CONFLICT (email) DO NOTHING`. The concurrent-startup race is handled by
+  the `ON CONFLICT` clause, **not** by a SAVEPOINT or any nested transaction: there is no
+  nested transaction on this path, and the surrounding top-level transaction commits
+  unconditionally — it either inserted the row or deliberately did nothing
 - Credentials sourced from `ADMIN_USERNAME` and `ADMIN_PASSWORD` environment variables
-- Logs a warning if default credentials are used (development only)
+- A known-placeholder password **raises** in the production tier and only warns elsewhere; a
+  weak *username* only warns, because `Settings.validate_admin_credentials()` and this function
+  share the predicate but not the action (see
+  [Configuration → Admin Credentials](configuration.md#admin-credentials))
+- Because the conflicting insert does nothing, a restart never overwrites an existing admin's
+  stored password hash
 
 ### Step 5: Stale Temp File Cleanup
 
@@ -163,7 +233,45 @@ Required modules: `aiofiles`, `fastapi`, `sqlalchemy`, `httpx`, `pydantic`, `pol
 
 ### Stale Processing Log Cleanup
 
-A periodic background task detects and resolves processing logs stuck in `PROCESSING` state (e.g., due to worker crashes). Entries that have been in `PROCESSING` state longer than a configurable timeout (default: 5 minutes) are automatically marked as `FAILED` with an error message indicating the cleanup action. This provides visibility into crashed workers and prevents indefinite `PROCESSING` states.
+Two sweeps reap processing logs, on **one** configured horizon,
+`STALE_PROCESSING_TIMEOUT_MINUTES` (default: **30 minutes**; `get_config().stale_processing_timeout_minutes`
+returns the effective value). `DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES = 5` in
+`workers/data_worker.py` is only the *signature* default of `cleanup_stale_processing_logs()` and
+is a fallback only — `app.py::lifespan` always passes the setting, so **the running value is the
+configured one, 30 minutes out of the box**, and the `5` never decides anything.
+
+| Sweep | Status it reaps | When it runs | Horizon |
+| ----- | --------------- | ------------ | ------- |
+| `mark_orphaned_uploaded_logs_failed()` | `UPLOADED` | **Boot only** — once per process start, lease-guarded | same setting |
+| `cleanup_stale_processing_logs()` | `PROCESSING` | Periodically, every `STALE_PROCESSING_CLEANUP_INTERVAL_SECONDS` (default 300 s), lease-guarded | same setting |
+
+Both mark the row `FAILED` with a message naming the cleanup, so a crashed or killed worker becomes
+visible instead of leaving a row that reads "processing" forever.
+
+**Why one horizon, and what it fixed.** The `PROCESSING` transition is a **durable commit on its own
+session before the work begins**, so a committed `processing` row now exists for the first time and
+the periodic sweep finally has input — "prevents indefinite `PROCESSING` states" is now literally
+true rather than an intention. Before that, the row read `uploaded` from every other connection
+until it jumped to `completed`, so a worker killed mid-job left nothing for the sweep to find. That
+same commit changed the *meaning* of a row still reading `UPLOADED`: it now means only "not picked
+up yet". The boot-time marker therefore had to adopt the sweep's horizon instead of keeping a
+one-minute literal of its own — with a short literal of its own, any worker restart would flip
+queued-but-unstarted rows to `FAILED` while the still-queued job would later move them back to
+`completed`. The two predicates are disjoint by status (`UPLOADED` vs `PROCESSING`), so they never
+contend for the same row; sharing the horizon keeps their *notion of "too old"* from diverging.
+
+**What the horizon bounds, stated honestly: time to first report, not job lifetime.** It is not a
+job-duration limit. A legitimately long rebuild that runs past the horizon can be flipped to
+`FAILED` by a sweep tick while it is still working, and the worker's own later commit then
+overwrites that back to `completed`. The end state is coherent, but the audit trail briefly shows a
+false failure. `DATABASE__LOCK_TIMEOUT_MS` must therefore stay well **below** this horizon
+(3 minutes against 30 by default) so a rebuild waiting on the rebuild exclusion cannot be swept
+while it is legitimately waiting.
+
+**The boot-time marker is boot-only, and stays that way.** It runs once per process start and is
+not periodic. Its predicate is "`UPLOADED` and older than the horizon", so a queued orphan that
+arrives *after* the boot sweep survives the restart untouched and is only reaped the next time the
+horizon has elapsed **and** a later boot happens — in practice, up to a full horizon of quiet.
 
 The production image runs uvicorn with `--workers 4`, so every worker process executes `lifespan` and would otherwise start its own copy of this loop — and run its own boot-time orphan repair. A Redis-backed lease (`core/reconciler_lease.py`) elects a single replica to do both. The lease **fails open**: a replica that cannot reach Redis sweeps anyway, because the cleanup is a monotone, idempotent `UPDATE` and skipping it during an outage would leave nobody sweeping. Only a replica that reached Redis and found the lease held by a live peer suppresses its own sweep. Which replica won the election is published on `/health/detailed`; see [Health API](../05-health/health-api.md).
 
@@ -245,6 +353,43 @@ every binding anchor: PgBouncer's `server_idle_timeout` (600 s) and
 client cap. It is a starting recommendation, not a decision: the sizing choice
 belongs to the performance phase. The default remains `-1` (no recycle) so
 rollout changes nothing.
+
+## Aggregate Rebuild Exclusion
+
+Two rebuilds of the same dashboard clear and rewrite the same `aggregated_data` rows, so they must
+not interleave. Historically they serialised on an *undeclared* row lock — an accident, with an
+unbounded and unlogged wait. It is now a **declared, bounded exclusion**
+(`src/mkobi/db/advisory_lock.py`), and its scope is worth stating precisely because it is narrower
+than "the rebuild is locked":
+
+- **Per `dashboard_id`, not global.** The key is a stable `blake2b` digest of
+  `mkobi:aggregate-rebuild:<dashboard_id>` rendered as a signed int64
+  (`dashboard_rebuild_lock_key`). Two rebuilds of *one* dashboard exclude each other; rebuilds of
+  different dashboards never wait on each other. It is a digest rather than Python's `hash()`,
+  which is salted per process — under `--workers 4` plus `rq-worker` each replica would otherwise
+  take a *different* lock and the exclusion would not exist at all.
+- **Transaction-scoped.** The worker takes `pg_advisory_xact_lock` as the **first statement inside
+  its own `session.begin()` block**, and the transaction releases it — on commit, on rollback, and
+  at session end if the connection dies. There is no explicit unlock to leak. The worker's
+  failure-compensation handler runs *after* that block has rolled back, so the `FAILED` row is
+  written on a fresh session while the lock is already gone.
+- **Bounded, per transaction, by `DATABASE__LOCK_TIMEOUT_MS`** (default 180000 ms = 3 minutes).
+  It is applied with `set_config('lock_timeout', …, true)` rather than a bare `SET`, because a
+  bare `SET` survives `COMMIT` on a pooled connection and would then bound every unrelated lock wait
+  in the process.
+- **What the bound covers: every lock wait in the worker's transaction, not only the advisory one.**
+  PostgreSQL has no per-lock timeout, so a row-lock wait later in the same job that exceeds the bound
+  raises the same SQLSTATE `55P03` and is classified the same way. The timeout log line names the
+  advisory lock because that is the common case; `pg_locks` remains the operator's window on any
+  other waiter.
+- **A timeout is not a failure of the job.** It is classified `PROCESSING_IN_PROGRESS` on the
+  processing log (not `PROCESSING_FAILED`) and surfaced to the client through the stored
+  `error_code`. The 3-minute default must stay **below** `STALE_PROCESSING_TIMEOUT_MINUTES`
+  (30 minutes) — a lock wait that outlives the mechanism meant to clean it up is not a bound at
+  all.
+- `DATABASE__LOCK_TIMEOUT_MS = 0` means **unbounded**, which is PostgreSQL's own sentinel for
+  "wait forever". Do not set it in production: a wedged holder would hold a pooled connection
+  indefinitely.
 
 ## Configuration
 
