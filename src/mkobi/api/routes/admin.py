@@ -247,8 +247,11 @@ async def reset_user_password_admin_endpoint(
     admin_user: AdminUser,
     db: AsyncSession = Depends(get_db_dependency),
     auth_service: AuthService = Depends(get_auth_service),
+    redis_client: Any = Depends(get_redis_client_dependency),
 ) -> dict[str, Any]:
     """Reset user password and return temporary password."""
+    from mkobi.config import get_config
+
     logger.info(
         "Admin: resetting password for user: id=%s, admin=%s",
         user_id, admin_user.email,
@@ -265,6 +268,24 @@ async def reset_user_password_admin_endpoint(
                 detail="User not found",
                 details={"user_id": str(user_id)},
             )
+
+        # The reset password is committed and durable by the time the service
+        # returns, so every pre-existing token for the target is stale. Revoke
+        # them unconditionally on success. This is orthogonal to
+        # ``credential_stored``: the store may have failed open and the returned
+        # retrieval_token may not be a working handle, but the credential change
+        # itself landed either way. The marker is a non-transactional Redis write
+        # placed after the commit, following
+        # update_user_active_admin_endpoint.
+        settings = get_config()
+        await revoke_all_user_tokens(
+            redis_client=redis_client,
+            user_id=user_id,
+            access_ttl=settings.jwt.access_token_expire_minutes * 60,
+            refresh_ttl=settings.jwt.refresh_token_expire_minutes * 60,
+        )
+        logger.info("All tokens revoked for password-reset user: id=%s", user_id)
+
         return result
     except ValueError as exc:
         raise AppException(

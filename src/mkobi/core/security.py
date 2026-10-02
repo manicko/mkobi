@@ -253,7 +253,10 @@ def create_access_token(
 ) -> str:
     """Create JWT access token with specified data.
 
-    Token contains provided data and expiration time (exp).
+    Token contains provided data, expiration time (exp), issued-at time (iat)
+    in epoch milliseconds, and a jti (JWT ID) for token revocation support. The
+    iat claim lets the user-level revocation marker decide whether a token
+    predates a revocation.
     If expires_delta is not specified, uses value from config
     (default 30 minutes).
 
@@ -283,7 +286,13 @@ def create_access_token(
         expire = datetime.now(UTC) + timedelta(
             minutes=config.jwt.access_token_expire_minutes
         )
-    to_encode.update({"exp": expire, "jti": _generate_jti()})
+    to_encode.update(
+        {
+            "exp": expire,
+            "iat": int(datetime.now(UTC).timestamp() * 1000),
+            "jti": _generate_jti(),
+        }
+    )
     secret_key = config.jwt.secret_key
     if secret_key is None:
         raise ValueError("JWT_SECRET_KEY must be configured")
@@ -299,9 +308,11 @@ def create_access_token(
 def create_refresh_token(data: dict[str, Any]) -> str:
     """Create JWT refresh token with extended expiration.
 
-    Token contains provided data and expiration time (exp).
+    Token contains provided data, expiration time (exp), issued-at time (iat)
+    in epoch milliseconds, and a jti (JWT ID) for token revocation support. The
+    iat claim lets the user-level revocation marker decide whether a token
+    predates a revocation.
     Uses refresh_token_expire_minutes from config (default 7 days = 10080 minutes).
-    Includes jti (JWT ID) for token revocation support.
 
     Args:
         data: Data to include in the token (e.g., user_id, email).
@@ -324,7 +335,13 @@ def create_refresh_token(data: dict[str, Any]) -> str:
     expire = datetime.now(UTC) + timedelta(
         minutes=config.jwt.refresh_token_expire_minutes
     )
-    to_encode.update({"exp": expire, "jti": _generate_jti()})
+    to_encode.update(
+        {
+            "exp": expire,
+            "iat": int(datetime.now(UTC).timestamp() * 1000),
+            "jti": _generate_jti(),
+        }
+    )
     secret_key = config.jwt.secret_key
     if secret_key is None:
         raise ValueError("JWT_SECRET_KEY must be configured")
@@ -522,9 +539,19 @@ async def is_refresh_token_revoked(redis_client: aioredis.Redis, jti: str) -> bo
 async def revoke_all_user_tokens(
     redis_client: aioredis.Redis, user_id: UUID, access_ttl: int, refresh_ttl: int
 ) -> None:
-    """Revoke all tokens for a user by storing their user_id in a revocation set.
+    """Revoke all tokens for a user by storing a timestamped revocation marker.
 
-    This adds a user-level revocation that affects all current tokens.
+    The marker's value is the epoch **millisecond** at which the revocation
+    happened. ``is_user_tokens_revoked`` compares a token's ``iat`` (also in
+    epoch milliseconds) against it, so credentials issued before the marker are
+    rejected while credentials issued afterwards (for example, after re-login)
+    are accepted. Millisecond precision matters: at one-second granularity a
+    re-login in the same second as the change would share the marker's instant
+    and be rejected by the fail-closed comparison, so the two clocks must agree
+    at a finer resolution than the requests they span.
+
+    This is what distinguishes credential rotation from deactivation, where
+    every future token is blocked by the ``is_active`` checks instead.
 
     Args:
         redis_client: Async Redis client.
@@ -533,22 +560,50 @@ async def revoke_all_user_tokens(
         refresh_ttl: TTL for refresh token blacklist entries.
     """
     key = f"user_tokens_revoked:{user_id}"
-    # Store a marker with the longer TTL (refresh token typically lives longer)
+    # The marker only has to outlive the oldest still-presentable token, so the
+    # longer TTL is sufficient; nothing issued after it is affected.
     ttl = max(access_ttl, refresh_ttl)
-    await redis_client.setex(key, ttl, "revoked")
+    revoked_at = int(datetime.now(UTC).timestamp() * 1000)
+    await redis_client.setex(key, ttl, revoked_at)
     logger.info("All tokens revoked for user: id=%s", user_id)
 
 
-async def is_user_tokens_revoked(redis_client: aioredis.Redis, user_id: UUID) -> bool:
-    """Check if user's tokens are revoked (user-level revocation).
+async def is_user_tokens_revoked(
+    redis_client: aioredis.Redis,
+    user_id: UUID,
+    issued_at: int | None = None,
+) -> bool:
+    """Check whether a credential predates the user's revocation marker.
+
+    The marker stores the epoch millisecond of the revocation. A token is
+    revoked only when its ``iat`` is at or before that instant; tokens issued
+    later are already newer than the withdrawal and are allowed.
 
     Args:
         redis_client: Async Redis client.
         user_id: User ID to check.
+        issued_at: The token's ``iat`` claim in epoch milliseconds, if available.
 
     Returns:
-        bool: True if user's tokens are revoked, False otherwise.
+        bool: True if the credential must be rejected, False otherwise.
     """
     key = f"user_tokens_revoked:{user_id}"
-    exists = await redis_client.exists(key)
-    return bool(exists)
+    value = await redis_client.get(key)
+    if value is None:
+        return False
+    try:
+        revoked_at = int(value)
+    except (TypeError, ValueError):
+        # Unknown value (for example a legacy "revoked" literal written by a
+        # deployment that has not restarted). Fail closed so a rolling deploy
+        # never re-admits sessions that were already withdrawn.
+        logger.warning(
+            "Unparseable user revocation marker; failing closed: user_id=%s",
+            user_id,
+        )
+        return True
+    if issued_at is None:
+        # A credential that cannot be dated cannot be proven newer than the
+        # revocation. Fail closed.
+        return True
+    return issued_at <= revoked_at

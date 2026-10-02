@@ -640,6 +640,66 @@ class TestResetUserPassword:
         assert "user_id" in data
         assert data["user_id"] == str(target_user.id)
 
+    async def test_admin_reset_password_revokes_target_tokens(
+        self,
+        async_client: AsyncClient,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
+    ) -> None:
+        """A successful admin reset withdraws the TARGET user's sessions.
+
+        Behavioural: the target's pre-existing token is refused afterwards. The
+        admin's own token is asserted still working, so the test cannot pass by
+        revoking the wrong (calling) user. Cleanup removes the committed row.
+        """
+        target_email = f"reset_revoke_{uuid.uuid4().hex[:8]}@example.com"
+        user_repo = UserRepository()
+        target_user = await user_repo.create(
+            db=async_db_session,
+            email=target_email,
+            password_hash=hash_password("TargetPass123!"),
+            role=UserRole.VIEWER,
+        )
+        await async_db_session.commit()
+
+        try:
+            # Target logs in, obtaining a token from before the reset.
+            target_login = await async_client.post(
+                "/auth/login",
+                json={"email": target_email, "password": "TargetPass123!"},
+            )
+            assert target_login.status_code == status.HTTP_200_OK
+            target_token = target_login.json()["access_token"]
+            target_headers = {"Authorization": f"Bearer {target_token}"}
+
+            assert (
+                await async_client.get("/auth/me", headers=target_headers)
+            ).status_code == status.HTTP_200_OK
+
+            # Admin resets the target's password.
+            response = await async_client.post(
+                f"/admin/users/{target_user.id}/reset-password",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+            )
+            assert response.status_code == status.HTTP_200_OK
+
+            # The target's pre-existing token is now refused with a revocation error.
+            target_me = await async_client.get("/auth/me", headers=target_headers)
+            assert target_me.status_code == status.HTTP_401_UNAUTHORIZED
+            body = target_me.json()
+            error_msg = body.get("error", "") or body.get("detail", "")
+            assert "revoked" in error_msg.lower()
+
+            # The administrator was not the one revoked.
+            admin_me = await async_client.get(
+                "/auth/me",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+            )
+            assert admin_me.status_code == status.HTTP_200_OK
+        finally:
+            await _delete_committed_email(async_session_maker, target_email)
+
     async def test_reset_user_password_retrieve_temporary(
         self, async_client: AsyncClient, async_db_session, test_user: dict
     ) -> None:

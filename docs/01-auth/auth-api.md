@@ -205,6 +205,8 @@ Refresh an expired or soon-to-expire JWT access token using the httpOnly refresh
 }
 ```
 
+The response also sets a **new** `mkobi_refresh_token` cookie: the refresh cookie is **rotated on every refresh**. The presented token is **not** revoked, so the previous cookie remains usable until its own 7-day TTL. This bounds nothing beyond the token's own lifetime — reuse detection (revoking the presented `jti` when a new one is minted) is deliberately **not** implemented.
+
 **Error responses:**
 
 | Status | Condition                    | Detail                       |
@@ -218,6 +220,7 @@ Refresh an expired or soon-to-expire JWT access token using the httpOnly refresh
 - Validates the JWT signature and expiration
 - Verifies the user still exists in the database
 - Issues a new access token with fresh 15-minute expiration
+- Mints a new refresh token and sets it as the rotated `mkobi_refresh_token` cookie; the presented token is not revoked
 
 ---
 
@@ -329,7 +332,8 @@ Change the current user's password.
 | `500`  | Server error                           | `Password change error`                  |
 
 **Notes:**
-- The user remains logged in after a password change (token is not invalidated)
+- A successful password change records a **timestamped revocation** for the user: every access and refresh token issued **at or before** the change is refused with a revocation error, so all other devices are signed out too. A session minted **after** the change (that is, by logging in again with the new password) is unaffected and works normally. The marker is not a blanket lock-out; re-login restores access.
+- The same revocation applies to the admin reset (`POST /api/v1/admin/users/{user_id}/reset-password`): the **target** user's tokens issued before the reset are revoked once it is committed, in addition to the temporary-password handoff described in [Admin API](../04-admin/admin-api.md#6-reset-user-password-admin). Account **deactivation** uses the same marker but is persistent — the `is_active` checks reject any later session until the account is reactivated.
 - New password must meet backend strength requirements: at least 8 characters, at least one letter, and at least one digit. Enforced by Pydantic `field_validator` — returns 422 if requirements are not met
 - The `force_password_change` flag is automatically cleared on the backend after a successful password change. This prevents an infinite force-change loop when a user is required to change their password (e.g., after admin reset or registration approval).
 - If the user was in force-change mode (redirected via `?force=true`), they are redirected back to `/profile` after successfully changing their password.
@@ -398,12 +402,15 @@ Browser                          FastAPI
   │                                │ │ Verify user exists in DB │
   │                                │ └───────────┬─────────────┘
   │                                │             │
-  │  200 OK                        │             │
-  │  { access_token, token_type }  │             │
-  │ ◄──────────────────────────────│             │
-  │                                │
-  │  Replace access token in memory│
-  │  Retry original request        │
+   │  200 OK                        │             │
+   │  { access_token, token_type }  │             │
+   │  + Set-Cookie: mkobi_refresh_  │             │
+   │    token=<new> (rotated)       │             │
+   │ ◄──────────────────────────────│             │
+   │                                │
+   │  Replace access token in memory│
+   │  Replace refresh cookie        │
+   │  Retry original request        │
 ```
 
 ---
@@ -502,7 +509,7 @@ Browser              FastAPI              Database
 - **Password strength validation (backend):** Passwords must be at least 8 characters and contain at least one letter and one digit. Enforced by Pydantic `field_validator` on `ChangePasswordRequest.new_password` and `UserCreateRequest.password` — rejects weak passwords at the model level before they reach the service layer.
 - **JWT:** Signed tokens with expiration; payload contains `user_id`, `email`, `role`. Access tokens expire after **15 minutes**.
 - **Refresh tokens:** Stored in httpOnly cookies (`mkobi_refresh_token`) with `Secure`, `HttpOnly`, and `SameSite=Strict` attributes. 7-day expiration. Not accessible to JavaScript.
-- **Token revocation:** Redis-backed blacklist with auto-expiring entries. Revoked tokens are rejected immediately, even if they have not expired. Logout revokes both access and refresh tokens. See [Token Revocation](../08-security/security-overview.md#token-revocation) for details.
+- **Token revocation:** Redis-backed blacklist with auto-expiring entries. Revoked tokens are rejected immediately, even if they have not expired. Logout revokes both access and refresh tokens. A successful **password change** and an **admin password reset** record a timestamped revocation that rejects tokens issued at or before it, so other sessions must log in again while a fresh login works. On **refresh**, the refresh cookie is rotated but the presented token is not revoked. See [Token Revocation](../08-security/security-overview.md#token-revocation) for details.
 - **Rate limiting:** Redis-based; fail-open by default, configurable to fail-closed
 - **Email blocklist:** Configurable domain blocklist for registration requests
 - **CORS:** Explicit allowed methods and headers (no wildcards in production)

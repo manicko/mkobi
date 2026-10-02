@@ -45,6 +45,7 @@ from mkobi.core.security import (
     set_secure_cookie,
     revoke_token,
     revoke_refresh_token,
+    revoke_all_user_tokens,
     is_refresh_token_revoked,
     is_user_tokens_revoked,
 )
@@ -285,6 +286,7 @@ async def refresh(
 
     Args:
         request: Request object to access cookies.
+        response: FastAPI Response object to rotate the refresh cookie.
         session: Async database session.
         redis_client: Async Redis client for blacklist check.
 
@@ -364,8 +366,13 @@ async def refresh(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Check if user's tokens are revoked (user-level revocation for deactivation)
-    if await is_user_tokens_revoked(redis_client, UUID(user_id)):
+    # Reject refresh credentials issued at or before the user's revocation
+    # marker. A token minted after it (for example, a fresh login following a
+    # password change) is newer than the withdrawal and is allowed.
+    issued_at = payload.get("iat")
+    if await is_user_tokens_revoked(
+        redis_client, UUID(user_id), issued_at if isinstance(issued_at, int) else None
+    ):
         logger.warning("User tokens revoked: user_id=%s", user_id)
         delete_secure_cookie(response, COOKIE_NAME)
         raise AppException(
@@ -390,6 +397,23 @@ async def refresh(
 
     access_token = create_access_token(
         data={"user_id": str(user.id), "email": user.email, "role": user.role}
+    )
+
+    # Rotate the refresh cookie on every successful refresh. Every check above
+    # has passed, so this is the point after which the request cannot still be
+    # refused. The presented token's jti is deliberately NOT revoked: reuse
+    # detection would add a new server-side rejection path, and its false
+    # positive (two tabs each refreshing concurrently) is a client concern that
+    # belongs to the frontend's phase. Both tokens therefore stay valid until
+    # their own TTL.
+    rotated_refresh_token = create_refresh_token(
+        data={"sub": str(user.id), "email": user.email, "role": user.role}
+    )
+    set_secure_cookie(
+        response=response,
+        key=COOKIE_NAME,
+        value=rotated_refresh_token,
+        max_age=get_config().jwt.refresh_token_expire_minutes * 60,
     )
 
     logger.info("Token refreshed successfully", extra={"user_id": user_id})
@@ -489,6 +513,7 @@ async def change_password(
     current_user: UserRead = Depends(get_current_user_dependency),
     auth_service: AuthService = Depends(get_auth_service),
     db: AsyncSession = Depends(get_db_dependency),
+    redis_client: Any = Depends(get_redis_client_dependency),
 ) -> SuccessResponse:
     """Password change endpoint.
 
@@ -499,6 +524,7 @@ async def change_password(
         password_data: Password change request data.
         current_user: Currently authenticated user.
         auth_service: Authentication service.
+        redis_client: Async Redis client for token revocation.
 
     Returns:
         SuccessResponse: Success message.
@@ -532,6 +558,20 @@ async def change_password(
             code=ErrorCode.INTERNAL_ERROR,
             detail="Password change error",
         ) from e
+
+    # The service has committed the new password, so the old credential is now
+    # stale. Revoke every outstanding token for this user. The marker is a
+    # non-transactional Redis write and is therefore placed after the commit,
+    # following the pattern in admin.py::update_user_active_admin_endpoint: a
+    # revocation before the commit would leave a live marker on a password
+    # change that could still roll back.
+    settings = get_config()
+    await revoke_all_user_tokens(
+        redis_client=redis_client,
+        user_id=current_user.id,
+        access_ttl=settings.jwt.access_token_expire_minutes * 60,
+        refresh_ttl=settings.jwt.refresh_token_expire_minutes * 60,
+    )
 
     logger.info("Password changed successfully", extra={"user_id": str(current_user.id)})
     return SuccessResponse(message="Password changed successfully")

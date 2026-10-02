@@ -173,6 +173,75 @@ class TestCookieAuthFlow:
         assert payload["user_id"] == str(test_user["id"])
         assert payload["email"] == test_user["email"]
 
+    async def test_refresh_rotates_refresh_cookie(
+        self, async_client: AsyncClient, test_user: dict
+    ) -> None:
+        """Each refresh rotates the refresh cookie, and the new cookie works."""
+        login_response = await async_client.post(
+            "/auth/login",
+            json={
+                "email": test_user["email"],
+                "password": "TestPass123!",
+            },
+        )
+        assert login_response.status_code == status.HTTP_200_OK
+        first_cookie = _extract_refresh_token(login_response)
+        assert first_cookie, "login must set a refresh cookie"
+
+        # First refresh: must set a new cookie value.
+        first_refresh = await async_client.post(
+            "/auth/refresh",
+            cookies={"mkobi_refresh_token": first_cookie},
+        )
+        assert first_refresh.status_code == status.HTTP_200_OK
+        rotated_cookie = _extract_refresh_token(first_refresh)
+        assert rotated_cookie, "refresh must rotate and set a refresh cookie"
+        assert rotated_cookie != first_cookie
+
+        # Second refresh with the rotated cookie must succeed.
+        second_refresh = await async_client.post(
+            "/auth/refresh",
+            cookies={"mkobi_refresh_token": rotated_cookie},
+        )
+        assert second_refresh.status_code == status.HTTP_200_OK
+        assert "access_token" in second_refresh.json()
+
+    async def test_refresh_does_not_revoke_presented_token(
+        self, async_client: AsyncClient, test_user: dict
+    ) -> None:
+        """The presented refresh token is not revoked by rotation (deliberate).
+
+        Rotation replaces the cookie but leaves the presented token's jti valid,
+        so the previous cookie keeps working until its own TTL. This pins the
+        ruling's choice: reuse detection is deferred to the frontend's phase, and
+        a future change to revoke the presented jti must be a conscious decision.
+        """
+        login_response = await async_client.post(
+            "/auth/login",
+            json={
+                "email": test_user["email"],
+                "password": "TestPass123!",
+            },
+        )
+        assert login_response.status_code == status.HTTP_200_OK
+        original_cookie = _extract_refresh_token(login_response)
+
+        # A rotation happens; the response carries a different cookie.
+        refresh_response = await async_client.post(
+            "/auth/refresh",
+            cookies={"mkobi_refresh_token": original_cookie},
+        )
+        assert refresh_response.status_code == status.HTTP_200_OK
+        assert _extract_refresh_token(refresh_response) != original_cookie
+
+        # The original cookie is still accepted: the presented jti was not revoked.
+        replay_response = await async_client.post(
+            "/auth/refresh",
+            cookies={"mkobi_refresh_token": original_cookie},
+        )
+        assert replay_response.status_code == status.HTTP_200_OK
+        assert "access_token" in replay_response.json()
+
     async def test_full_auth_flow_login_refresh_logout(
         self, async_client: AsyncClient, test_user: dict
     ) -> None:
@@ -558,6 +627,64 @@ class TestRegistrationApprovalForcePasswordChange:
         # Check that error message is in the errors list
         errors_str = str(data.get("errors", []))
         assert "do not match" in errors_str.lower() or "mismatch" in errors_str.lower()
+
+    async def test_change_password_revokes_existing_tokens(
+        self, async_client: AsyncClient, async_db_session
+    ) -> None:
+        """A successful password change must withdraw the user's existing sessions.
+
+        Behavioural, not a mock-call assertion: a token minted before the change
+        is refused by a protected route afterwards, with a revocation error. This
+        proves the revocation targets the changing user and runs after the commit
+        (a pre-commit revocation would still pass a mock assertion).
+        """
+        from mkobi.core.security import hash_password
+        from mkobi.db.repositories.user_repo import UserRepository
+        from mkobi.models.enums import UserRole
+
+        user_repo = UserRepository()
+        await user_repo.create(
+            db=async_db_session,
+            email="change_pwd_revoke_test@example.com",
+            password_hash=hash_password("OldPass123!"),
+            role=UserRole.VIEWER,
+        )
+        await async_db_session.commit()
+
+        # Obtain a token representing an existing session.
+        login_response = await async_client.post(
+            "/auth/login",
+            json={
+                "email": "change_pwd_revoke_test@example.com",
+                "password": "OldPass123!",
+            },
+        )
+        assert login_response.status_code == status.HTTP_200_OK
+        old_token = login_response.json()["access_token"]
+        old_headers = {"Authorization": f"Bearer {old_token}"}
+
+        # The session works before the change.
+        assert (
+            await async_client.get("/auth/me", headers=old_headers)
+        ).status_code == status.HTTP_200_OK
+
+        change_response = await async_client.post(
+            "/auth/change-password",
+            headers=old_headers,
+            json={
+                "current_password": "OldPass123!",
+                "new_password": "NewPass456!",
+                "confirm_password": "NewPass456!",
+            },
+        )
+        assert change_response.status_code == status.HTTP_200_OK
+
+        # The pre-change token is now refused with a revocation error.
+        me_response = await async_client.get("/auth/me", headers=old_headers)
+        assert me_response.status_code == status.HTTP_401_UNAUTHORIZED
+        body = me_response.json()
+        error_msg = body.get("error", "") or body.get("detail", "")
+        assert "revoked" in error_msg.lower()
 
 
 class TestDisplayNameComputation:

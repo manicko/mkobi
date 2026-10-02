@@ -127,6 +127,19 @@ class TestRegistrationFlow:
         assert user is not None
         assert user.force_password_change is False
 
+        # Step 5b: The password change withdrew the session's token, so the
+        # user must log in again before continuing. The user-level revocation
+        # marker is timestamped: it rejects credentials issued at or before the
+        # change and allows a session minted afterwards, which is exactly what
+        # this re-login produces. This is the landed contract for credential
+        # rotation (D-04-M); only the re-login keeps the flow usable.
+        relogin_response = await async_client.post(
+            "/auth/login",
+            json={"email": registration_email, "password": new_password},
+        )
+        assert relogin_response.status_code == status.HTTP_200_OK
+        user_token = relogin_response.json()["access_token"]
+
         # Step 6: Create a dashboard and grant access to the new user
         dashboard_repo = DashboardRepository()
         graph_repo = GraphRepository()

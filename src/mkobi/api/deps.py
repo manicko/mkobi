@@ -525,8 +525,12 @@ async def get_current_user_dependency(
 
         user_id = UUID(str(user_id_raw))
 
-        # Check if user's tokens are revoked (user-level revocation for deactivation)
-        if await is_user_tokens_revoked(redis_client, user_id):
+        # Reject credentials issued at or before the user's revocation marker.
+        # Tokens issued after it (for example, after re-login) are allowed.
+        issued_at = payload.get("iat")
+        if await is_user_tokens_revoked(
+            redis_client, user_id, issued_at if isinstance(issued_at, int) else None
+        ):
             logger.warning("User tokens revoked: user_id=%s", user_id)
             raise AppException(
                 code=ErrorCode.TOKEN_REVOKED,

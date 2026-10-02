@@ -158,11 +158,14 @@ then revokes in Redis. Three reasons, in order of weight:
 3. **The residual exposure is bounded and enumerated.** The login gap this paragraph used to name
    was **closed in phase 04** — `is_active` is now authoritative at login and on `POST /auth/refresh`
    — so what remains is narrower and honest. (i) The **reactivate branch never clears the Redis
-   user-level marker**: a reactivated account can log in and is then refused at the protected gate
-   until the marker expires. That asymmetry belongs to a **later phase** and is deliberately not
-   fixed here. (ii) A Redis flush between a deactivation and a request leaves the **database row**
-   as the only backstop, which is correct for protected access and for the two token-issuing paths,
-   but means the already-issued-token revocation is lost with the marker.
+   user-level marker**: that branch belongs to a **later phase** and is deliberately not fixed here.
+   Because the marker is now **timestamped** (it records the instant of revocation and rejects only
+   tokens issued at or before it), a reactivated account's freshly issued tokens are newer than the
+   marker and are accepted, so the account works again after re-login. This **partially relieves**
+   the gap the previous marker's blanket effect left open; the reactivation path itself is still
+   owned by a later phase. (ii) A Redis flush between a deactivation and a request leaves the
+   **database row** as the only backstop, which is correct for protected access and for the two
+   token-issuing paths, but means the already-issued-token revocation is lost with the marker.
 
 The route's `await db.rollback()` in its `except Exception` handler **stays** and is still correct
 for the pre-commit window (a failure inside `update_user_active_status`, where the session does need

@@ -327,9 +327,16 @@ async def _get_current_user_with_session(
                 logger.warning("Revoked token used: jti=%s", jti)
                 raise AuthenticationError("Token has been revoked")
 
-        # Check if user's tokens are revoked (user-level revocation for deactivation)
+        # Reject credentials issued at or before the user's revocation marker.
+        # This path has no production caller (see the module note); the iat is
+        # passed for signature consistency with the dependency in api/deps.py.
         if redis_client is not None:
-            if await is_user_tokens_revoked(redis_client, user_id):
+            issued_at = payload.get("iat")
+            if await is_user_tokens_revoked(
+                redis_client,
+                user_id,
+                issued_at if isinstance(issued_at, int) else None,
+            ):
                 logger.warning("User tokens revoked: user_id=%s", user_id)
                 raise AuthenticationError("Token has been revoked")
 
