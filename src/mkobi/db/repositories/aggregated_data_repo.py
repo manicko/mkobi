@@ -2,13 +2,43 @@
 
 Provides methods for managing dashboard aggregated data.
 All methods use contextual session management and handle errors.
+
+Stored row order
+----------------
+``AggregationService._apply_chart_sorting`` is the pipeline's ordering decision:
+Plotly stacked-bar trace order determines what a chart renders, so the
+aggregated frame is sorted (colour total descending, then x ascending) and
+``workers/data_worker.py::_store_aggregates`` inserts in that order. That order
+is a *presentation contract*, not an incidental side effect.
+
+The three read methods below pin it with ``ORDER BY id``. The ``id`` is an
+autoincrement ``BigInteger`` with no ``ordinal`` column, so this is an
+**interim** guarantee with a known limitation:
+
+- **Overwrite mode** -- correct. ``save_aggregates(clear_old=True)`` deletes the
+  dashboard's rows before re-inserting, so the ``id`` sequence regenerates and
+  matches the chart order.
+- **Append mode** -- best effort, and wrong at the edges. ``_bulk_upsert``
+  updates existing ``(dashboard_id, graph_id, dims)`` rows in place while
+  keeping their old ``id``, and new rows take fresh, larger ids. A monotonic
+  ``id`` therefore no longer reproduces the freshly computed chart order:
+  updated rows keep a stale position and new rows sort after all existing ones.
+
+Closing the append divergence needs a dedicated ``aggregated_data.ordinal``
+column populated from the chart order and read back by these methods. That is
+**phase-14 DDL** (hand-over ``C05-5``), not a phase-05 change -- this phase
+authors no Alembic migration. Until the column lands, the append case is
+covered by an explicit test
+(``tests/test_repositories.py::TestAggregatedDataReadOrder::test_append_mode_upsert_keeps_stale_id_order``)
+that makes the divergence visible, so phase 14 has a test that tells it when
+the behaviour changed.
 """
 
 import logging
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, insert, select, distinct
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -97,19 +127,25 @@ class AggregatedDataRepository(IAggregatedDataRepository):
     async def get_by_dashboard_id(
         self, dashboard_id: UUID, db: AsyncSession
     ) -> list[aggregated_data_model.AggregatedData]:
-        """Get aggregated data for dashboard.
+        """Get aggregated data for dashboard, in stored chart order.
+
+        Rows are returned by ascending ``id`` -- the interim stored-order
+        guarantee described in the module docstring. Under overwrite mode this
+        reproduces the chart order; under append mode it diverges (phase-14
+        hand-over ``C05-5``).
 
         Args:
             dashboard_id: Dashboard identifier.
             db: Async database session.
 
         Returns:
-            List of aggregated data for dashboard.
+            List of aggregated data for dashboard, ordered by ascending id.
         """
         try:
             result = await db.execute(
                 select(aggregated_data_model.AggregatedData)
                 .where(aggregated_data_model.AggregatedData.dashboard_id == dashboard_id)
+                .order_by(aggregated_data_model.AggregatedData.id)
             )
             data = list(result.scalars().all())
             logger.info(
@@ -132,7 +168,12 @@ class AggregatedDataRepository(IAggregatedDataRepository):
         dashboard_id: UUID | None = None,
         filters: dict[str, Any] | None = None,
     ) -> list[aggregated_data_model.AggregatedData]:
-        """Get aggregated data for graph.
+        """Get aggregated data for graph, in stored chart order.
+
+        Rows are returned by ascending ``id`` -- the interim stored-order
+        guarantee described in the module docstring. Under overwrite mode this
+        reproduces the chart order; under append mode it diverges (phase-14
+        hand-over ``C05-5``).
 
         Args:
             graph_id: Graph identifier (UUID).
@@ -141,7 +182,7 @@ class AggregatedDataRepository(IAggregatedDataRepository):
             filters: Optional dictionary of filters for JSONB field dims.
 
         Returns:
-            List of data points for graph.
+            List of data points for graph, ordered by ascending id.
         """
         try:
             query = select(aggregated_data_model.AggregatedData).where(
@@ -160,6 +201,8 @@ class AggregatedDataRepository(IAggregatedDataRepository):
                     query = query.where(
                         aggregated_data_model.AggregatedData.dims[key].astext == str(value)
                     )
+
+            query = query.order_by(aggregated_data_model.AggregatedData.id)
 
             result = await db.execute(query)
             data = list(result.scalars().all())
@@ -248,10 +291,19 @@ class AggregatedDataRepository(IAggregatedDataRepository):
         dim_name: str,
         db: AsyncSession,
     ) -> list[str]:
-        """Get unique dimension values for graph.
+        """Get unique dimension values for graph, in stored chart order.
 
         Used to get filter value lists.
         Extracts unique values from JSONB field dims.
+
+        Values are deduplicated and ordered by the smallest ``id`` of the rows
+        carrying them, i.e. the position of each value's first occurrence in the
+        stored row order. This keeps the uniqueness the previous ``DISTINCT``
+        gave (a graph's rows can share a ``dim_name`` value across different
+        composite ``dims``) while making the result deterministic -- the same
+        interim guarantee as the other read methods (module docstring): under
+        overwrite mode it tracks the chart order, under append mode it diverges
+        (phase-14 hand-over ``C05-5``).
 
         Args:
             graph_id: Graph identifier.
@@ -259,16 +311,25 @@ class AggregatedDataRepository(IAggregatedDataRepository):
             db: Async database session.
 
         Returns:
-            List of unique dimension values.
+            List of unique dimension values, in stored row order.
         """
         try:
-            # Extract dim_name values from JSONB field dims
-            result = await db.execute(
-                select(distinct(
-                    aggregated_data_model.AggregatedData.dims[dim_name].astext
-                )).where(
+            # One row per distinct value, carrying the smallest id that holds
+            # it; ordering by that id fixes each value's first-seen position.
+            value_expr = aggregated_data_model.AggregatedData.dims[dim_name].astext
+            first_seen = (
+                select(
+                    value_expr.label("value_name"),
+                    func.min(aggregated_data_model.AggregatedData.id).label("first_id"),
+                )
+                .where(
                     aggregated_data_model.AggregatedData.graph_id == graph_id
                 )
+                .group_by(value_expr)
+                .subquery()
+            )
+            result = await db.execute(
+                select(first_seen.c.value_name).order_by(first_seen.c.first_id)
             )
             values = [row[0] for row in result if row[0] is not None]
             logger.info(

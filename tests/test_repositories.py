@@ -3,13 +3,22 @@
 
 from uuid import uuid4
 
+import pytest
+
 from mkobi.db.repositories.access_repo import AccessRepository
+from mkobi.db.repositories.aggregated_data_repo import AggregatedDataRepository
 from mkobi.db.repositories.dashboard_repo import DashboardRepository
 from mkobi.db.repositories.filter_repo import FilterRepository
 from mkobi.db.repositories.graph_repo import GraphRepository
 from mkobi.db.repositories.layout_repo import LayoutRepository
 from mkobi.db.repositories.user_repo import UserRepository
-from mkobi.models.enums import DashboardPermission, FilterType, GraphType, UserRole
+from mkobi.data.storage.manager import StorageManager
+from mkobi.models.enums import (
+    DashboardPermission,
+    FilterType,
+    GraphType,
+    UserRole,
+)
 
 
 class TestUserRepository:
@@ -675,3 +684,240 @@ class TestAccessRepository:
         assert len(access_records) == 1
         assert access_records[0].user_id == test_user["id"]
         assert access_records[0].dashboard_id == dashboard.id
+
+
+@pytest.mark.asyncio
+class TestAggregatedDataReadOrder:
+    """Deterministic stored row order on the aggregated-data read paths.
+
+    DP-017: ``AggregationService._apply_chart_sorting`` sorts the aggregated
+    frame and ``_store_aggregates`` inserts in that order, but the three read
+    methods had no ``order_by``. The order survived only because PostgreSQL
+    happened to return a simple scan in insertion order. These tests pin the
+    interim ``ORDER BY id`` guarantee (phase-14 hand-over ``C05-5`` for the
+    append limitation).
+    """
+
+    async def _make_dashboard_and_graph(self, async_db_session) -> tuple:
+        """Create a dashboard and a single graph for order assertions."""
+        dashboard = await DashboardRepository().create(
+            db=async_db_session,
+            name=f"read_order_{uuid4().hex[:8]}",
+            description="aggregated-data read order",
+        )
+        graph = await GraphRepository().create(
+            db=async_db_session,
+            dashboard_id=dashboard.id,
+            name="Read Order Graph",
+            type=GraphType.TABLE,
+            config={},
+            dimensions=["category"],
+            metrics=["sales"],
+        )
+        await async_db_session.commit()
+        return dashboard, graph
+
+    def _aggregates(self, graph_id, order: list[str]) -> list[dict]:
+        """Build aggregates in the given chart order for one graph."""
+        return [
+            {
+                "graph_id": graph_id,
+                "dims": {"category": category},
+                "metrics": {"sales_sum": index + 1},
+            }
+            for index, category in enumerate(order)
+        ]
+
+    async def test_get_by_graph_id_returns_stored_chart_order(
+        self, async_db_session
+    ) -> None:
+        """The read order reproduces the (non-alphabetical) insertion order."""
+        dashboard, graph = await self._make_dashboard_and_graph(async_db_session)
+        # A deliberately non-alphabetical chart order: colour total desc.
+        stored_order = ["Gamma", "Beta", "Alpha"]
+
+        await StorageManager(async_db_session).save_aggregates(
+            dashboard_id=dashboard.id,
+            aggregates=self._aggregates(graph.id, stored_order),
+            clear_old=True,
+        )
+
+        rows = await AggregatedDataRepository().get_by_graph_id(
+            graph_id=graph.id,
+            db=async_db_session,
+            dashboard_id=dashboard.id,
+        )
+
+        assert [row.dims["category"] for row in rows] == stored_order
+
+    async def test_get_by_dashboard_id_returns_stored_chart_order(
+        self, async_db_session
+    ) -> None:
+        """The dashboard-wide read order matches the insertion order."""
+        dashboard, graph = await self._make_dashboard_and_graph(async_db_session)
+        stored_order = ["Gamma", "Beta", "Alpha"]
+
+        await StorageManager(async_db_session).save_aggregates(
+            dashboard_id=dashboard.id,
+            aggregates=self._aggregates(graph.id, stored_order),
+            clear_old=True,
+        )
+
+        rows = await AggregatedDataRepository().get_by_dashboard_id(
+            dashboard_id=dashboard.id,
+            db=async_db_session,
+        )
+
+        assert [row.dims["category"] for row in rows] == stored_order
+
+    async def test_get_dims_values_returns_stored_chart_order(
+        self, async_db_session
+    ) -> None:
+        """Unique dim values follow the stored row order, not alphabetical."""
+        dashboard, graph = await self._make_dashboard_and_graph(async_db_session)
+        stored_order = ["Gamma", "Beta", "Alpha"]
+
+        await StorageManager(async_db_session).save_aggregates(
+            dashboard_id=dashboard.id,
+            aggregates=self._aggregates(graph.id, stored_order),
+            clear_old=True,
+        )
+
+        values = await AggregatedDataRepository().get_dims_values(
+            graph_id=graph.id,
+            dim_name="category",
+            db=async_db_session,
+        )
+
+        assert values == stored_order
+
+    async def test_get_dims_values_deduplicates_shared_value_first_seen_order(
+        self, async_db_session
+    ) -> None:
+        """A value shared across composite dims appears once, at first position.
+
+        Two rows can share one ``dim_name`` value across different composite
+        ``dims``. The previous ``DISTINCT`` deduplicated them; the ordered
+        rewrite must keep that uniqueness while returning first-occurrence
+        order. Without deduplication this would return ``["A", "A", "B"]``.
+        """
+        dashboard, graph = await self._make_dashboard_and_graph(async_db_session)
+
+        await StorageManager(async_db_session).save_aggregates(
+            dashboard_id=dashboard.id,
+            aggregates=[
+                {
+                    "graph_id": graph.id,
+                    "dims": {"category": "A", "region": "North"},
+                    "metrics": {"sales_sum": 1},
+                },
+                {
+                    "graph_id": graph.id,
+                    "dims": {"category": "A", "region": "South"},
+                    "metrics": {"sales_sum": 2},
+                },
+                {
+                    "graph_id": graph.id,
+                    "dims": {"category": "B", "region": "North"},
+                    "metrics": {"sales_sum": 3},
+                },
+            ],
+            clear_old=True,
+        )
+
+        values = await AggregatedDataRepository().get_dims_values(
+            graph_id=graph.id,
+            dim_name="category",
+            db=async_db_session,
+        )
+
+        # A appears once only, at its first-seen position.
+        assert values == ["A", "B"]
+
+    async def test_overwrite_mode_regenerates_order_after_reupload(
+        self, async_db_session
+    ) -> None:
+        """Overwrite re-upload deletes and re-inserts, so the order regenerates.
+
+        A second overwrite with a different chart order must be readable in the
+        new order. This is the case ``ORDER BY id`` is correct for: the clear
+        removes the old rows, so the fresh ids track the fresh chart order.
+        """
+        dashboard, graph = await self._make_dashboard_and_graph(async_db_session)
+        manager = StorageManager(async_db_session)
+
+        await manager.save_aggregates(
+            dashboard_id=dashboard.id,
+            aggregates=self._aggregates(graph.id, ["Alpha", "Beta"]),
+            clear_old=True,
+        )
+        # Re-upload with the order reversed and one row replaced.
+        second_order = ["Gamma", "Beta"]
+        await manager.save_aggregates(
+            dashboard_id=dashboard.id,
+            aggregates=self._aggregates(graph.id, second_order),
+            clear_old=True,
+        )
+
+        repo = AggregatedDataRepository()
+        rows = await repo.get_by_graph_id(
+            graph_id=graph.id, db=async_db_session, dashboard_id=dashboard.id
+        )
+        assert [row.dims["category"] for row in rows] == second_order
+
+        values = await repo.get_dims_values(
+            graph_id=graph.id, dim_name="category", db=async_db_session
+        )
+        assert values == second_order
+
+    async def test_append_mode_upsert_keeps_stale_id_order(
+        self, async_db_session
+    ) -> None:
+        """Append mode divergence is explicit: ``ORDER BY id`` != fresh chart order.
+
+        This test asserts the CURRENT, DOCUMENTED limitation of the interim
+        ordering, not the desired future behaviour. In append mode
+        ``_bulk_upsert`` keeps an existing row's ``id`` and gives new rows
+        larger ids, so a monotonic ``id`` cannot reproduce a freshly computed
+        chart order. Phase 14 adds ``aggregated_data.ordinal`` (``C05-5``) to
+        close this; when it does, this test is what tells you the behaviour
+        changed -- do not "fix" it by asserting the future order before the
+        column exists.
+        """
+        dashboard, graph = await self._make_dashboard_and_graph(async_db_session)
+        manager = StorageManager(async_db_session)
+
+        # First append: id order becomes [Beta, Alpha, Gamma].
+        await manager.save_aggregates(
+            dashboard_id=dashboard.id,
+            aggregates=self._aggregates(graph.id, ["Beta", "Alpha", "Gamma"]),
+            clear_old=False,
+        )
+
+        # Second append computes a DIFFERENT chart order and upserts among the
+        # existing rows: the re-ranked existing rows keep their old ids.
+        # A single-running colour total makes the fresh chart order
+        # [Delta, Alpha, Beta, Gamma] (Delta largest). With an `ordinal` column
+        # the reader would return that; with `ORDER BY id` it cannot, because
+        # Beta still owns the smallest id and Delta gets the largest.
+        fresh_chart_order = ["Delta", "Alpha", "Beta", "Gamma"]
+        await manager.save_aggregates(
+            dashboard_id=dashboard.id,
+            aggregates=self._aggregates(graph.id, fresh_chart_order),
+            clear_old=False,
+        )
+
+        rows = await AggregatedDataRepository().get_by_graph_id(
+            graph_id=graph.id, db=async_db_session, dashboard_id=dashboard.id
+        )
+        id_order = [row.dims["category"] for row in rows]
+
+        # All four rows are present ...
+        assert set(id_order) == set(fresh_chart_order)
+        # ... but the stored-id order does NOT match the fresh chart order:
+        # Beta keeps the first position it obtained on the first append, and
+        # Delta, though first in the new chart order, sorts last. This is the
+        # append divergence the phase-14 `ordinal` column exists to remove.
+        assert id_order == ["Beta", "Alpha", "Gamma", "Delta"]
+        assert id_order != fresh_chart_order
+
