@@ -116,7 +116,7 @@ class TestRateLimitingIntegration:
         self, async_client, async_db_session, strict_redis
     ) -> None:
         """Test that rate limiting works correctly with reset capability."""
-        from mkobi.api.routes.auth import _rate_limit_keys
+        from mkobi.api.routes.auth import _identifier_digest, _rate_limit_keys
         from mkobi.core.security import hash_password
         from mkobi.db.repositories.user_repo import UserRepository
 
@@ -158,10 +158,14 @@ class TestRateLimitingIntegration:
 
         # Clear both derived buckets on the app's OWN Redis instance. The route
         # fills app.state.mock_redis; the strict_redis fixture is a different
-        # instance, so popping from it would clear nothing.
+        # instance, so popping from it would clear nothing. The identifier is
+        # derived through the same digest the route uses; the raw email is no
+        # longer what the identifier key hashes.
         app_redis = async_client._transport.app.state.mock_redis
         for key in _rate_limit_keys(
-            "login", "127.0.0.1", "rate_limit_reset_test@example.com"
+            "login",
+            "127.0.0.1",
+            _identifier_digest("rate_limit_reset_test@example.com"),
         ):
             app_redis._data.pop(key, None)
             app_redis._ttls.pop(key, None)
@@ -193,7 +197,7 @@ class TestRateLimitingIntegration:
         only checked for a 429 would pass even if the peer bound had fired,
         which is exactly the ambiguity that hid the 5/5 defect.
         """
-        from mkobi.api.routes.auth import _rate_limit_keys
+        from mkobi.api.routes.auth import _identifier_digest, _rate_limit_keys
         from mkobi.core.security import hash_password
         from mkobi.db.repositories.user_repo import UserRepository
 
@@ -235,7 +239,9 @@ class TestRateLimitingIntegration:
         # per-peer key would be at its ceiling; the per-identifier key being at
         # its ceiling is the identifier bound and only the identifier bound.
         peer_key, identifier_key = _rate_limit_keys(
-            "login", "127.0.0.1", "budget_user_a@example.com"
+            "login",
+            "127.0.0.1",
+            _identifier_digest("budget_user_a@example.com"),
         )
         app_redis = async_client._transport.app.state.mock_redis
         assert int(app_redis._data[identifier_key]) >= max_attempts, (
@@ -268,7 +274,7 @@ class TestRateLimitingIntegration:
         from one peer are admitted before the 51st is refused, however many
         distinct identifiers they are spread across.
         """
-        from mkobi.api.routes.auth import _rate_limit_keys
+        from mkobi.api.routes.auth import _identifier_digest, _rate_limit_keys
         from mkobi.core.security import hash_password
         from mkobi.db.repositories.user_repo import UserRepository
 
@@ -301,7 +307,9 @@ class TestRateLimitingIntegration:
                 f"both bounds, got {response.status_code}"
             )
 
-        peer_key, _ = _rate_limit_keys("login", "127.0.0.1", emails[0])
+        peer_key, _ = _rate_limit_keys(
+            "login", "127.0.0.1", _identifier_digest(emails[0])
+        )
         app_redis = async_client._transport.app.state.mock_redis
         assert int(app_redis._data[peer_key]) == peer_max_attempts, (
             "the peer counter must reach exactly the peer ceiling"
@@ -328,7 +336,7 @@ class TestRateLimitingIntegration:
         bound. This pins the number of requests the peer bound permits for one
         identifier (50) and proves the ceiling is not merely decorative.
         """
-        from mkobi.api.routes.auth import _rate_limit_keys
+        from mkobi.api.routes.auth import _identifier_digest, _rate_limit_keys
         from mkobi.core.security import hash_password
         from mkobi.db.repositories.user_repo import UserRepository
 
@@ -360,7 +368,9 @@ class TestRateLimitingIntegration:
                     f"request {i + 1} should be refused, got {response.status_code}"
                 )
 
-        peer_key, _ = _rate_limit_keys("login", "127.0.0.1", "ceiling_user@example.com")
+        peer_key, _ = _rate_limit_keys(
+            "login", "127.0.0.1", _identifier_digest("ceiling_user@example.com")
+        )
         app_redis = async_client._transport.app.state.mock_redis
         assert int(app_redis._data[peer_key]) == peer_max_attempts, (
             "the peer counter must reach exactly 50"

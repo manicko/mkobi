@@ -19,6 +19,7 @@ from mkobi.core.security import create_access_token, hash_password
 from mkobi.db.models import user as user_model
 from mkobi.db.repositories.user_repo import UserRepository
 from mkobi.models.enums import UserRole
+from tests.conftest import MockRedis
 
 
 async def _read_is_active_in_new_session(
@@ -612,6 +613,75 @@ class TestDeactivateUser:
         )
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
+    async def test_deactivation_reports_revocation_failure(
+        self,
+        async_client: AsyncClient,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
+    ) -> None:
+        """The deactivation guard stays pinned against regression.
+
+        Same commit-then-revoke ordering as the reset path: a Redis fault at the
+        revocation step must be reported as a committed deactivation with a
+        failed revocation, naming the partial success. The identical guard on
+        the reset path mirrors this one, so this test protects the precedent.
+        """
+        from mkobi.api.deps import get_redis_client_dependency
+        from mkobi.main import app
+
+        target_email = f"deactivate_revoke_fault_{uuid.uuid4().hex[:8]}@example.com"
+        user_repo = UserRepository()
+        target_user = await user_repo.create(
+            db=async_db_session,
+            email=target_email,
+            password_hash=hash_password("TargetPass123!"),
+            role=UserRole.VIEWER,
+        )
+        await async_db_session.commit()
+
+        app.dependency_overrides[get_redis_client_dependency] = (
+            lambda: _FaultingRevocationRedis()
+        )
+        try:
+            response = await async_client.patch(
+                f"/admin/users/{target_user.id}/active",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={"is_active": False},
+            )
+
+            # The deactivation itself committed despite the revocation fault.
+            committed_active = await _read_is_active_in_new_session(
+                async_session_maker, target_user.id
+            )
+        finally:
+            app.dependency_overrides.pop(get_redis_client_dependency, None)
+            await _delete_committed_email(async_session_maker, target_email)
+
+        assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+        payload = response.json()
+        assert payload["code"] == "INTERNAL_ERROR"
+        detail = payload["detail"].lower()
+        assert "deactivated successfully" in detail
+        assert "revoking the user's tokens failed" in detail
+        assert committed_active is False
+
+
+class _FaultingRevocationRedis(MockRedis):
+    """Redis double that faults only on the revocation write.
+
+    The reset/deactivation endpoints call ``revoke_all_user_tokens`` after the
+    service has already committed, and that call writes the user-level marker
+    with ``setex``. The admin gate for the same request also reads revocation
+    state, so a double that faults on *every* operation would break the caller's
+    own authentication first and answer 503 before the endpoint runs. Inheriting
+    the healthy in-memory reads and faulting only ``setex`` isolates the
+    post-commit revocation step, which is the step under test.
+    """
+
+    async def setex(self, key: str, ttl: int, value: object) -> None:
+        raise RuntimeError("Redis revocation store unreachable")
+
 
 class TestResetUserPassword:
     """Tests for POST /admin/users/{user_id}/reset-password endpoint."""
@@ -798,3 +868,54 @@ class TestResetUserPassword:
         )
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert "own password" in response.json()["detail"].lower()
+
+    async def test_reset_password_reports_revocation_failure(
+        self,
+        async_client: AsyncClient,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
+    ) -> None:
+        """A commit-then-revoke fault is reported as a partial success, not a total failure.
+
+        The password reset commits before the endpoint revokes. If revocation
+        then faults, the response must tell the operator that the password *was*
+        reset and a second reset is required. A blanket handler would return a
+        generic "Error resetting user password", which misreports the committed
+        reset and hides that a temporary credential is now stranded in Redis; the
+        assertion on the detail's meaning is what distinguishes the two.
+        """
+        from mkobi.api.deps import get_redis_client_dependency
+        from mkobi.main import app
+
+        target_email = f"reset_revoke_fault_{uuid.uuid4().hex[:8]}@example.com"
+        user_repo = UserRepository()
+        target_user = await user_repo.create(
+            db=async_db_session,
+            email=target_email,
+            password_hash=hash_password("TargetPass123!"),
+            role=UserRole.VIEWER,
+        )
+        await async_db_session.commit()
+
+        app.dependency_overrides[get_redis_client_dependency] = (
+            lambda: _FaultingRevocationRedis()
+        )
+        try:
+            response = await async_client.post(
+                f"/admin/users/{target_user.id}/reset-password",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+            )
+        finally:
+            app.dependency_overrides.pop(get_redis_client_dependency, None)
+            await _delete_committed_email(async_session_maker, target_email)
+
+        assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+        payload = response.json()
+        assert payload["code"] == "INTERNAL_ERROR"
+        detail = payload["detail"].lower()
+        # The operator is told the reset landed and must be repeated.
+        assert "reset successfully" in detail
+        assert "second reset" in detail
+        # It must not read as if nothing happened.
+        assert detail != "error resetting user password"

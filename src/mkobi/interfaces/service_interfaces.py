@@ -116,7 +116,10 @@ class IAuthService(abc.ABC):
         credential never becomes durable before the user exists.
 
         Returns:
-            dict with user_id and retrieval_token on success.
+            dict with user_id, retrieval_token and credential_stored on success.
+            ``credential_stored`` is ``False`` when the post-commit Redis write of
+            the temporary password faulted or no store was wired, in which case
+            the returned ``retrieval_token`` is not a working handle.
             None if the request does not exist.
         """
         pass

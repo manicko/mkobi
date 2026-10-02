@@ -6,7 +6,7 @@ re-login after a password change yields a working session). Deactivation is
 still guaranteed by the ``is_active`` checks on the token-issuing paths.
 
 Tests cover:
-- ``revoke_all_user_tokens`` stores a parseable epoch-second timestamp
+- ``revoke_all_user_tokens`` stores a parseable epoch-millisecond timestamp
 - a token whose ``iat`` predates the marker is rejected
 - a token whose ``iat`` is newer than the marker is allowed
 - a legacy non-integer marker value still rejects (fail closed)

@@ -62,15 +62,20 @@ error_415 = {
     "model": ErrorResponse,
 }
 
-# Auth endpoints - public endpoints (no auth required for some, but can return 401/422)
+# Auth endpoints - public endpoints (no auth required for some, but can return 401/422).
+# ``POST /auth/refresh`` now answers 503 when the revocation store is unreachable,
+# so 503 is declared here.
 auth_public_responses = {
     401: error_401,
     422: error_422,
     429: error_429,
     500: error_500,
+    503: error_503,
 }
 
-# Auth endpoints - protected endpoints (require authentication)
+# Auth endpoints - protected endpoints (require authentication). Every route
+# behind ``get_current_user_dependency`` can now answer 503 when the revocation
+# store is unreachable, so 503 is declared here too.
 auth_protected_responses = {
     401: error_401,
     403: error_403,
@@ -78,6 +83,7 @@ auth_protected_responses = {
     422: error_422,
     429: error_429,
     500: error_500,
+    503: error_503,
 }
 
 # Admin endpoints

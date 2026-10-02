@@ -97,13 +97,27 @@ def _rate_limit_keys(
     Args:
         site: Rate-limit site name, for example ``"login"``.
         peer: Client peer address, or None when it is unavailable.
-        identifier: The bound subject (submitted email, or a session digest).
+        identifier: The bound subject, always a digest of the submitted value
+            (an email for the account sites, the presented cookie for refresh).
+            The raw value is never placed in a key.
 
     Returns:
         tuple[str, str]: The per-peer key followed by the per-identifier key.
     """
     resolved_peer = peer if peer else _UNKNOWN_PEER
     return f"{site}:{resolved_peer}", f"{site}:id:{identifier}"
+
+
+def _identifier_digest(value: str) -> str:
+    """Return a key-safe digest of a rate-limit identifier.
+
+    The digest keeps a submitted credential or account address out of the Redis
+    key namespace while still giving each distinct value its own bucket. A
+    truncated SHA-256 is used rather than the raw value so no email address or
+    cookie is written into a rate-limit key, the same rule the ``refresh`` site
+    applies to the presented session cookie.
+    """
+    return sha256(value.encode("utf-8")).hexdigest()[:32]
 
 
 def _resolve_client_ip(request: Request) -> str:
@@ -174,8 +188,10 @@ async def _handle_login(
     """Common login logic and error handling."""
     # Apply rate limiting for login attempts with a dual bound: per peer (so a
     # botnet cannot spread by rotating accounts) and per submitted identifier
-    # (so one user's failures cannot lock out a shared NAT). The identifier is
-    # the submitted email; using it also prevents email enumeration via a rate
+    # (so one user's failures cannot lock out a shared NAT). The identifier is a
+    # digest of the submitted email, not the email itself, so no address is
+    # written into a Redis key; this matches the refresh site's treatment of the
+    # presented cookie. Hashing still prevents email enumeration via a rate
     # limit side-channel. Peer ceiling is 10x the identifier bound (50 vs 5)
     # so a shared egress address still serves other users after one exhausts
     # its own budget; the ratio, not three arbitrary numbers, keeps tuning
@@ -189,7 +205,7 @@ async def _handle_login(
         rate_limiter,
         site="login",
         peer=client_ip,
-        identifier=email,
+        identifier=_identifier_digest(email),
         max_attempts=5,
         peer_max_attempts=50,
         ttl=300,
@@ -417,12 +433,11 @@ async def refresh(
         redis_client,
         fail_closed=get_config().rate_limiter_fail_closed,
     )
-    session_digest = sha256(refresh_token_value.encode("utf-8")).hexdigest()[:32]
     await _enforce_dual_rate_limit(
         rate_limiter,
         site="refresh",
         peer=client_ip,
-        identifier=session_digest,
+        identifier=_identifier_digest(refresh_token_value),
         max_attempts=10,
         peer_max_attempts=100,
         ttl=300,
@@ -733,10 +748,12 @@ async def register_request(
     client_ip: str | None = None if resolved_ip == _UNKNOWN_PEER else resolved_ip
 
     # Apply rate limiting for registration requests with a dual bound: per peer
-    # and per submitted email. The email bound is now explicit rather than a
-    # fallback used only when the peer is absent. Peer ceiling is 10x the
-    # identifier bound (30 vs 3), the same ratio as every other auth site; the
-    # peer bound is an abuse ceiling, not a ration on ordinary requests.
+    # and per submitted email. The email identifier is a digest, not the raw
+    # address, so no email is written into a Redis key (matching the login and
+    # refresh sites). The email bound is explicit rather than a fallback used
+    # only when the peer is absent. Peer ceiling is 10x the identifier bound
+    # (30 vs 3), the same ratio as every other auth site; the peer bound is an
+    # abuse ceiling, not a ration on ordinary requests.
     rate_limiter = AsyncRateLimiter(
         redis_client.get_async_redis_client(),
         fail_closed=get_config().rate_limiter_fail_closed,
@@ -745,7 +762,7 @@ async def register_request(
         rate_limiter,
         site="register-request",
         peer=resolved_ip,
-        identifier=request_data.email,
+        identifier=_identifier_digest(request_data.email),
         max_attempts=3,
         peer_max_attempts=30,
         ttl=3600,

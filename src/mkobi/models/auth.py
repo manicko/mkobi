@@ -24,6 +24,24 @@ class LoginRequest(BaseModel):
     )
 
 
+class TempPasswordRetrievalRequest(BaseModel):
+    """Request body for the temp-password retrieval operation.
+
+    The handle is carried in the body so it never reaches the request line and,
+    therefore, never appears in the application access log.
+    """
+
+    retrieval_token: str
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "retrieval_token": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            }
+        },
+    )
+
+
 class RegistrationRequestCreate(BaseModel):
     """Registration request model."""
 

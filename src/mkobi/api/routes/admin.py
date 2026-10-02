@@ -17,12 +17,15 @@ from mkobi.api.deps import (
     get_temp_password_store,
 )
 from mkobi.api.schemas.responses import admin_responses, error_503
-from mkobi.api.schemas.requests import TempPasswordRetrievalRequest
 from mkobi.interfaces import IUserService
 from mkobi.models.enums import ErrorCode, RegistrationStatus
 from mkobi.utils.exceptions import AppException
 from mkobi.models.user import UserRead, UserUpdateRequest, UserUpdateActiveRequest
-from mkobi.models.auth import RegistrationRequestItem, SuccessResponse
+from mkobi.models.auth import (
+    RegistrationRequestItem,
+    SuccessResponse,
+    TempPasswordRetrievalRequest,
+)
 from mkobi.services.auth_service import AuthService
 from mkobi.core.security import revoke_all_user_tokens
 from mkobi.core.temp_password_store import (
@@ -278,13 +281,34 @@ async def reset_user_password_admin_endpoint(
         # itself landed either way. The marker is a non-transactional Redis write
         # placed after the commit, following
         # update_user_active_admin_endpoint.
+        #
+        # Guarded separately, mirroring the deactivation endpoint above: a Redis
+        # fault here must be reported as a committed reset with a failed
+        # revocation, not conflated with a database error. Falling through to the
+        # blanket handler would claim the whole operation failed while the
+        # password is already reset and the temporary credential sits in Redis
+        # under a retrieval_token the administrator never received.
         settings = get_config()
-        await revoke_all_user_tokens(
-            redis_client=redis_client,
-            user_id=user_id,
-            access_ttl=settings.jwt.access_token_expire_minutes * 60,
-            refresh_ttl=settings.jwt.refresh_token_expire_minutes * 60,
-        )
+        try:
+            await revoke_all_user_tokens(
+                redis_client=redis_client,
+                user_id=user_id,
+                access_ttl=settings.jwt.access_token_expire_minutes * 60,
+                refresh_ttl=settings.jwt.refresh_token_expire_minutes * 60,
+            )
+        except Exception as revoke_error:
+            logger.error(
+                "Password reset committed but token revocation failed: id=%s: %s",
+                user_id,
+                revoke_error,
+            )
+            raise AppException(
+                code=ErrorCode.INTERNAL_ERROR,
+                detail=(
+                    "Password was reset successfully, but revoking the user's "
+                    "sessions failed; a second reset is required."
+                ),
+            ) from revoke_error
         logger.info("All tokens revoked for password-reset user: id=%s", user_id)
 
         return result
