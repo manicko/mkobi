@@ -93,6 +93,8 @@ class _CommitConflictingRowAfterFirstExecute:
         """Run the wrapped statement, then commit the competitor once."""
         result = await self._inner.execute(*args, **kwargs)
         self._executes += 1
+        # Positional count: grant_access issues a leading SELECT and then an
+        # INSERT. Re-check this if a statement is added before that SELECT.
         if self._executes == 1:
             await self._commit_competing_row()
         return result

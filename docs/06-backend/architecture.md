@@ -302,16 +302,20 @@ divergence is deliberate and its values are pinned as named constants in
 `db/starter.py`, which makes a future drift a visible diff rather than an
 accident of SQLAlchemy's defaults.
 
-Engines 4 and 5 cannot appear in the steady-state budget, on three independent
-grounds. `recreate_test_database` is reached only through `DatabaseStarter.startup`
-when the *configured* environment is `test` (or `RECREATE_TEST_DB` selects it within
-that tier) and refuses otherwise, so no production process ever constructs them;
-both are **per-call** — created inside the method and disposed in its `finally`
-before it returns — so even in the test tier they hold connections for the duration
-of one recreation, not for the process lifetime; and the migration engine is
-`NullPool`, so it carries no standing pool at all. They are listed for completeness,
-not omitted: the reader should be able to see that the steady-state count is three
-*by the code's lifetime*, not by an unstated assumption.
+Engines 4 and 5 cannot appear in the steady-state budget, on two independent
+grounds. `recreate_test_database` is reached through `DatabaseStarter.startup` when
+the *configured* environment is `test` (or `RECREATE_TEST_DB` selects it within that
+tier), and through the documented CLI entry point
+`python -m mkobi.db.starter --recreate-test-db`; either way the method refuses
+unless the configured environment is `test`, so no production process ever
+constructs them. And both are **per-call** — created inside the method and disposed
+in its `finally` before it returns — so even in the test tier they hold connections
+for the duration of one recreation, not for the process lifetime. They are listed
+for completeness, not omitted: the reader should be able to see that the
+steady-state count is three *by the code's lifetime*, not by an unstated
+assumption. (Adjacent engine 3, the migration engine, is `NullPool` and so carries
+no standing pool either; that is a property of engine 3's own lifetime, not an
+additional ground for engines 4 and 5.)
 
 Engine 2 is disposed only in `DatabaseStarter.shutdown()`, so it counts toward the
 **steady-state** budget, not merely a start-up spike. Its small ceiling is free
