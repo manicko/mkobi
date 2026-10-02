@@ -68,8 +68,9 @@ export async function approveRequest(requestId: string): Promise<{
 export async function retrieveTempPassword(retrievalToken: string): Promise<{
   temp_password: string
 }> {
-  const response = await axiosInstance.get<{ temp_password: string }>(
-    `/admin/temp-passwords/${retrievalToken}`
+  const response = await axiosInstance.post<{ temp_password: string }>(
+    '/admin/temp-passwords',
+    { retrieval_token: retrievalToken }
   )
   return response.data
 }

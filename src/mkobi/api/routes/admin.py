@@ -17,6 +17,7 @@ from mkobi.api.deps import (
     get_temp_password_store,
 )
 from mkobi.api.schemas.responses import admin_responses, error_503
+from mkobi.api.schemas.requests import TempPasswordRetrievalRequest
 from mkobi.interfaces import IUserService
 from mkobi.models.enums import ErrorCode, RegistrationStatus
 from mkobi.utils.exceptions import AppException
@@ -442,20 +443,23 @@ async def reject_registration_request_admin_endpoint(
 
 # --- Temp Password Retrieval ---
 
+# The retrieval handle used to travel in the request line. It is now a request
+# body field on the POST operation below; the legacy GET path keeps serving for
+# one release (removal: 1.0.9) so no caller breaks during the deprecation window.
+# Both operations share one body so the 404/403/503 behaviour is identical.
 
-@router.get(
-    "/temp-passwords/{retrieval_token}",
-    status_code=status.HTTP_200_OK,
-    summary="Retrieve temporary password (admin)",
-    description="Returns a one-time temporary password. Admin only. Password is deleted after retrieval.",
-    responses={**admin_responses, 503: error_503},
-)
-async def retrieve_temp_password_admin_endpoint(
+
+async def _retrieve_temp_password(
     retrieval_token: str,
-    admin_user: AdminUser,
-    temp_password_store: TempPasswordStore = Depends(get_temp_password_store),
+    temp_password_store: TempPasswordStore,
 ) -> dict[str, str]:
-    """Retrieve a temporary password by its retrieval token (one-time, admin only)."""
+    """Retrieve a temporary password by its retrieval token (one-time, admin only).
+
+    Shared body for the deprecated GET and the POST. The caller must already have
+    passed the admin dependency. Only the first eight characters of the handle are
+    logged, so the full handle never appears in the application access log via a
+    log line.
+    """
     logger.info("Admin: retrieving temp password: token=%s...", retrieval_token[:8])
     try:
         password = await temp_password_store.retrieve(retrieval_token)
@@ -470,3 +474,48 @@ async def retrieve_temp_password_admin_endpoint(
             detail="Temporary password not found or already retrieved",
         )
     return {"temp_password": password}
+
+
+@router.get(
+    "/temp-passwords/{retrieval_token}",
+    status_code=status.HTTP_200_OK,
+    summary="Retrieve temporary password (admin, deprecated)",
+    description=(
+        "Deprecated: the retrieval handle travels in the request line, where it "
+        "can reach the access log. Use POST /admin/temp-passwords instead. Removed "
+        "in release 1.0.9."
+    ),
+    responses={**admin_responses, 503: error_503},
+    deprecated=True,
+)
+async def retrieve_temp_password_admin_endpoint(
+    retrieval_token: str,
+    admin_user: AdminUser,
+    temp_password_store: TempPasswordStore = Depends(get_temp_password_store),
+) -> dict[str, str]:
+    """Retrieve a temporary password by its retrieval token (one-time, admin only).
+
+    Deprecated: the handle is carried in the path. Removal is scheduled for
+    release 1.0.9; use the POST operation, which carries the handle in the body.
+    """
+    return await _retrieve_temp_password(retrieval_token, temp_password_store)
+
+
+@router.post(
+    "/temp-passwords",
+    status_code=status.HTTP_200_OK,
+    summary="Retrieve temporary password (admin)",
+    description=(
+        "Returns a one-time temporary password. Admin only. The retrieval handle "
+        "is carried in the request body, so it does not appear in the request line "
+        "or the application access log. The password is deleted after retrieval."
+    ),
+    responses={**admin_responses, 503: error_503},
+)
+async def retrieve_temp_password_post_admin_endpoint(
+    body: TempPasswordRetrievalRequest,
+    admin_user: AdminUser,
+    temp_password_store: TempPasswordStore = Depends(get_temp_password_store),
+) -> dict[str, str]:
+    """Retrieve a temporary password with the handle in the request body."""
+    return await _retrieve_temp_password(body.retrieval_token, temp_password_store)

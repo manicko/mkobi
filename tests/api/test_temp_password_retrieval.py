@@ -286,3 +286,117 @@ class TestTempPasswordRetrievalEndpoint:
         assert body["code"] == "SERVICE_UNAVAILABLE"
         assert body["title"] == "Service unavailable"
         assert response.status_code != status.HTTP_404_NOT_FOUND
+
+    async def test_retrieve_via_post_body(
+        self, async_client: AsyncClient, async_db_session
+    ) -> None:
+        """The POST returns the password and keeps the handle out of the URL."""
+        from mkobi.core.security import create_access_token, hash_password
+        from mkobi.db.repositories.user_repo import UserRepository
+        from mkobi.models.enums import UserRole
+
+        user_repo = UserRepository()
+        admin_user = await user_repo.create(
+            db=async_db_session,
+            email="admin_post_retrieval@example.com",
+            password_hash=hash_password("AdminPass123!"),
+            role=UserRole.ADMIN,
+        )
+        await async_db_session.commit()
+
+        admin_token = create_access_token({
+            "user_id": str(admin_user.id),
+            "email": admin_user.email,
+        })
+
+        temp_password = "PostBodyPass123"
+        retrieval_token = "post_body_token_abc123"
+        mock_redis = app.state.mock_redis
+        await mock_redis.set(f"temp_pwd:{retrieval_token}", temp_password, ex=3600)
+
+        response = await async_client.post(
+            "/admin/temp-passwords",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"retrieval_token": retrieval_token},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["temp_password"] == temp_password
+        # The handle must not have travelled in the request line.
+        assert retrieval_token not in str(response.request.url)
+
+    async def test_legacy_get_route_still_serves_during_window(
+        self, async_client: AsyncClient, async_db_session
+    ) -> None:
+        """The deprecated GET path keeps serving during the deprecation window."""
+        from mkobi.core.security import create_access_token, hash_password
+        from mkobi.db.repositories.user_repo import UserRepository
+        from mkobi.models.enums import UserRole
+
+        user_repo = UserRepository()
+        admin_user = await user_repo.create(
+            db=async_db_session,
+            email="admin_legacy_get@example.com",
+            password_hash=hash_password("AdminPass123!"),
+            role=UserRole.ADMIN,
+        )
+        await async_db_session.commit()
+
+        admin_token = create_access_token({
+            "user_id": str(admin_user.id),
+            "email": admin_user.email,
+        })
+
+        temp_password = "LegacyGetPass123"
+        retrieval_token = "legacy_get_token_def456"
+        mock_redis = app.state.mock_redis
+        await mock_redis.set(f"temp_pwd:{retrieval_token}", temp_password, ex=3600)
+
+        response = await async_client.get(
+            f"/admin/temp-passwords/{retrieval_token}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["temp_password"] == temp_password
+
+    async def test_post_route_non_admin_forbidden(
+        self, async_client: AsyncClient, async_db_session
+    ) -> None:
+        """The admin guard exists on both operations.
+
+        The refusal happens at the dependency, before the body is read, so this
+        test alone proves only that a guard exists. It additionally asserts the
+        legacy GET refuses the same user, so the pair proves both operations
+        carry the guard.
+        """
+        from mkobi.core.security import create_access_token, hash_password
+        from mkobi.db.repositories.user_repo import UserRepository
+        from mkobi.models.enums import UserRole
+
+        user_repo = UserRepository()
+        viewer_user = await user_repo.create(
+            db=async_db_session,
+            email="viewer_post_retrieval@example.com",
+            password_hash=hash_password("ViewerPass123!"),
+            role=UserRole.VIEWER,
+        )
+        await async_db_session.commit()
+
+        viewer_token = create_access_token({
+            "user_id": str(viewer_user.id),
+            "email": viewer_user.email,
+        })
+
+        post_response = await async_client.post(
+            "/admin/temp-passwords",
+            headers={"Authorization": f"Bearer {viewer_token}"},
+            json={"retrieval_token": "some_token"},
+        )
+        assert post_response.status_code == status.HTTP_403_FORBIDDEN
+
+        get_response = await async_client.get(
+            "/admin/temp-passwords/some_token",
+            headers={"Authorization": f"Bearer {viewer_token}"},
+        )
+        assert get_response.status_code == status.HTTP_403_FORBIDDEN

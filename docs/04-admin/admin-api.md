@@ -242,7 +242,7 @@ Admin-triggered password reset. Generates a temporary password for the target us
 - Returns `retrieval_token` (UUID) in the response instead of `temp_password`
 - Returns `credential_stored`: `false` when the Redis write failed or no store was wired, in which case the returned `retrieval_token` is **not** a working handle and a second reset is required; the status stays `200` because the password change itself is committed and durable
 
-> **Security:** The temporary password is **never returned in the response**. Instead, a `retrieval_token` is returned. The admin retrieves the password via `GET /api/v1/admin/temp-passwords/{retrieval_token}` when needed. This ensures the plaintext password never appears in API response logs. The password is stored in Redis with TTL (default: 24h, configurable via `TEMP_PASSWORD_TTL_SECONDS`) and is deleted upon retrieval (single-use).
+> **Security:** The temporary password is **never returned in the response**. Instead, a `retrieval_token` is returned. The admin retrieves the password via `POST /api/v1/admin/temp-passwords` with the handle in the body when needed. This ensures the plaintext password never appears in API response logs, and the handle stays out of the application access log. The password is stored in Redis with TTL (default: 24h, configurable via `TEMP_PASSWORD_TTL_SECONDS`) and is deleted upon retrieval (single-use).
 
 ---
 
@@ -402,7 +402,7 @@ The first four steps happen inside a single transaction owned by
 roll back a transaction itself. See [Registration Approval Flow](#registration-approval-flow)
 for why the Redis write is deliberately last.
 
-> **Security Note:** The `retrieval_token` (UUID) is returned instead of a plaintext `temp_password`. The admin retrieves the actual password via `GET /api/v1/admin/temp-passwords/{retrieval_token}` when needed. This ensures the plaintext password never appears in API response logs. The password is stored in Redis with TTL (default: 24h) and is single-use.
+> **Security Note:** The `retrieval_token` (UUID) is returned instead of a plaintext `temp_password`. The admin retrieves the actual password via `POST /api/v1/admin/temp-passwords` with the handle in the body when needed. This ensures the plaintext password never appears in API response logs, and the handle stays out of the application access log. The password is stored in Redis with TTL (default: 24h) and is single-use.
 
 ---
 
@@ -445,19 +445,21 @@ Reject a pending registration request.
 
 ### 14. Retrieve Temporary Password
 
-Retrieve a one-time temporary password by its retrieval token. Admin only. The password is deleted from Redis upon retrieval (single-use).
+Retrieve a one-time temporary password by its retrieval token. Admin only. The password is deleted from Redis upon retrieval (single-use). Two operations share the same retrieval logic, `404`/`403`/`503` behaviour, and admin guard.
 
 | Attribute      | Value                                              |
 | -------------- | -------------------------------------------------- |
-| **Method**     | `GET`                                              |
-| **Path**       | `/api/v1/admin/temp-passwords/{retrieval_token}`   |
+| **Method**     | `POST`                                             |
+| **Path**       | `/api/v1/admin/temp-passwords`                     |
 | **Auth level** | Admin                                              |
 
-**Path parameters:**
+**Request body:**
 
-| Parameter          | Type   | Description              |
-| ------------------ | ------ | ------------------------ |
-| `retrieval_token`  | UUID   | The retrieval token from a reset/approve response |
+```json
+{
+  "retrieval_token": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
 
 **Response** (`200 OK`):
 
@@ -478,12 +480,41 @@ An expired, already-retrieved and never-existed token are indistinguishable by
 design and all answer `404`; a **store fault is not one of them** and answers
 `503`, so a retry loop against a `404` is never mistaken for an outage.
 
-**Side effects:**
+#### 14a. Legacy Retrieve Temporary Password (Deprecated)
+
+> **Deprecated — removal in release 1.0.9.** This operation carries the retrieval
+> handle in the request line. Use `POST /api/v1/admin/temp-passwords`, which
+> carries it in the request body. The path operation is retained for one release
+> so existing callers keep working; it is otherwise byte-identical in behaviour.
+
+| Attribute      | Value                                              |
+| -------------- | -------------------------------------------------- |
+| **Method**     | `GET` (deprecated)                                 |
+| **Path**       | `/api/v1/admin/temp-passwords/{retrieval_token}`   |
+| **Auth level** | Admin                                              |
+
+**Path parameters:**
+
+| Parameter          | Type   | Description              |
+| ------------------ | ------ | ------------------------ |
+| `retrieval_token`  | UUID   | The retrieval token from a reset/approve response |
+
+**Response** (`200 OK`): same as the `POST` operation above.
+
+**Side effects (both operations):**
 - The password is **deleted** from Redis (single-use via atomic GET+DELETE pipeline)
 - Subsequent requests with the same token return 404
-- The retrieval **token** is logged at INFO level (first 8 characters only); the plaintext password is **never** written to a log
+- The retrieval **token**'s first 8 characters are logged at INFO level; the plaintext password is **never** written to a log. The admin issuance routes (`POST /admin/users/{user_id}/reset-password`, `POST /admin/registration-requests/:id/approve`) log the same 8-character **prefix** — a prefix is not the handle and cannot be replayed.
 
-> **Security:** This is the **only** API endpoint that returns the plaintext `temp_password`. It requires admin authentication. The password is accessible only once — after retrieval, it is permanently deleted from Redis. Tokens auto-expire after `TEMP_PASSWORD_TTL_SECONDS` (default: 24h) if never retrieved. If Redis is unreachable the endpoint answers `503`, not `404`; the store's `GET`+`DELETE` run inside one Redis transaction.
+> **Security:** This is the **only** API operation that returns the plaintext `temp_password`. It requires admin authentication. The password is accessible only once — after retrieval, it is permanently deleted from Redis. Tokens auto-expire after `TEMP_PASSWORD_TTL_SECONDS` (default: 24h) if never retrieved. If Redis is unreachable the operation answers `503`, not `404`; the store's `GET`+`DELETE` run inside one Redis transaction.
+>
+> **Partially fixed.** Moving the handle to a request body removes it from the
+> **application's** request line and therefore from the application access log.
+> It is **still not fixed** at the proxy: `docker/nginx/nginx.conf` declares no
+> `log_format` and writes the full request line to its own access log in the
+> default `combined` format, so a `POST` body does not appear there but a legacy
+> `GET` path still does. That file belongs to another phase; this phase records
+> the change as a hand-over and does not edit it.
 
 ---
 
@@ -614,8 +645,9 @@ Browser (User)        FastAPI              Database
    │                     │                     │
    │  Admin retrieves    │                     │
    │  temp_password via  │                     │
-   │  GET /admin/temp-   │                     │
-   │  passwords/{token}  │                     │
+   │  POST /admin/temp-  │                     │
+   │  passwords          │                     │
+   │  (handle in body)   │                     │
    │  and communicates   │                     │
    │  it to new user     │                     │
 ```
@@ -717,7 +749,8 @@ Displays pending registration requests with approve/reject actions.
 - `GET /api/v1/admin/registration-requests` — List requests
 - `POST /api/v1/admin/registration-requests/:id/approve` — Approve (returns `{ message, user_id, retrieval_token }`)
 - `POST /api/v1/admin/registration-requests/:id/reject` — Reject
-- `GET /api/v1/admin/temp-passwords/{retrieval_token}` — Retrieve temporary password (admin only, one-time)
+- `POST /api/v1/admin/temp-passwords` — Retrieve temporary password (admin only, one-time; handle in body)
+- `GET /api/v1/admin/temp-passwords/{retrieval_token}` — Deprecated alias, removed in release 1.0.9
 
 ### Dashboard Management (`/admin`)
 
