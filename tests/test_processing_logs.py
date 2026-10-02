@@ -849,3 +849,73 @@ class TestDurableProcessingTransitions:
             delete(ProcessingLog).where(ProcessingLog.id == task_id)
         )
         await async_db_session.commit()
+
+
+class TestCompletionMessageSurvivesWarningTruncation:
+    """DP-013 / D-05-F(b): warnings must not displace the completion sentence.
+
+    ``processing_logs.message`` is ``String(1000)`` and this file asserts on its
+    content. A warning summary that would overflow the column must be truncated
+    rather than allowed to push the completion sentence out of the stored value
+    or mangle it.
+    """
+
+    async def test_truncated_warning_summary_does_not_corrupt_completion_sentence(
+        self, async_db_session
+    ) -> None:
+        """An overflowing warning set stores the sentence intact at the cap.
+
+        The composed message is written through the real ``String(1000)`` column
+        and read back: the completion sentence survives byte-for-byte as the
+        prefix, the message is exactly the cap length, and the truncation marker
+        is present so a reader knows the summary was shortened.
+        """
+        from mkobi.workers.data_worker import (
+            PROCESSING_LOG_MESSAGE_MAX_LENGTH,
+            _compose_completion_message,
+        )
+        from sqlalchemy import update as sa_update
+
+        task_id = uuid4()
+        await async_db_session.execute(
+            delete(ProcessingLog).where(ProcessingLog.id == task_id)
+        )
+        await async_db_session.execute(
+            ProcessingLog.__table__.insert().values(
+                id=task_id,
+                dashboard_id=None,
+                status=ProcessingStatus.PROCESSING,
+                message="Processing started",
+                started_at=datetime.now(UTC),
+            )
+        )
+        await async_db_session.commit()
+
+        sentence = "Processing completed successfully: 3 rows processed"
+        overflowing_summary = "Validation result: PASSED " + ("warning-detail " * 200)
+        composed = _compose_completion_message(sentence, overflowing_summary)
+
+        # Write through the real ``String(1000)`` column, bypassing the service
+        # transition machinery: the subject here is the stored value's length
+        # and prefix, not the status state machine.
+        await async_db_session.execute(
+            sa_update(ProcessingLog)
+            .where(ProcessingLog.id == task_id)
+            .values(status=ProcessingStatus.COMPLETED, message=composed)
+        )
+        await async_db_session.commit()
+        stored = await ProcessingLogRepository().get_by_id(
+            task_id, db=async_db_session
+        )
+        assert stored is not None
+        assert stored.message is not None
+        # The sentence is intact as the prefix -- not displaced, not mangled.
+        assert stored.message.startswith(sentence)
+        # The stored value fits the column and carries the truncation marker.
+        assert len(stored.message) == PROCESSING_LOG_MESSAGE_MAX_LENGTH
+        assert stored.message.endswith("...[truncated]")
+
+        await async_db_session.execute(
+            delete(ProcessingLog).where(ProcessingLog.id == task_id)
+        )
+        await async_db_session.commit()

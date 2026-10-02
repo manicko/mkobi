@@ -46,6 +46,21 @@ logger = logging.getLogger(__name__)
 # Default timeout for stale processing logs (in minutes)
 DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES = 5
 
+# ``processing_logs.message`` is declared ``String(1000)``
+# (``db/models/processing_logs.py``). A validation-warning summary appended to
+# the completion sentence must fit that column, so the composed message is
+# capped at this length.
+PROCESSING_LOG_MESSAGE_MAX_LENGTH = 1000
+
+# Separates the completion sentence a client renders from the validation-warning
+# summary appended after it. Chosen so a reader -- or a test -- can always tell
+# where the sentence ends and the warnings begin.
+_WARNING_SUMMARY_SEPARATOR = " | Warnings: "
+
+# Appended when a warning summary does not fit the remaining budget. Its
+# presence tells a reader the summary is shortened, not merely short.
+_TRUNCATION_MARKER = "...[truncated]"
+
 
 def _map_processing_error_to_code(error: Exception) -> str:
     """Map processing exception to ErrorCode string.
@@ -115,6 +130,63 @@ def _map_processing_error_to_code(error: Exception) -> str:
 
     # Default to processing failed for all other errors
     return str(ErrorCode.PROCESSING_FAILED.value)
+
+
+def _compose_completion_message(
+    completion_sentence: str,
+    warnings_summary: str,
+    *,
+    max_length: int = PROCESSING_LOG_MESSAGE_MAX_LENGTH,
+) -> str:
+    """Append a validation-warning summary to a completion sentence, capped.
+
+    ``ValidationResult.warnings`` previously had no consumer: the worker read
+    only ``is_valid`` and ``errors`` and then wrote its completion sentence, so
+    a data-quality warning (duplicates, nulls, a type mismatch) reached nobody.
+    This composes the message that lands in ``processing_logs.message``.
+
+    Truncation rule (D-05-F(b)), stated so a later reader can rely on it:
+
+    * The completion sentence is written first and is **never truncated** while
+      it fits ``max_length`` on its own -- it is the text a client renders.
+    * The warning summary is the only part shortened. When it overflows the
+      remaining budget it is cut to that budget and ``"...[truncated]"`` is
+      appended, so a shortened summary is distinguishable from a short one.
+    * If the completion sentence alone already fills ``max_length``, the summary
+      is dropped whole rather than displacing or mangling the sentence.
+
+    Args:
+        completion_sentence: The human-readable completion sentence.
+        warnings_summary: Warning text, normally
+            :meth:`DataValidator.get_validation_summary`. Whitespace is
+            normalised to a single line so the stored message stays one line.
+        max_length: The column's maximum length (default: the DB column).
+
+    Returns:
+        str: A message of at most ``max_length`` characters.
+    """
+    # No warnings: the completion sentence stands alone, byte-identical to the
+    # pre-PB-9 behaviour.
+    if not warnings_summary:
+        return completion_sentence
+
+    prefix = f"{completion_sentence}{_WARNING_SUMMARY_SEPARATOR}"
+    if len(prefix) > max_length:
+        # The sentence alone consumes the budget: keep the sentence (truncated
+        # only as a last resort) and drop the warnings rather than mangle it.
+        return completion_sentence[:max_length]
+
+    # Collapse the multi-line summary to one line; the two are separated by the
+    # explicit marker above, so a reader can still tell them apart.
+    summary = " ".join(warnings_summary.split())
+    budget = max_length - len(prefix)
+    if len(summary) <= budget:
+        return prefix + summary
+
+    if budget <= len(_TRUNCATION_MARKER):
+        return prefix + _TRUNCATION_MARKER[:budget]
+    keep = budget - len(_TRUNCATION_MARKER)
+    return prefix + summary[:keep] + _TRUNCATION_MARKER
 
 
 def _validate_processing_config(config: ProcessingConfig) -> None:
@@ -493,23 +565,7 @@ async def _process_csv_file_async(
         if column_types:
             date_format = settings.get("date_format") if settings else None
             for col_name, col_type in column_types.items():
-                if col_name in df.columns and col_type != "float":
-                    try:
-                        if col_type == "date" and date_format:
-                            # Parse date string with explicit format
-                            df = df.with_columns(
-                                pl.col(col_name).str.strptime(pl.Date, date_format).alias(col_name)
-                            )
-                            logger.debug("Cast column '%s' to Date with format '%s'", col_name, date_format)
-                        elif col_type == "int":
-                            df = df.with_columns(pl.col(col_name).cast(pl.Int64))
-                        elif col_type == "str":
-                            df = df.with_columns(pl.col(col_name).cast(pl.Utf8))
-                        elif col_type == "bool":
-                            df = df.with_columns(pl.col(col_name).cast(pl.Boolean))
-                    except Exception as e:
-                        logger.warning("Failed to cast column '%s' to %s: %s", col_name, col_type, e)
-                else:
+                if col_name not in df.columns:
                     # A column_types key naming a column absent from the frame is
                     # a settings-shape problem: name it and continue. Raising
                     # here would create a new failure class for a configuration
@@ -518,6 +574,34 @@ async def _process_csv_file_async(
                         "column_types key '%s' does not match any loaded column; skipping cast",
                         col_name,
                     )
+                    continue
+                try:
+                    if col_type == "date" and date_format:
+                        # Parse date string with explicit format
+                        df = df.with_columns(
+                            pl.col(col_name).str.strptime(pl.Date, date_format).alias(col_name)
+                        )
+                        logger.debug("Cast column '%s' to Date with format '%s'", col_name, date_format)
+                    elif col_type == "date":
+                        # A declared date without a format cannot be parsed; the
+                        # validator will report the uncast dtype as a warning.
+                        logger.debug(
+                            "column '%s' declared as date but no date_format configured; skipping cast",
+                            col_name,
+                        )
+                    elif col_type == "float":
+                        # Cast declared floats so the validator's float check can
+                        # become true. The decimal-separator block above casts to
+                        # the same target (``pl.Float64``).
+                        df = df.with_columns(pl.col(col_name).cast(pl.Float64))
+                    elif col_type == "int":
+                        df = df.with_columns(pl.col(col_name).cast(pl.Int64))
+                    elif col_type == "str":
+                        df = df.with_columns(pl.col(col_name).cast(pl.Utf8))
+                    elif col_type == "bool":
+                        df = df.with_columns(pl.col(col_name).cast(pl.Boolean))
+                except Exception as e:
+                    logger.warning("Failed to cast column '%s' to %s: %s", col_name, col_type, e)
 
         # Apply column renames from processing config
         if settings and settings.get("renames"):
@@ -613,11 +697,21 @@ async def _process_csv_file_async(
             await asyncio.to_thread(file_path.unlink)
             logger.info("Temp file deleted: %s", file_path)
 
-        # Update status to completed (within same transaction)
+        # Update status to completed (within same transaction). The completion
+        # sentence a client renders is preserved; any validation warnings are
+        # appended after an explicit separator under the column's length cap.
+        completion_message = (
+            f"Processing completed successfully: {result_data['rows']} rows processed"
+        )
+        if validation_result.warnings:
+            completion_message = _compose_completion_message(
+                completion_message,
+                validator.get_validation_summary(validation_result),
+            )
         await _update_processing_log_status(
             task_id=task_id,
             status=ProcessingStatus.COMPLETED,
-            message=f"Processing completed successfully: {result_data['rows']} rows processed",
+            message=completion_message,
             finished_at=datetime.now(UTC),
             session=session,
         )

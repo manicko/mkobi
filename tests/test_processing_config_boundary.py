@@ -253,25 +253,30 @@ class TestWorkerMutationOrder:
     async def test_t5_column_types_check_record_still_present(
         self, async_db_session
     ) -> None:
-        """T5 (ship-the-record shape): the validator's type-mismatch warning still fires.
+        """T5 (the record this block changed): a correctly-cast float column does not warn.
 
-        ``DataValidator._validate_column_types`` warns when a configured
-        ``column_types`` entry names a present column whose actual dtype does
-        not match the expected mapping. The worker's own cast guard is
-        ``if col_name in df.columns and col_type != "float":`` -- the ``float``
-        term is untouched by this block and PB-9 (``D-05-F``) owns its
-        resolution. This test pins the shipped state: a ``float``-configured
-        column that is not yet ``Float64`` still produces the validator's
-        warning record. A "the cast guard becomes true" assertion would be red
-        under O1 with the ``float`` term untouched, so it is deliberately not
-        written.
+        History, kept readable: this test was written by PB-8 to pin the shipped
+        state at the time -- ``DataValidator._validate_column_types`` warned
+        because the worker's cast guard carried ``and col_type != "float"`` and
+        the ``float`` term was deliberately left untouched, with **PB-9** and
+        ``D-05-F`` named as its owner. PB-9 removed that term and taught the cast
+        loop to produce ``Float64``, so the warning this assertion used to require
+        is no longer the truth: a declared ``{"revenue": "float"}`` column is now
+        cast and the validator finds a matching ``Float64`` dtype.
+
+        The assertion is therefore inverted, not deleted: the type-mismatch
+        warning must now be **absent** for a correctly-cast float column. A
+        genuinely mistyped column still warns -- pinned separately in
+        ``tests/test_validation_warning_logging.py`` -- so the signal was fixed,
+        not removed.
         """
         import tempfile
         from pathlib import Path
 
         dashboard, _graph, task_id = await self._seed_dashboard(async_db_session)
-        # ``revenue`` is inferred as Int64, and the configured type is "float":
-        # the validator's type correspondence check warns.
+        # ``revenue`` is inferred as Int64 from the CSV; the declared type is
+        # "float", so the cast loop now casts it to Float64 and the validator's
+        # type correspondence check finds a match instead of warning.
         settings = {"column_types": {"revenue": "float"}}
 
         with tempfile.NamedTemporaryFile(
@@ -289,12 +294,10 @@ class TestWorkerMutationOrder:
                 settings=settings,
                 db_session=async_db_session,
             )
-            # The record exists as today: the validator ran against the frame
-            # and warned about the configured-but-mismatched ``float`` column.
-            assert any(
+            assert not any(
                 "expected type 'float'" in record.getMessage()
                 for record in records
-            ), "DataValidator should have warned about the float type mismatch"
+            ), "a correctly-cast float column must not produce a type-mismatch warning"
         finally:
             _release_logs("mkobi.data.loaders.validator", records)
             Path(csv_path).unlink(missing_ok=True)
