@@ -1,18 +1,22 @@
 """Tests that a duplicate dashboard access grant is the repository's own no-op.
 
-Three concerns, in order: the sequential no-op contract in a single session, the
-race forced deterministically with two sessions from the session maker, and the
-declared interface contract. No test races two coroutines through SQLAlchemy's
-greenlet bridge: that hangs. A holder session and a second session with a fixed
-ordering are deterministic instead.
+Four concerns, in order: the sequential no-op contract in a single session, the
+race forced deterministically with two sessions from the session maker, a
+committed conflict forced through the production method's INSERT statement, and
+the declared interface contract. No test races two coroutines through
+SQLAlchemy's greenlet bridge: that hangs. A holder session and a second session
+with a fixed ordering are deterministic instead.
 """
 
 import inspect
+from collections.abc import Awaitable, Callable
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import delete, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.db.models import Dashboard, DashboardAccess, User
 from mkobi.db.repositories.access_repo import (
@@ -55,6 +59,108 @@ async def _delete_pair(session, user_id: UUID, dashboard_id: UUID, owner_id: UUI
     await session.execute(delete(Dashboard).where(Dashboard.id == dashboard_id))
     await session.execute(delete(User).where(User.id == user_id))
     await session.commit()
+
+
+class _CommitConflictingRowAfterFirstExecute:
+    """Session proxy that commits a competing row between two statements.
+
+    The production ``grant_access`` issues a leading SELECT and then an INSERT,
+    separated by an await point. A concurrent winner can commit inside that
+    window; the leading SELECT cannot see an uncommitted row, so the method's
+    INSERT is reached with the conflict already committed. This proxy forces
+    that exact ordering on a single coroutine -- two coroutines are never raced
+    through SQLAlchemy's greenlet bridge, which hangs -- while leaving the
+    production class unmodified: it controls only *when* the competing commit
+    happens, never the method's own statements. The SELECT still runs against
+    the real session and returns nothing; the competing commit lands before the
+    INSERT is issued.
+    """
+
+    def __init__(
+        self,
+        inner: AsyncSession,
+        commit_competing_row: Callable[[], Awaitable[None]],
+    ) -> None:
+        self._inner = inner
+        self._commit_competing_row = commit_competing_row
+        self._executes = 0
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate every other attribute to the wrapped session unchanged."""
+        return getattr(self._inner, name)
+
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:
+        """Run the wrapped statement, then commit the competitor once."""
+        result = await self._inner.execute(*args, **kwargs)
+        self._executes += 1
+        if self._executes == 1:
+            await self._commit_competing_row()
+        return result
+
+
+class TestCommittedConflictReachesTheProductionInsert:
+    """The production INSERT is reached with a conflict already committed.
+
+    The other production-method test commits the winner before calling
+    ``grant_access``, so the leading SELECT sees it and returns through the fast
+    path -- it never reaches the INSERT and cannot detect a broken INSERT.
+    Here the competitor commits *after* the leading SELECT and *before* the
+    INSERT, so only the conflict-tolerant INSERT can absorb it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_committed_conflict_is_absorbed_by_the_production_insert(
+        self, async_session_maker, test_user: dict
+    ) -> None:
+        """A conflict committed inside the TOCTOU window is a no-op, not a 500.
+
+        Against a read-then-insert implementation the INSERT raises
+        ``IntegrityError``/``23505`` on ``dashboard_access_pkey``; against the
+        conflict-tolerant INSERT it is absorbed and the stored row is returned.
+        """
+        repo = AccessRepository()
+        setup = async_session_maker()
+        dashboard, user = await _make_dashboard_and_user(setup, test_user["id"])
+        await setup.close()
+
+        loser = async_session_maker()
+        try:
+
+            async def commit_competing_row() -> None:
+                winner = async_session_maker()
+                try:
+                    await winner.execute(
+                        _conflict_tolerant_access_insert(
+                            user.id, dashboard.id, DashboardPermission.VIEW
+                        )
+                    )
+                    await winner.commit()
+                finally:
+                    await winner.close()
+
+            proxy = _CommitConflictingRowAfterFirstExecute(loser, commit_competing_row)
+            result = await repo.grant_access(
+                db=proxy,
+                user_id=user.id,
+                dashboard_id=dashboard.id,
+                permission=DashboardPermission.ADMIN,
+            )
+            await loser.commit()
+
+            assert isinstance(result, DashboardAccess)
+            assert result.user_id == user.id
+            assert result.dashboard_id == dashboard.id
+            # The committed winner's permission survives; the requested ADMIN
+            # never overwrites it.
+            assert result.permission == DashboardPermission.VIEW
+        finally:
+            await loser.rollback()
+            await loser.close()
+            cleanup = async_session_maker()
+            try:
+                await _delete_pair(cleanup, user.id, dashboard.id, test_user["id"])
+            finally:
+                await cleanup.close()
 
 
 class TestGrantTwiceIsANoOp:

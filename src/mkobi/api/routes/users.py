@@ -63,8 +63,10 @@ async def create_user_endpoint(
         UserRead: Model of the created user without password.
 
     Raises:
-        AppException 409: If email already taken.
-        AppException 422: If data validation failed.
+        AppException 422: If data validation failed, including a duplicate
+            email: the service raises ValueError for both the pre-check and
+            the unique-index race, and this route maps ValueError to
+            VALIDATION_ERROR. This endpoint returns no 409.
         AppException 500: On database error.
     """
     logger.info("Creating user: email=%s, role=%s", user_data.email, user_data.role)

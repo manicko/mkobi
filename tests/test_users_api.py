@@ -102,6 +102,11 @@ class TestUpdateUserRoleDeprecatedPut:
             )
             assert committed_role == UserRole.EDITOR
         finally:
+            # The request shares this session. A failed durability assertion
+            # leaves the uncommitted UPDATE holding a row lock, so release it
+            # before the cleanup DELETE or a regression would hang here
+            # instead of reporting red.
+            await async_db_session.rollback()
             await _delete_committed_email(async_session_maker, target_email)
 
 
