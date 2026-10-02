@@ -50,8 +50,17 @@ DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES = 5
 def _map_processing_error_to_code(error: Exception) -> str:
     """Map processing exception to ErrorCode string.
 
-    Analyzes exception type and message to determine appropriate error code
-    for RFC 7807 compliant error reporting. A rebuild that contended for the
+    Classifies by the exception's own code where one is available: an
+    ``AppException`` (or any exception exposing a ``code`` that is a member of
+    the project's :class:`ErrorCode`) is reported as that code, never by its
+    message text. This keeps a deliberate ``AppException`` -- such as the
+    ``VALIDATION_ERROR`` raised by :func:`_validate_processing_config` -- from
+    being overwritten by a substring match.
+
+    Exceptions with no usable code fall through to a substring table that
+    exists **only as a fallback** for code-less driver and library exceptions
+    (a ``SQLAlchemyError``, a Polars exception, a bare ``ValueError``), then to
+    the ``PROCESSING_FAILED`` default. A rebuild that contended for the
     dashboard's exclusion and timed out is reported as in-progress rather than
     failed.
 
@@ -61,11 +70,27 @@ def _map_processing_error_to_code(error: Exception) -> str:
     Returns:
         str: Error code string for error classification.
     """
-    # Must come first: classification must not depend on the driver's message text,
-    # and "another rebuild holds this dashboard" is in-progress, not failed.
+    # Code-first: an exception carrying a usable ErrorCode is classified by it.
+    # This must come before any message inspection so a deliberate AppException
+    # is never overwritten by the substring fallback below.
+    code = getattr(error, "code", None)
+    if isinstance(code, ErrorCode):
+        return str(code.value)
+    if isinstance(code, str):
+        try:
+            return str(ErrorCode(code).value)
+        except ValueError:
+            pass
+
+    # Must come first among code-less exceptions: classification must not depend
+    # on the driver's message text, and "another rebuild holds this dashboard"
+    # is in-progress, not failed.
     if is_lock_timeout_error(error):
         return str(ErrorCode.PROCESSING_IN_PROGRESS.value)
 
+    # --- Substring fallback for code-less driver and library exceptions ---
+    # Not the primary classifier: this table exists only for exceptions that
+    # carry no ErrorCode.
     error_msg = str(error).lower()
 
     # File not found errors

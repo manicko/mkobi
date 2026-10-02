@@ -53,6 +53,69 @@ logger = get_logger(__name__)
 CHUNK_SIZE = 8192
 
 
+def _handle_value_error(error: Exception) -> NoReturn:
+    """Raise a classified ``AppException`` for an upload admission failure.
+
+    Classifies by the exception's own code where one is available: an
+    ``AppException`` (or any exception exposing a ``code`` that is a member of
+    the project's :class:`ErrorCode`) is raised as that code. Exceptions with no
+    usable code fall through to a substring table that exists **only as a
+    fallback** for code-less driver and library exceptions, then to the
+    ``VALIDATION_ERROR`` default.
+
+    Args:
+        error: The exception raised during upload admission.
+
+    Raises:
+        AppException: Always, carrying the classified error code.
+    """
+    logger.warning("Validation error during upload", exc_info=True)
+
+    # Code-first: an exception carrying a usable ErrorCode is classified by it.
+    code = getattr(error, "code", None)
+    if isinstance(code, ErrorCode):
+        raise AppException(code=code, detail=str(error)) from error
+    if isinstance(code, str):
+        try:
+            raise AppException(code=ErrorCode(code), detail=str(error)) from error
+        except ValueError:
+            pass
+
+    # --- Substring fallback for code-less driver and library exceptions ---
+    # Not the primary classifier: this table exists only for exceptions that
+    # carry no ErrorCode.
+    error_msg = str(error).lower()
+    if "mime" in error_msg or "invalid mime" in error_msg:
+        raise AppException(
+            code=ErrorCode.INVALID_FILE_TYPE,
+            detail="Invalid file type",
+        ) from error
+    elif (
+        "format" in error_msg
+        or "invalid format" in error_msg
+        or "extension" in error_msg
+    ):
+        raise AppException(
+            code=ErrorCode.INVALID_FILE_TYPE,
+            detail="Invalid file format",
+        ) from error
+    elif "size" in error_msg or "exceeds" in error_msg or "max" in error_msg:
+        raise AppException(
+            code=ErrorCode.FILE_TOO_LARGE,
+            detail="File size exceeds limit",
+        ) from error
+    elif "limit" in error_msg or "rate limit" in error_msg:
+        raise AppException(
+            code=ErrorCode.RATE_LIMIT_EXCEEDED,
+            detail="Rate limit exceeded",
+        ) from error
+    else:
+        raise AppException(
+            code=ErrorCode.VALIDATION_ERROR,
+            detail="Validation error",
+        ) from error
+
+
 @router.post(
     "/{dashboard_id}",
     response_model=UploadResponse,
@@ -87,40 +150,6 @@ async def upload_file_endpoint(
             "user_id": str(current_user.id),
         },
     )
-
-    def _handle_value_error(e: ValueError) -> NoReturn:
-        """Handle ValueError by mapping to appropriate AppException with ErrorCode."""
-        logger.warning("Validation error during upload", exc_info=True)
-        error_msg = str(e).lower()
-        if "mime" in error_msg or "invalid mime" in error_msg:
-            raise AppException(
-                code=ErrorCode.INVALID_FILE_TYPE,
-                detail="Invalid file type",
-            ) from e
-        elif (
-            "format" in error_msg
-            or "invalid format" in error_msg
-            or "extension" in error_msg
-        ):
-            raise AppException(
-                code=ErrorCode.INVALID_FILE_TYPE,
-                detail="Invalid file format",
-            ) from e
-        elif "size" in error_msg or "exceeds" in error_msg or "max" in error_msg:
-            raise AppException(
-                code=ErrorCode.FILE_TOO_LARGE,
-                detail="File size exceeds limit",
-            ) from e
-        elif "limit" in error_msg or "rate limit" in error_msg:
-            raise AppException(
-                code=ErrorCode.RATE_LIMIT_EXCEEDED,
-                detail="Rate limit exceeded",
-            ) from e
-        else:
-            raise AppException(
-                code=ErrorCode.VALIDATION_ERROR,
-                detail="Validation error",
-            ) from e
 
     try:
         config = get_config()

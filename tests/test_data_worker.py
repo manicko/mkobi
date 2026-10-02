@@ -686,7 +686,13 @@ class TestDataWorker:
 
 
 class TestProcessingErrorClassification:
-    """Classification of processing failures by the worker's error mapper."""
+    """Classification of processing failures by the worker's error mapper.
+
+    The mapper is code-first: an exception carrying a usable ``ErrorCode`` is
+    classified by that code. Only exceptions with no usable code (a driver's
+    ``SQLAlchemyError``, a Polars exception, a bare ``ValueError``) fall through
+    to the documented substring table and then to the default.
+    """
 
     @staticmethod
     def _dbapi_error(sqlstate: str) -> DBAPIError:
@@ -704,6 +710,72 @@ class TestProcessingErrorClassification:
         """Another sqlstate is untouched: the new branch is narrow."""
         error = self._dbapi_error("23505")
         assert _map_processing_error_to_code(error) == ErrorCode.PROCESSING_FAILED.value
+
+    @pytest.mark.parametrize(
+        ("error", "expected"),
+        [
+            # The finding: _validate_processing_config raises this AppException,
+            # and the subclass's default detail ("Validation error") carries no
+            # substring the old table matched, so it was overwritten with
+            # PROCESSING_FAILED. Code-first must report the code it carries.
+            pytest.param(
+                AppException(code=ErrorCode.VALIDATION_ERROR, detail="Processing config has empty groupby column name"),
+                ErrorCode.VALIDATION_ERROR,
+                id="app_exception_validation_error",
+            ),
+            # A missing file is raised before CSVLoader.load_csv's blanket try:
+            # block, so it reaches the mapper unwrapped as FileNotFoundError and
+            # maps to FILE_UPLOAD_ERROR -- not "encoding" as the audit states.
+            pytest.param(
+                FileNotFoundError("File not found: /tmp/x.csv"),
+                ErrorCode.FILE_UPLOAD_ERROR,
+                id="file_not_found_error",
+            ),
+            # Code-less exception: the substring fallback still classifies it.
+            pytest.param(
+                ValueError("File too large: 200MB exceeds limit"),
+                ErrorCode.FILE_TOO_LARGE,
+                id="value_error_too_large_fallback",
+            ),
+            # An AppException carrying FILE_TOO_LARGE is classified by its code,
+            # independent of message text.
+            pytest.param(
+                AppException(code=ErrorCode.FILE_TOO_LARGE, detail="nope"),
+                ErrorCode.FILE_TOO_LARGE,
+                id="app_exception_file_too_large",
+            ),
+            # Nothing to go on: default.
+            pytest.param(
+                RuntimeError("something went sideways"),
+                ErrorCode.PROCESSING_FAILED,
+                id="unclassifiable_default",
+            ),
+        ],
+    )
+    def test_map_processing_error_is_code_first_then_fallback(self, error, expected):
+        """Every row of the (exception, code) table classifies as expected."""
+        assert _map_processing_error_to_code(error) == expected.value
+
+    def test_map_processing_error_emitted_codes_are_error_code_members(self):
+        """Classifier output can never drift from the ErrorCode enum.
+
+        Every code the mapper can emit is enumerated here explicitly; the test
+        fails if the classifier grows a branch that returns a string which is
+        not a member of ErrorCode.
+        """
+        emitted = [
+            _map_processing_error_to_code(self._dbapi_error(LOCK_TIMEOUT_SQLSTATE)),
+            _map_processing_error_to_code(AppException(code=ErrorCode.VALIDATION_ERROR, detail="x")),
+            _map_processing_error_to_code(FileNotFoundError("x")),
+            _map_processing_error_to_code(ValueError("File too large: x")),
+            _map_processing_error_to_code(ValueError("encoding problem")),
+            _map_processing_error_to_code(ValueError("failed to read csv parse")),
+            _map_processing_error_to_code(ValueError("missing required columns")),
+            _map_processing_error_to_code(ValueError("validation failed")),
+            _map_processing_error_to_code(RuntimeError("unknown")),
+        ]
+        valid = {code.value for code in ErrorCode}
+        assert set(emitted) <= valid, f"Unmapped codes emitted: {set(emitted) - valid}"
 
 
 # --- _validate_processing_config tests ---
