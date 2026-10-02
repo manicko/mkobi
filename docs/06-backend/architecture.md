@@ -136,6 +136,12 @@ write on the `users` row, and a Redis **user-level** revocation marker
 (`core/security.py::revoke_all_user_tokens`). Since the database half became **durable** for the
 first time, the authority for a deactivated account is **split**, and the split is load-bearing:
 
+> **The marker is not deactivation-specific.** `revoke_all_user_tokens` also writes it on a
+> successful password change and on a successful admin password reset, with a different intent:
+> rotation withdraws the credentials that predate the rotation and nothing more, while deactivation
+> additionally blocks every **future** session through the `is_active` checks. The comparison
+> semantics below are shared by all three writers.
+
 | Surface | Authority | Consequence |
 | ------- | --------- | ----------- |
 | Every **protected** endpoint, via `api/deps.py::get_current_user_dependency` | the **database row** — the dependency re-reads the user on **every** authenticated request and rejects `is_active is False` | a committed deactivation stops the user immediately, independently of Redis |
@@ -204,6 +210,22 @@ Required modules: `aiofiles`, `fastapi`, `sqlalchemy`, `httpx`, `pydantic`, `pol
   the `ON CONFLICT` clause, **not** by a SAVEPOINT or any nested transaction: there is no
   nested transaction on this path, and the surrounding top-level transaction commits
   unconditionally — it either inserted the row or deliberately did nothing
+- **The outcome is distinguished, not assumed.** The insert's `rowcount` is read inside the same
+  transaction block, so "created" and "already existed" are different facts with different
+  consequences:
+
+  | Outcome | Log | Effect |
+  | ------- | --- | ------ |
+  | Inserted (`rowcount > 0`) | `INFO` — `Admin user created: <email>` | proceed |
+  | Conflict on an existing **admin** | `INFO` — `Admin user already existed: <email> (id=…, role=admin)` | proceed |
+  | Conflict on an existing **non-admin** occupant | `WARNING` in development, **`ValueError` in production** | production refuses to start |
+  | Conflict reported but no row readable | `INFO` — `Admin user already existed: <email>` | proceed, and the log says what happened rather than claiming a creation |
+
+  The non-admin occupant is the case that matters: the `ON CONFLICT` clause silently declines to
+  promote anyone, so a production tier whose configured admin address is held by a viewer would
+  otherwise start up "successfully" with **no** admin. It now refuses, with the same
+  environment scoping as the weak-password guard below. Only `id` and `role` are read back —
+  `password_hash` is neither fetched nor compared — and **no credential is ever logged**.
 - Credentials sourced from `ADMIN_USERNAME` and `ADMIN_PASSWORD` environment variables
 - A known-placeholder password **raises** in the production tier and only warns elsewhere; a
   weak *username* only warns, because `Settings.validate_admin_credentials()` and this function

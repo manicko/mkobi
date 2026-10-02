@@ -59,11 +59,13 @@ Browser                          FastAPI
   │ ──────────────────────────────►│
   │                                │ ┌──────────────────────┐
   │                                │ │ Rate limit check      │
-  │                                │ │ (5 attempts / 5 min)  │
+  │                                │ │ (5 / 5 min per email, │
+  │                                │ │  50 / 5 min per peer) │
   │                                │ └──────────┬───────────┘
   │                                │            │
   │                                │ ┌──────────▼───────────┐
-  │                                │ │ Verify bcrypt hash     │
+  │                                │ │ Verify bcrypt hash    │
+  │                                │ │ Check is_active       │
   │                                │ └──────────┬───────────┘
   │                                │            │
   │                                │ ┌──────────▼───────────┐
@@ -90,7 +92,8 @@ Browser                          FastAPI
 2. Form is validated via Zod (`loginSchema`): email format, password min 6 characters.
 3. `POST /api/v1/auth/login` is called via Axios.
 4. On success (`200`): token is stored, user profile (including `display_name`) is set in `useAuth` state, redirect to `/dashboards`.
-5. On failure (`401`/`429`): error alert is displayed.
+5. On failure (`401`/`429`): error alert is displayed. A `401` with detail `Invalid credentials` covers a wrong password **and** a deactivated account alike — the two are deliberately indistinguishable, so this screen cannot be used to discover which accounts exist.
+6. On failure (`503`): a backing store — the revocation store in particular — could not be read. The interceptor shows a toast and does **not** sign the user out — see [Session Expiration Handling](#session-expiration-handling).
 
 ## Registration Request Flow
 
@@ -130,7 +133,7 @@ Browser              FastAPI              Database
 3. `POST /api/v1/auth/register-request` is called.
 4. On success (`201`): success message is displayed.
 5. Admin reviews and approves the request via the Admin Panel.
-6. On approval, a temporary password is generated and returned to the admin.
+6. On approval, a temporary password is generated and a **retrieval token** is returned to the admin. The plaintext password is **never** in the approval response; the admin fetches it in a second, one-time call (`POST /api/v1/admin/temp-passwords` with the handle in the request body). The approval response also carries `credential_stored`: if it is `false`, the temporary password never reached the store and the returned token will not work, so the approval has to be repeated.
 
 ## Role-Based Access Control
 
@@ -198,9 +201,22 @@ When a session expires (token expires or is invalidated):
 
 1. The next API call returns `401`.
 2. The Axios response interceptor catches the `401`.
-3. The interceptor attempts a **silent refresh** by calling `POST /api/v1/auth/refresh` with `withCredentials: true` (sending the httpOnly cookie).
+3. The interceptor attempts a **silent refresh** by calling `POST /api/v1/auth/refresh` with `withCredentials: true` (sending the httpOnly cookie). The response **rotates the refresh cookie**, so the browser must accept the new one.
 4. **On successful refresh:** The new access token is stored in memory, and the original request is retried. The user experiences no interruption.
-5. **On failed refresh** (no cookie, invalid cookie, user deleted): The token is removed from storage, an error toast is displayed ("Session expired. Please login again."), and the user is redirected to `/login`.
+5. **On failed refresh** (no cookie, invalid or revoked cookie, a credential predating the user's revocation marker, a deactivated account, a deleted user): The token is removed from storage, an error toast is displayed ("Session expired. Please login again."), and the user is redirected to `/login`.
+
+### A Store Outage Is Not an Expiration
+
+A refresh that fails because the **revocation store cannot be read** answers `503
+SERVICE_UNAVAILABLE`, not `401`. The interceptor treats a `503` as an ordinary error: it raises a
+toast and rejects the request, but it does **not** clear the token and does **not** redirect to
+`/login`.
+
+This matters because the sign-out path is triggered by the status `401`, not by the message. Were a
+Redis degradation reported as a credential failure, every open SPA in the deployment would be
+redirected to the login screen and told its session had expired — a self-inflicted mass sign-out
+caused by an infrastructure blip. "The store cannot answer" must never be presented to the client
+as "your session is not valid".
 
 ### Concurrent 401 Handling
 
@@ -218,6 +234,20 @@ On app mount, `useAuth` checks if an access token exists in memory. If not, it a
 ## Force Password Change Flow
 
 When a user's `force_password_change` flag is `true` (set by admin password reset or registration approval), the system enforces a password change before granting access to the dashboard.
+
+The redirect below is a **convenience, not the control**. The flag is enforced **server-side** in
+`get_current_user_dependency()`, the single dependency every protected route passes through: a
+flagged user is refused on every protected route with `403 PERMISSION_DENIED` except a named
+allow-list — `POST /api/v1/auth/change-password`, `POST /api/v1/auth/refresh`,
+`POST /api/v1/auth/logout`, and `GET /api/v1/auth/me`. The allow-list keeps the completion path, the
+silent refresh, logout, and the flag-carrying `/auth/me` reachable; without it a flagged user would
+be trapped or the redirect mechanism itself would break. The flag is read from the already-loaded
+user row, so the gate adds **no extra query**.
+
+`403` is used rather than `401` for exactly this UI reason: the axios interceptor answers any `401`
+with a silent refresh and, on failure, a sign-out back to `/login`, so a `401` refusal would become
+a redirect loop instead of a redirect to the change-password page. A `403` produces a toast and
+leaves the current location alone.
 
 ### Login Redirect
 
@@ -240,6 +270,10 @@ The `ChangePasswordPage` reads the `?force=true` query parameter:
 - **Info Alert** is shown: "Password change is required. Please set a new password to continue."
 - **Cancel button** is disabled — the user must change their password to proceed.
 - On successful password change, the backend clears the `force_password_change` flag, and the user is redirected to `/profile`.
+- **The backend also revokes every token this user holds**, so the access token that performed the
+  change is withdrawn with the rest. The redirect to `/profile` therefore needs a fresh login: the
+  SPA's next request is refused until the user authenticates with the new password. This is the
+  rotation described in [Authentication API → Change Password](../01-auth/auth-api.md#8-change-password).
 
 ---
 

@@ -230,9 +230,9 @@ Admin-triggered password reset. Generates a temporary password for the target us
 
 | Status | Condition                        | Detail                                    |
 | ------ | -------------------------------- | ----------------------------------------- |
-| `400`  | Admin attempts self-reset        | `Admin cannot reset own password`         |
-| `400`  | User not found                   | `User not found`                          |
-| `500`  | Unexpected server error          | `Error resetting user password`           |
+| `422`  | Admin attempts self-reset        | `Admin cannot reset own password` (`VALIDATION_ERROR`) |
+| `404`  | User not found                   | `User not found` (`USER_NOT_FOUND`)      |
+| `500`  | Unexpected server error          | `Error resetting user password` (`INTERNAL_ERROR`) |
 
 **Side effects:**
 - Generates a 16-character cryptographically secure temporary password (letters + digits, at least one of each)
@@ -241,6 +241,13 @@ Admin-triggered password reset. Generates a temporary password for the target us
 - Stores the **plaintext** temporary password in Redis via `TempPasswordStore` under the `retrieval_token`
 - Returns `retrieval_token` (UUID) in the response instead of `temp_password`
 - Returns `credential_stored`: `false` when the Redis write failed or no store was wired, in which case the returned `retrieval_token` is **not** a working handle and a second reset is required; the status stays `200` because the password change itself is committed and durable
+- **Revokes the target user's existing tokens.** Once the new password is committed every credential
+  the target holds is stale, so a timestamped user-level marker is written **after** the commit —
+  the same ordering and the same non-transactional-write caveat as
+  `PATCH /admin/users/{id}/active`. A token issued before the reset is refused; the target logs in
+  again with the new credential and works immediately. This is **orthogonal** to `credential_stored`:
+  the reset landed either way, even when the temporary-password handoff did not. See
+  [Authentication API → Change Password](../01-auth/auth-api.md#8-change-password).
 
 > **Security:** The temporary password is **never returned in the response**. Instead, a `retrieval_token` is returned. The admin retrieves the password via `POST /api/v1/admin/temp-passwords` with the handle in the body when needed. This ensures the plaintext password never appears in API response logs, and the handle stays out of the application access log. The password is stored in Redis with TTL (default: 24h, configurable via `TEMP_PASSWORD_TTL_SECONDS`) and is deleted upon retrieval (single-use).
 
@@ -387,7 +394,7 @@ Approve a pending registration request. Creates a new user account with a random
 | ------ | ---------------------------- | ---------------------------- |
 | `403`  | Caller is not admin          | Forbidden                    |
 | `404`  | Request not found            | `Registration request not found` |
-| `409`  | Request already processed    | `Request is not pending`     |
+| `409`  | Request already processed    | `Request already <status>` (`DUPLICATE_RESOURCE`), where `<status>` is the request's current status — for example `Request already approved` |
 
 **Side effects:**
 - Creates a new user in the `users` table with the email from the request
@@ -396,6 +403,10 @@ Approve a pending registration request. Creates a new user account with a random
 - Updates the `registration_requests` record: status → `approved`, `reviewed_by` → admin user ID, `reviewed_at` → current timestamp
 - **Commits**, and only then stores the plaintext temporary password in Redis via `TempPasswordStore` under the `retrieval_token`
 - The response also carries `credential_stored`, which is `false` when the Redis write faulted or no store was wired
+
+The same `409` covers a request that exists but is not `pending`, and a request that disappeared
+between the existence check and the service call; the detail interpolates the status the route
+actually read, so the client is told which state it found.
 
 The first four steps happen inside a single transaction owned by
 `AuthService.approve_registration_request`; the route does not open, commit or
@@ -436,7 +447,7 @@ Reject a pending registration request.
 | ------ | ---------------------------- | ---------------------------- |
 | `403`  | Caller is not admin          | Forbidden                    |
 | `404`  | Request not found            | `Registration request not found` |
-| `409`  | Request already processed    | `Request is not pending`     |
+| `409`  | Request already processed    | `Request already <status>` (`DUPLICATE_RESOURCE`) |
 
 **Side effects:**
 - Updates the `registration_requests` record: status → `rejected`, `reviewed_by` → admin user ID, `reviewed_at` → current timestamp
@@ -473,8 +484,9 @@ Retrieve a one-time temporary password by its retrieval token. Admin only. The p
 
 | Status | Condition                                | Detail                                        |
 | ------ | ---------------------------------------- | --------------------------------------------- |
-| `404`  | Token not found / expired / already used | `Temporary password not found or already retrieved` |
-| `503`  | Temporary-password store unreachable     | Temporary password store is temporarily unavailable |
+| `403`  | Caller is not admin                       | Forbidden (`PERMISSION_DENIED`)               |
+| `404`  | Token not found / expired / already used | `Temporary password not found or already retrieved` (`NOT_FOUND`) |
+| `503`  | Temporary-password store unreachable     | Temporary password store is temporarily unavailable (`SERVICE_UNAVAILABLE`) |
 
 An expired, already-retrieved and never-existed token are indistinguishable by
 design and all answer `404`; a **store fault is not one of them** and answers
@@ -608,48 +620,49 @@ Browser (User)        FastAPI              Database
   │                     │                     │
   │                     │  Generate temp      │
   │                     │  password           │
-  │                     │  (secrets.token_    │
-  │                     │   urlsafe(16))      │
+  │                     │  (secrets.choice)   │
   │                     │                     │
-   │                     │  INSERT users       │
-   │                     │────────────────────►│
-   │                     │  (bcrypt hash of    │
-   │                     │   temp_password,    │
-   │                     │   force_password_   │
-   │                     │   change=TRUE)      │
-   │                     │◄────────────────────│
-   │                     │                     │
-   │                     │  UPDATE             │
+  │                     │  INSERT users       │
+  │                     │────────────────────►│
+  │                     │  (bcrypt hash of    │
+  │                     │   temp_password,    │
+  │                     │   force_password_   │
+  │                     │   change=TRUE)      │
+  │                     │◄────────────────────│
+  │                     │                     │
+  │                     │  UPDATE             │
   │                     │  registration_      │
   │                     │  requests           │
   │                     │────────────────────►│
   │                     │  (status=approved,  │
-   │                     │   reviewed_by,      │
-   │                     │   reviewed_at)      │
-   │                     │◄────────────────────│
-   │                     │                     │
-   │                     │  COMMIT             │
-   │                     │────────────────────►│
-   │                     │◄────────────────────│
-   │                     │                     │
-   │                     │  SET temp_pwd:{     │
-   │                     │  {token} in Redis   │
-   │                     │  — AFTER the commit,│
-   │                     │    non-transactional│
-   │                     │                     │
-    │  200 OK             │                     │
-   │  { message,         │                     │
-   │    user_id,         │                     │
-   │    retrieval_token }│                     │
-   │◄────────────────────│                     │
-   │                     │                     │
-   │  Admin retrieves    │                     │
-   │  temp_password via  │                     │
-   │  POST /admin/temp-  │                     │
-   │  passwords          │                     │
-   │  (handle in body)   │                     │
-   │  and communicates   │                     │
-   │  it to new user     │                     │
+  │                     │   reviewed_by,      │
+  │                     │   reviewed_at)      │
+  │                     │◄────────────────────│
+  │                     │                     │
+  │                     │  COMMIT             │
+  │                     │────────────────────►│
+  │                     │◄────────────────────│
+  │                     │                     │
+  │                     │  SET temp_pwd:{     │
+  │                     │  {token} in Redis   │
+  │                     │  — AFTER the commit,│
+  │                     │    non-transactional│
+  │                     │                     │
+  │  200 OK             │                     │
+  │  { message,         │                     │
+  │    user_id,         │                     │
+  │    retrieval_token, │                     │
+  │    credential_      │                     │
+  │    stored }         │                     │
+  │◄────────────────────│                     │
+  │                     │                     │
+  │  Admin retrieves    │                     │
+  │  temp_password via  │                     │
+  │  POST /admin/temp-  │                     │
+  │  passwords          │                     │
+  │  (handle in body)   │                     │
+  │  and communicates   │                     │
+  │  it to new user     │                     │
 ```
 
 ### Approval Sequence and Transaction Ownership
@@ -668,7 +681,7 @@ COMMIT
       ↓
 store temp password in Redis   ← deliberately after the commit
       ↓
-return { message, user_id, retrieval_token }
+return { message, user_id, retrieval_token, credential_stored }
 ```
 
 The ordering is the point. Redis is not transactional, so a credential written
@@ -696,6 +709,14 @@ temporary password actually reached Redis under the returned `retrieval_token`.
 It is `false` whenever the store swallowed a Redis fault **or** no store was
 wired. A `false` value means the token is **not** a working handle — the account
 exists with a new password nobody can read, and a second reset is required.
+
+**`credential_stored` reports; it does not prevent.** The endpoint still returns a
+`retrieval_token` on a `false`, so an administrator can hold a handle for a
+credential that was never stored. Nothing consumes `credential_stored`
+automatically: reading it is the admin's responsibility, and the failure mode it
+describes — an account whose password nobody can read — is recoverable only
+because a second reset is possible. That is the accepted cost of failing open
+after a commit, and it is recorded rather than hidden.
 Other admin routes still commit in the transport layer; that inconsistency is
 recorded, not resolved here.
 
@@ -707,7 +728,7 @@ recorded, not resolved here.
 When a registration request is approved, `AuthService` generates a cryptographically secure 16-character temporary password (letters + digits, at least one of each) using its own private `_generate_temp_password()` helper. Generation is internal to the service: the route neither calls the helper nor handles the plaintext password. This password:
 
 - Is generated using `secrets.choice(string.ascii_letters + string.digits)` with up to 3 attempts to produce a password passing Pydantic validation
-- Is **not** returned in plaintext by the approval response; that response carries a `retrieval_token` plus `credential_stored`, and the password is fetched separately from `GET /api/v1/admin/temp-passwords/{retrieval_token}`
+- Is **not** returned in plaintext by the approval response; that response carries a `retrieval_token` plus `credential_stored`, and the password is fetched separately from `POST /api/v1/admin/temp-passwords` with the handle in the request body
 - Is stored as a bcrypt hash in the `users` table (never in plaintext)
 - The user's `force_password_change` flag is set to `True`, requiring a password change on first login
 - Must be communicated to the new user by the admin through an available channel
@@ -732,7 +753,7 @@ Displays a table of all users with the ability to change roles, reset passwords,
 **Related API endpoints:**
 - `GET /api/v1/admin/users` — List all users
 - `PATCH /api/v1/admin/users/:id/role` — Update role (body: `{"role": "editor"}`)
-- `POST /api/v1/admin/users/:id/reset-password` — Reset password (returns `{ message, user_id, retrieval_token }`)
+- `POST /api/v1/admin/users/:id/reset-password` — Reset password (returns `{ message, user_id, retrieval_token, credential_stored }`)
 - `DELETE /api/v1/admin/users/:id` — Delete user
 
 ### Registration Requests (`/admin`)
@@ -747,7 +768,7 @@ Displays pending registration requests with approve/reject actions.
 
 **Related API endpoints:**
 - `GET /api/v1/admin/registration-requests` — List requests
-- `POST /api/v1/admin/registration-requests/:id/approve` — Approve (returns `{ message, user_id, retrieval_token }`)
+- `POST /api/v1/admin/registration-requests/:id/approve` — Approve (returns `{ message, user_id, retrieval_token, credential_stored }`)
 - `POST /api/v1/admin/registration-requests/:id/reject` — Reject
 - `POST /api/v1/admin/temp-passwords` — Retrieve temporary password (admin only, one-time; handle in body)
 - `GET /api/v1/admin/temp-passwords/{retrieval_token}` — Deprecated alias, removed in release 1.0.9

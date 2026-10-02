@@ -41,15 +41,36 @@ Rate limiting is applied to sensitive endpoints to prevent brute-force attacks a
 
 | Endpoint | Rate Limit | Scope |
 | --- | --- | --- |
-| `POST /api/v1/auth/login` | 5 attempts per 5 minutes per email, 50 per 5 minutes per IP | Per email and per IP |
-| `POST /api/v1/auth/login/form` | 5 attempts per 5 minutes per email, 50 per 5 minutes per IP | Per email and per IP |
-| `POST /api/v1/auth/register-request` | 3 attempts per hour per email, 30 per hour per IP | Per email and per IP |
+| `POST /api/v1/auth/login` | 5 attempts per 5 minutes per email, 50 per 5 minutes per peer | Per identifier and per peer |
+| `POST /api/v1/auth/login/form` | 5 attempts per 5 minutes per email, 50 per 5 minutes per peer | Per identifier and per peer |
+| `POST /api/v1/auth/refresh` | 10 attempts per 5 minutes per presented session (cookie digest), 100 per 5 minutes per peer | Per session and per peer |
+| `POST /api/v1/auth/register-request` | 3 attempts per hour per email, 30 per hour per peer | Per identifier and per peer |
 | `POST /api/v1/upload/:dashboard_id` | Configured via env | Per user |
 | `POST /api/v1/upload/:dashboard_id/process` | Configured via env | Per user |
 
-### Email Enumeration Mitigation
+The refresh identifier is a digest of the presented cookie value, not the value itself, so no
+credential is ever written into a rate-limit key.
 
-Login rate limiting uses a **dual bound**: a per-identifier key (the submitted email) **and** a per-peer key (the client IP). The per-identifier bound stops credential guessing at one account; the per-peer ceiling is a coarse abuse bound that a botnet cannot escape by rotating accounts. The per-peer ceiling is set to **10x** the per-identifier bound at every auth site, so a shared-egress population (a NAT or gateway) tolerates ten times one user's failures before the peer bound engages, instead of being locked out when one user exhausts their own budget.
+### Dual Bound [HIGH-RISK]
+
+Every auth site enforces two bounds at **different** thresholds: a per-identifier key **and** a
+per-peer key (the client IP). The per-identifier bound stops credential guessing at one account;
+the per-peer ceiling is a coarse abuse bound that a botnet cannot escape by rotating accounts. The
+peer ceiling is **10x** the identifier bound at every site, so a shared-egress population (a NAT or
+gateway) tolerates ten times one user's failures before the peer bound engages, instead of being
+locked out when one user exhausts their own budget. Both bounds are enforced in one shared helper,
+`_enforce_dual_rate_limit` in `src/mkobi/api/routes/auth.py`, with the key format defined once in
+`_rate_limit_keys`; the 10x relationship is a stated ratio rather than three unrelated literals.
+
+Because the identifier is the submitted email rather than the peer alone, a caller cannot infer
+whether an address is registered by watching which key is rate-limited.
+
+Two surfaces are **excluded** from the dual bound and keep their own single, peer-keyed limit:
+`POST /api/v1/client-errors` and `POST /api/v1/upload/:dashboard_id`. They belong to a later phase
+and are deliberately not migrated; `_rate_limit_keys` does not cover them.
+
+A request whose client peer is absent or unparseable falls back to a shared `unknown` sentinel
+bucket rather than raising — a malformed peer is still rate-limited and can never become a bypass.
 
 ### Rate Limiter Failure Behavior [HIGH-RISK]
 
@@ -209,8 +230,15 @@ Registration requests are checked against a configurable email domain blocklist:
   - At least one digit (`0-9`)
 - Frontend Zod schema also enforces these rules for UX (real-time feedback)
 - Password change requires current password verification
-- Users remain logged in after password change (token is not invalidated by password change alone)
-- Registration approval generates a cryptographically random temporary password via `secrets.token_urlsafe(16)`
+- **A successful password change revokes the user's existing sessions.** The committed change
+  invalidates the old credential, so every access and refresh token issued **at or before** it is
+  refused on its next use. The revocation is a non-transactional Redis write placed **after** the
+  service's commit — the same ordering `PATCH /admin/users/{user_id}/active` uses — so a rollback
+  can never leave a live marker behind. A session minted **after** the change (by logging in again
+  with the new password) is newer than the marker and works immediately, so this is a rotation,
+  not a lock-out. See [Token Revocation](#token-revocation).
+- Registration approval generates a cryptographically random 16-character temporary password
+  (letters + digits, at least one of each) with `secrets.choice`
 
 ---
 
@@ -234,21 +262,49 @@ Tokens can be immediately revoked before their natural expiration. This is imple
 
 | Trigger | Tokens Revoked | Mechanism |
 | --- | --- | --- |
-| `POST /api/v1/auth/logout` | Access token + refresh token | Both JTIs added to Redis blacklist with TTL = remaining token lifetime |
-| User deactivation (`is_active=false`) | All future requests rejected | `get_current_user_dependency()` checks `is_active` on every request |
+| `POST /api/v1/auth/logout` | Access token + refresh token | Both JTIs added to the per-`jti` Redis blacklist with TTL = remaining token lifetime |
+| Password change (`POST /api/v1/auth/change-password`) | Every credential issued at or before the change | Timestamped user-level marker written **after** the service's commit |
+| Admin password reset (`POST /api/v1/admin/users/{user_id}/reset-password`) | Every credential of the **target** issued at or before the reset | Same marker, same ordering |
+| User deactivation (`is_active=false`) | Every credential issued at or before the deactivation, **plus every future request** | Same marker, plus the `is_active` checks on both token-issuing paths and on the protected gate |
+
+### Two Blacklist Shapes
+
+| Shape | Key | Value | Used by |
+| --- | --- | --- | --- |
+| Per-`jti` | `token_blacklist:{jti}`, `refresh_token_blacklist:{jti}` | literal `"revoked"` | Logout and explicit single-token revocation |
+| Per-user marker | `user_tokens_revoked:{user_id}` | the epoch **millisecond** of the revocation | Password rotation and deactivation |
+
+The marker is **not** a blanket lock-out. A credential is rejected only when its `iat` is **at or
+before** the marker, so a token minted after the withdrawal works immediately and **no marker
+clearing is needed** — including on the reactivate path, which never clears the marker. Two arms
+**fail closed**: a marker value that is not an integer, and a credential with no usable `iat`. Both
+are refused rather than admitted, so a rolling deploy that has not yet restarted cannot re-admit a
+withdrawn session. Millisecond precision is load-bearing for the same reason: at one-second
+granularity a re-login in the same second as the rotation would share the marker's instant and be
+rejected by that comparison.
+
+The marker TTL is `max(access_ttl, refresh_ttl)` — it only has to outlive the oldest credential
+that can still be presented, and nothing issued after it is affected.
+
+`POST /api/v1/auth/refresh` **rotates the refresh cookie** on every successful refresh. The
+presented token's `jti` is deliberately **not** revoked, so a previous cookie stays usable until its
+own TTL expires. Reuse detection (revoking the presented `jti` when a new one is minted) is
+**not implemented**: it would add a server-side rejection path whose false positive — two tabs
+refreshing concurrently — is a client concern. The per-`jti` blacklists are unchanged by any of this.
 
 ### Blacklist Details
 
 - **Access token blacklist:** Redis key `token_blacklist:{jti}` with `SETEX` TTL = access token remaining seconds
 - **Refresh token blacklist:** Redis key `refresh_token_blacklist:{jti}` with `SETEX` TTL = refresh token remaining seconds
 - **Auto-expiry:** Blacklist entries expire automatically after the token would have expired naturally, preventing indefinite Redis growth
-- **Auth check:** `is_token_revoked()` is called in `get_current_user_dependency()` on every authenticated request; `is_refresh_token_revoked()` is called during token refresh
+- **Auth check:** `is_token_revoked()` is called in `get_current_user_dependency()` on every authenticated request; `is_refresh_token_revoked()` and `is_user_tokens_revoked()` are called during token refresh
 
 ### Security Properties
 
 - Revoked tokens are rejected immediately with HTTP 401, even if they have not yet expired
 - Both access and refresh tokens can be individually revoked
 - The blacklist is checked before any business logic executes (in the auth dependency)
+- Rotating a credential withdraws **every** session the user holds, including the one that made the change. The caller must log in again with the new credential; that is the intended effect, not an oversight.
 
 ### Revocation-Read Failure Behavior [HIGH-RISK]
 
@@ -260,6 +316,26 @@ A fault reading the revocation store is a **dependency outage**, not a credentia
 | `POST /api/v1/auth/refresh` | 401 `TOKEN_REVOKED` if revoked, otherwise proceeds | 503 `SERVICE_UNAVAILABLE` |
 
 > A Redis outage therefore produces **`503`, not a mass `401`**. Converting a store fault into `401` would turn a Redis degradation into an API-wide sign-out, because the SPA answers any `401` with a silent refresh and, on failure, a sign-out back to `/login`. The "cannot answer" case must never be blurred into "the answer is no". The value semantics of the readers are unchanged: the per-`jti` readers keep their literal `"revoked"` + `exists` semantics, and the user-level marker keeps its timestamped comparison with both fail-closed arms.
+
+### Account Deactivation
+
+`is_active` is authoritative on **both token-issuing paths**, not only on the protected gate:
+
+- `POST /api/v1/auth/login` and `POST /api/v1/auth/login/form` — `AuthService.login_user` refuses a
+  deactivated row by returning `None`, exactly as it does for a wrong password. The route turns that
+  `None` into `401 AUTHENTICATION_FAILED` with the existing detail `"Invalid credentials"`, so a
+  deactivated account is **not** an account-existence oracle and no freshly signed token is ever
+  issued for it. The Redis marker is deliberately not consulted at login.
+- `POST /api/v1/auth/refresh` — the row is re-read and compared **after** the Redis marker branch,
+  which keeps its `401 TOKEN_REVOKED` contract byte-identically. A deactivated-and-marked user
+  therefore always sees the revocation verdict; a deactivated user whose marker has expired or been
+  flushed is refused with `AUTHENTICATION_FAILED` / `"User account is deactivated"` — the same
+  detail the protected gate uses.
+- Every protected endpoint — `get_current_user_dependency` re-reads the row on every request and
+  raises `401 AUTHENTICATION_FAILED` / `"User account is deactivated"`.
+
+Which surface consults which authority is tabulated in
+[Backend Architecture → Account Deactivation: Two Authorities](../06-backend/architecture.md#account-deactivation-two-authorities).
 
 ---
 
@@ -278,13 +354,44 @@ The system uses a **retrieval-token pattern** for secure temporary password deli
 | Storage backend | Redis (`asyncio`) | Uses `redis.asyncio` pipeline for atomic operations |
 | Key pattern | `temp_pwd:{token}` | Token-prefixed keys for namespacing |
 | TTL | Configurable via `TEMP_PASSWORD_TTL_SECONDS` (default: 86400 = 24h, minimum: 60s) | Auto-expiring entries prevent indefinite Redis growth |
-| Retrieval semantics | Atomic GET+DELETE via pipeline | Single-use: password is deleted upon retrieval |
+| Retrieval semantics | Atomic GET+DELETE inside one `pipeline(transaction=True)` | Single-use: the password is deleted on retrieval, and a two-claimant race has exactly one winner |
 
 ### Operations
 
-**`store(token, password)`** — Stores a temporary password under the given token with TTL. Fail-open on errors (logs but does not crash).
+The two operations deliberately differ, because by the time a **write** runs the caller has already
+committed a real credential, and a **read** costs nothing to surface.
 
-**`retrieve(token)`** — Atomically retrieves and deletes the password. Returns the password string on success, `None` if not found/expired/already retrieved. Graceful degradation on errors (returns `None`).
+**`store(token, password) -> bool`** — Stores a temporary password under the given token with TTL.
+**Fails open**: it never raises. It returns `true` when the `SET` completed without a client-visible
+Redis error, and `false` when a fault was caught and swallowed. `true` is **not** proof that the
+value is durable and readable.
+
+**`retrieve(token) -> str | None`** — Atomically retrieves and deletes the password. Returns the
+password on success, `None` if the key is absent, already spent, or expired. **Fails loud**: a store
+fault raises `TempPasswordStoreUnavailableError` (a plain `Exception` declared in
+`core/temp_password_store.py`, so the store never imports the API or the error-enum layer) rather
+than degrading to `None`. The retrieval route maps that exception to **`503 SERVICE_UNAVAILABLE`**,
+while a missing, spent or expired key answers **`404`**. Reporting "not found" during an outage
+would be a lie the caller cannot detect; a caller that wants the fail-open behaviour must ask for it
+by handling the exception.
+
+### `credential_stored`
+
+Both credential-issuing operations — `AuthService.reset_password_admin` and
+`AuthService.approve_registration_request` — propagate the store's verdict to the caller as a
+`credential_stored` key in the `200` response body, and log an `ERROR` naming the affected user and
+the administrator when it is `false`. `false` covers **both** a swallowed Redis fault **and** the
+case where no store was wired at all.
+
+| `credential_stored` | Meaning |
+| --- | --- |
+| `true` | The `SET` completed. The returned `retrieval_token` should work. |
+| `false` | The write faulted, or no store was wired. **The returned token is not a working handle** — the account exists with a credential nobody can read, and the reset must be repeated. |
+
+**The status stays `200`.** The status describes the password change, which is committed and
+durable either way; the credential handoff is a separate, non-transactional side effect performed
+after that commit. `credential_stored` **reports** the failed handoff; it does not **prevent** it.
+An administrator can still hold a retrieval token for a credential that was never stored.
 
 ### Retrieval Flow
 
@@ -297,18 +404,21 @@ Admin Panel                    Backend                     Redis
     │                            │  Generate UUID token     │
     │                            │  Generate temp password  │
     │                            │  Store bcrypt hash in DB │
+    │                            │  COMMIT                  │
     │                            │  temp_password_store.    │
     │                            │  store(token, password)  │
     │                            │──────────────────────────►│
     │                            │                           │
     │  200 OK                    │                           │
-    │  { retrieval_token }       │                           │
+    │  { retrieval_token,        │                           │
+    │    credential_stored }     │                           │
     │◄───────────────────────────│                           │
     │                            │                           │
     │  Admin clicks "Show       │                           │
     │  Password"                 │                           │
-    │  GET /admin/temp-          │                           │
-    │  passwords/{token}         │                           │
+    │  POST /admin/temp-         │                           │
+    │  passwords                │                           │
+    │  { retrieval_token }       │                           │
     │───────────────────────────►│                           │
     │                            │  retrieve(token)         │
     │                            │  (atomic GET+DELETE)     │
@@ -317,17 +427,26 @@ Admin Panel                    Backend                     Redis
     │                            │  password (or None)      │
     │                            │◄──────────────────────────│
     │  200 OK { temp_password }  │                           │
-    │  (or 404 if expired/used)  │                           │
+    │  (404 absent/spent/expired,│                           │
+    │   503 store fault)         │                           │
     │◄───────────────────────────│                           │
 ```
+
+The handle is carried in the **request body** of `POST /api/v1/admin/temp-passwords`, so it never
+appears in the request line and therefore never reaches the **application's** access log. The legacy
+`GET /api/v1/admin/temp-passwords/{retrieval_token}` still serves and is marked **deprecated**, with
+removal named for release **1.0.9**. Both operations share one implementation, so their `403` /
+`404` / `503` behaviour is identical.
 
 ### Security Properties
 
 - **No plaintext passwords in API logs**: Reset/approve endpoints return `retrieval_token`, not `temp_password`. Only the retrieval endpoint returns the plaintext password, in a separate API call that can be audited.
 - **One-time use**: Passwords are deleted from Redis upon retrieval via atomic pipeline (GET+DEL in single transaction).
 - **Auto-expiry**: Redis TTL ensures passwords don't persist indefinitely even if never retrieved.
-- **No Redis log entries**: The plaintext password is never logged by the application.
+- **No Redis log entries**: The plaintext password is never logged by the application. Only the handle's first eight characters are logged, and a prefix is not a replayable handle.
+- **Commit-then-store ordering**: The Redis write happens **after** the database commit that makes the credential real. A credential written first would survive a database rollback and unlock a password for a user that does not exist; the chosen order inverts that into a recoverable state.
 - **Endpoints affected**: `POST /api/v1/admin/users/{id}/reset-password` and `POST /api/v1/admin/registration-requests/{id}/approve` — both return `retrieval_token` instead of `temp_password`.
+- **Partially fixed at the proxy**: The retrieval handle no longer reaches the application's request line, but `docker/nginx/nginx.conf` declares no `log_format` and writes the full request line to its **own** access log in the default `combined` format, so a legacy `GET` path still appears there. That file belongs to another phase; this is recorded as a hand-over, not as a closed finding.
 
 ### Configuration
 
@@ -353,12 +472,13 @@ The `mkobi_refresh_token` cookie is the cornerstone of the refresh token securit
 
 1. **Set on login:** `POST /api/v1/auth/login` sets the cookie via `Set-Cookie` header
 2. **Read on refresh:** `POST /api/v1/auth/refresh` reads the cookie to obtain the refresh token
-3. **Cleared on logout:** `POST /api/v1/auth/logout` sets `Max-Age=0` to clear the cookie
-4. **Not accessible to JS:** The `HttpOnly` flag ensures client-side JavaScript cannot read or manipulate the cookie
+3. **Rotated on every successful refresh:** the same response sets a **new** refresh cookie. The presented token is not revoked, so a superseded cookie stays usable until its own TTL — see [Token Revocation](#token-revocation) for why reuse detection is absent.
+4. **Cleared on logout:** `POST /api/v1/auth/logout` sets `Max-Age=0` to clear the cookie. `POST /api/v1/auth/refresh` also clears it when the user-level marker refuses the presented token.
+5. **Not accessible to JS:** The `HttpOnly` flag ensures client-side JavaScript cannot read or manipulate the cookie
 
 ### Backend Cookie Utilities
 
-The `core/security.py` module provides `set_cookie()` and `delete_cookie()` helper functions that enforce consistent cookie attributes across all auth endpoints. All auth routes use these utilities instead of calling `Response.set_cookie()` directly.
+The `core/security.py` module provides `set_secure_cookie()` and `delete_secure_cookie()` helper functions that enforce consistent cookie attributes across all auth endpoints. All auth routes use these utilities instead of calling `Response.set_cookie()` directly.
 
 ---
 
@@ -377,30 +497,43 @@ The FastAPI application includes a `SecurityHeadersMiddleware` that sets defense
 
 ## Error Response Format
 
-All API error responses follow a consistent format with a machine-readable `error_code` field. This enables programmatic error handling on the frontend and simplifies monitoring/alerting on the backend.
+All API error responses follow the RFC 7807 Problem Details format with a machine-readable `code`
+field. This enables programmatic error handling on the frontend and simplifies
+monitoring/alerting on the backend.
 
-For detailed specification including complete ErrorCode reference table and example responses, see [Error Format](error-format.md).
+[Error Format](error-format.md) is the single source of truth for the format and the complete
+`ErrorCode` reference table.
 
 ### Standard Error Fields
 
 ```json
 {
-  "detail": "Human-readable error description",
-  "error_code": "MACHINE_READABLE_CODE"
+  "type": "https://api.mkobi.com/errors/authentication_failed",
+  "title": "Authentication failed",
+  "status": 401,
+  "detail": "User account is deactivated",
+  "code": "AUTHENTICATION_FAILED"
 }
 ```
 
 ### Error Code Categories
 
+Every code below is a member of `ErrorCode` in `src/mkobi/models/enums.py`; the HTTP status is
+derived from it by `_ERROR_CODE_STATUS_MAP` in `src/mkobi/utils/exceptions.py`. A deactivated
+account is **not** a separate code — it is `AUTHENTICATION_FAILED`, and at `POST /auth/login` it is
+indistinguishable from a wrong password because both share the detail `"Invalid credentials"`.
+
 | Category | HTTP Status | Example Codes |
 | --- | --- | --- |
-| Authentication | `401` | `HTTP_401`, `INVALID_TOKEN`, `USER_DEACTIVATED` |
-| Authorization | `403` | `HTTP_403`, `PERMISSION_DENIED`, `ACCESS_DENIED` |
-| Not Found | `404` | `HTTP_404`, `NOT_FOUND`, `DASHBOARD_NOT_FOUND` |
-| Validation | `422` | `VALIDATION_ERROR`, `HTTP_422` |
-| Rate Limit | `429` | `HTTP_429` |
-| Server Error | `500` | `INTERNAL_ERROR`, `HTTP_500` |
-| File Upload | `400`/`422` | `FILE_UPLOAD_ERROR` |
+| Authentication | `401` | `AUTHENTICATION_FAILED`, `INVALID_TOKEN`, `TOKEN_EXPIRED`, `TOKEN_REVOKED` |
+| Authorization | `403` | `PERMISSION_DENIED`, `INSUFFICIENT_PERMISSIONS`, `ACCESS_DENIED` |
+| Not Found | `404` | `NOT_FOUND`, `USER_NOT_FOUND`, `DASHBOARD_NOT_FOUND` |
+| Validation | `422` | `VALIDATION_ERROR`, `INVALID_EMAIL`, `INVALID_PASSWORD` |
+| Rate Limit | `429` | `RATE_LIMIT_EXCEEDED` |
+| Dependency Outage | `503` | `SERVICE_UNAVAILABLE` |
+| Server Error | `500` | `INTERNAL_ERROR`, `PROCESSING_FAILED` |
+| File Upload | `400`/`413`/`415` | `FILE_UPLOAD_ERROR`, `FILE_TOO_LARGE`, `INVALID_FILE_TYPE` |
+| Conflict | `409` | `EMAIL_ALREADY_EXISTS`, `DUPLICATE_RESOURCE` |
 
 ---
 

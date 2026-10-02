@@ -230,13 +230,13 @@ Force mode is triggered automatically when the login response or silent refresh 
 | --- | --- | --- | --- |
 | Change password | `POST` | `/api/v1/auth/change-password` | `{ current_password, new_password, confirm_password }` |
 
-**Success response:** `200` `{ message: "Password changed successfully" }` — redirect to `/profile` with success notification. The `force_password_change` flag is automatically cleared on the backend after a successful change.
+**Success response:** `200` `{ message: "Password changed successfully" }` — redirect to `/profile` with success notification. The `force_password_change` flag is automatically cleared on the backend after a successful change, and **every token the user holds is revoked at the same time**, so the change signs the user out of this session too; a fresh login with the new password is required before `/profile` loads.
 
-**Error responses:** `400` (confirmation mismatch), `401` (current password incorrect).
+**Error responses:** `422` (confirmation mismatch, or new password below the strength floor), `401` (current password incorrect).
 
 ### Notes
 
-- The user remains logged in after a password change (token is not invalidated).
+- **The user is signed out by a password change.** Every token the user holds is revoked, including the one that made the change, so a fresh login with the new password is required. A session established *after* the change works normally.
 - Form validation via Zod (`changePasswordSchema`): current password required, new password min 8 chars, confirmation must match.
 
 ---
@@ -278,9 +278,9 @@ The admin panel uses a tabbed interface with 4 sections. Tab state (pagination, 
 2. Clicking Reset Password opens a `ConfirmDialog` with the message: "Generate a new temporary password for {email}? The current password will be immediately invalidated."
 3. On confirmation, `POST /api/v1/admin/users/{user_id}/reset-password` is called.
 4. On success, a `RetrievePasswordDialog` opens with a "Show Password" button.
-5. Clicking "Show Password" calls `GET /api/v1/admin/temp-passwords/{retrieval_token}`.
+5. Clicking "Show Password" calls `POST /api/v1/admin/temp-passwords` with `{ retrieval_token }` in the request body.
 6. On success, the password is displayed in `ResetPasswordResultDialog` with a Copy button (uses `navigator.clipboard.writeText` + toast "Copied").
-7. On error (404 — expired/already retrieved), a toast "Password expired or already retrieved" is shown.
+7. On error (404 — expired/already retrieved), a toast "Password expired or already retrieved" is shown. A `503` means the store is unreachable, which is a different condition and is surfaced separately, not as a spent token.
 8. The admin copies the temp password and communicates it securely to the user.
 9. The user's `force_password_change` flag is set to `True`, so on next login they are forced to change their password.
 
@@ -290,12 +290,14 @@ The admin panel uses a tabbed interface with 4 sections. Tab state (pagination, 
 2. Approve/reject actions use `ConfirmDialog` with configurable `confirmLabel` ("Approve" / "Reject").
 3. On approve: `POST /api/v1/admin/registration-requests/:id/approve` creates a user with a random temporary password.
 4. On success, a `RetrievePasswordDialog` opens with a "Show Password" button.
-5. Clicking "Show Password" calls `GET /api/v1/admin/temp-passwords/{retrieval_token}`.
+5. Clicking "Show Password" calls `POST /api/v1/admin/temp-passwords` with `{ retrieval_token }` in the request body.
 6. On success, the password is displayed in `ResetPasswordResultDialog` with a Copy button.
 7. On error (404 — expired/already retrieved), a toast "Password expired or already retrieved" is shown.
 8. On reject: the request status is set to `rejected`.
 
-> **Note:** Both flows use a two-step retrieval pattern — reset/approve returns a `retrieval_token`, and the password is fetched separately via `GET /admin/temp-passwords/{token}`. This ensures plaintext passwords never appear in the reset/approve API responses. Toast notifications confirm success/failure of actions.
+> **Note:** Both flows use a two-step retrieval pattern — reset/approve returns a `retrieval_token`, and the password is fetched separately via `POST /admin/temp-passwords` with the handle in the **request body**. Carrying the handle in the body keeps it out of the request line and therefore out of the **application's** access log; the legacy `GET /admin/temp-passwords/{token}` still serves and is deprecated, with removal named for release 1.0.9. This ensures plaintext passwords never appear in the reset/approve API responses. Toast notifications confirm success/failure of actions.
+>
+> Each issuance response also carries `credential_stored`. If it is `false`, the temporary password never reached the store and the returned token will not work — the reset or approval has to be repeated. The response status is still `200`, because the password change itself succeeded.
 
 ---
 

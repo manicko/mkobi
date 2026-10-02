@@ -62,9 +62,23 @@ credential:
 }
 ```
 
-If the address is occupied by a **non-admin** user, the same message is emitted
-at `WARNING` in development and raised as a `ValueError` (aborting startup) in
-production:
+If the address is occupied by a **non-admin** user, a different message is used — one that names
+the collision rather than reporting an ordinary pre-existing admin — and the outcome is
+environment-scoped: `WARNING` in development, and a `ValueError` that aborts startup in
+production. `ON CONFLICT DO NOTHING` silently declines to promote anyone, so a production tier
+whose configured admin address is held by a viewer would otherwise start up "successfully" with no
+admin at all. The message shape matches the one above, and again no credential appears:
+
+```json
+{
+  "timestamp": "2026-01-15 10:30:02",
+  "level": "WARNING",
+  "service": "mkobi",
+  "message": "Admin address is occupied by a non-admin user: admin@example.com (id=3f..., role=viewer)",
+  "module": "mkobi.db.starter",
+  "function": "ensure_admin_user"
+}
+```
 
 ### JSON Formatter Fields
 

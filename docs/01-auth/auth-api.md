@@ -93,6 +93,12 @@ Authenticate a user by email and password.
 | `401`  | Invalid credentials  | `Invalid credentials`        |
 | `429`  | Rate limit exceeded  | `Too many login attempts...` |
 
+> **A deactivated account is not distinguishable from a wrong password.** `AuthService.login_user`
+> returns `None` for both, and `_handle_login` turns that single `None` into the `401
+> AUTHENTICATION_FAILED` above. The Redis revocation marker is deliberately **not** consulted here;
+> `is_active` alone decides, so no freshly signed token is ever issued for a deactivated row and the
+> response cannot be used to enumerate accounts.
+
 ---
 
 ### 2. Login (OAuth2 Form)
@@ -221,18 +227,34 @@ The response also sets a **new** `mkobi_refresh_token` cookie: the refresh cooki
 
 **Error responses:**
 
-| Status | Condition                    | Detail                       |
-| ------ | ---------------------------- | ---------------------------- |
-| `401`  | Missing refresh cookie       | `Refresh token missing`      |
-| `401`  | Invalid or expired cookie    | `Invalid refresh token`      |
-| `401`  | User no longer exists        | `User not found`             |
+| Status | Condition                    | Code                        | Detail                       |
+| ------ | ---------------------------- | --------------------------- | ---------------------------- |
+| `401`  | Missing refresh cookie       | `AUTHENTICATION_FAILED`     | `Refresh token not found`    |
+| `401`  | Invalid or expired cookie    | `INVALID_TOKEN`             | `Invalid token`              |
+| `401`  | User no longer exists        | `AUTHENTICATION_FAILED`     | `User not found`             |
+| `401`  | Revoked refresh token        | `TOKEN_REVOKED`             | `Refresh token has been revoked` |
+| `401`  | Credential predates the user's revocation marker | `TOKEN_REVOKED` | `Token has been revoked` |
+| `401`  | Account deactivated          | `AUTHENTICATION_FAILED`     | `User account is deactivated` |
+| `429`  | Either rate-limit bound exceeded | `RATE_LIMIT_EXCEEDED` | `Too many refresh attempts. Try again later.` |
+| `503`  | Revocation store unreachable | `SERVICE_UNAVAILABLE`       | `Authentication service is temporarily unavailable` |
 
 **Behavior:**
 - Reads the refresh token from the `mkobi_refresh_token` cookie
 - Validates the JWT signature and expiration
-- Verifies the user still exists in the database
+- Checks the per-`jti` refresh blacklist, then re-reads the user row, then compares the credential's `iat` against the user's timestamped revocation marker, then compares `is_active`
 - Issues a new access token with fresh 15-minute expiration
 - Mints a new refresh token and sets it as the rotated `mkobi_refresh_token` cookie; the presented token is not revoked
+- A refusal at the marker step also clears the refresh cookie; a refusal at the `is_active` step does not
+
+> **Ordering is deliberate.** The marker branch runs **before** the `is_active` comparison, so a
+> deactivated-and-marked user keeps receiving `TOKEN_REVOKED` byte-identically. The `is_active` check
+> exists to refuse a deactivated row whose marker has expired, been flushed, or never existed —
+> without it, deactivation would depend entirely on a Redis key. See
+> [Backend Architecture → Account Deactivation: Two Authorities](../06-backend/architecture.md#account-deactivation-two-authorities).
+>
+> **A store fault is not a verdict.** If the revocation store cannot be *read*, the endpoint answers
+> `503 SERVICE_UNAVAILABLE`, never `401`. Blurring "cannot answer" into "the answer is no" would turn
+> a Redis degradation into an API-wide sign-out.
 
 ---
 
@@ -337,14 +359,20 @@ Change the current user's password.
 
 **Error responses:**
 
-| Status | Condition                              | Detail                                   |
-| ------ | -------------------------------------- | ---------------------------------------- |
-| `400`  | Confirmation mismatch                  | `New password and confirmation do not match` |
-| `401`  | Current password incorrect             | Error message                            |
-| `500`  | Server error                           | `Password change error`                  |
+| Status | Condition                              | Code                     | Detail                                   |
+| ------ | -------------------------------------- | ------------------------ | ---------------------------------------- |
+| `422`  | Confirmation mismatch                  | `VALIDATION_ERROR`       | `Passwords do not match`                 |
+| `422`  | New password below the strength floor  | `VALIDATION_ERROR`       | Error message                            |
+| `401`  | Current password incorrect             | `AUTHENTICATION_FAILED`  | Error message                            |
+| `500`  | Server error                           | `INTERNAL_ERROR`         | `Password change error`                  |
+
+The confirmation check is a Pydantic `model_validator` on `ChangePasswordRequest`, so a mismatch is a
+request-validation failure and therefore `422`, not `400`.
 
 **Notes:**
-- A successful password change records a **timestamped revocation** for the user: every access and refresh token issued **at or before** the change is refused with a revocation error, so all other devices are signed out too. A session minted **after** the change (that is, by logging in again with the new password) is unaffected and works normally. The marker is not a blanket lock-out; re-login restores access.
+- A successful password change records a **timestamped revocation** for the user: every access and refresh token issued **at or before** the change is refused with a revocation error, so all other devices are signed out too. A session minted **after** the change (that is, by logging in again with the new password) is unaffected and works normally. The marker is not a blanket lock-out; re-login restores access. **The caller's own session is revoked too** — including the one that made the change — so the SPA must log in again with the new password.
+- The marker is written **after** the service's commit, not before. The revocation is a non-transactional Redis write, so the reverse order would leave a live marker behind on a password change that then rolled back. `PATCH /admin/users/{id}/active` uses the same ordering.
+- Two cases **fail closed**: a marker value that is not an integer, and a credential with no usable `iat` claim. Both are refused rather than admitted, so a rolling deploy that has not yet restarted cannot re-admit a withdrawn session. No marker clearing is ever required.
 - The same revocation applies to the admin reset (`POST /api/v1/admin/users/{user_id}/reset-password`): the **target** user's tokens issued before the reset are revoked once it is committed, in addition to the temporary-password handoff described in [Admin API](../04-admin/admin-api.md#6-reset-user-password-admin). Account **deactivation** uses the same marker but is persistent — the `is_active` checks reject any later session until the account is reactivated.
 - New password must meet backend strength requirements: at least 8 characters, at least one letter, and at least one digit. Enforced by Pydantic `field_validator` — returns 422 if requirements are not met
 - The `force_password_change` flag is automatically cleared on the backend after a successful password change. This prevents an infinite force-change loop when a user is required to change their password (e.g., after admin reset or registration approval).
@@ -370,6 +398,7 @@ Browser                          FastAPI
   │                                │ ┌───────────▼─────────────┐
   │                                │ │ Verify email exists      │
   │                                │ │ Check bcrypt hash        │
+  │                                │ │ Check is_active          │
   │                                │ └───────────┬─────────────┘
   │                                │             │
   │                                │ ┌───────────▼─────────────┐
@@ -391,7 +420,7 @@ Browser                          FastAPI
 
 1. User submits email and password via the login form (`/login` page)
 2. Server applies rate limiting (5 attempts per 5-minute window per email; the shared-IP ceiling is 50 per 5-minute window)
-3. Server looks up user by email and verifies the bcrypt password hash
+3. Server looks up user by email, verifies the bcrypt password hash, and refuses a deactivated row with the same `401` a wrong password produces
 4. On success, server creates a JWT access token (15-minute expiration) and a refresh token (7-day expiration)
 5. Server sets the refresh token as an httpOnly cookie (`mkobi_refresh_token`) with `Secure`, `HttpOnly`, and `SameSite=Strict` attributes
 6. Server returns `TokenWithUser` — the access token plus the full user profile (including computed `display_name` and `force_password_change` flag)
@@ -413,7 +442,11 @@ Browser                          FastAPI
   │                                │ │ Read refresh cookie      │
   │                                │ │ Validate JWT signature   │
   │                                │ │ Check expiration         │
+  │                                │ │ Check per-jti blacklist  │
   │                                │ │ Verify user exists in DB │
+  │                                │ │ Compare the credential   │
+  │                                │ │   against the revocation │
+  │                                │ │   marker, then is_active │
   │                                │ └───────────┬─────────────┘
   │                                │             │
    │  200 OK                        │             │
@@ -439,6 +472,7 @@ Browser                          FastAPI
   │ ──────────────────────────────►│
   │                                │ ┌─────────────────────────┐
   │                                │ │ Validate access token    │
+  │                                │ │ Revoke both JTIs         │
   │                                │ │ Clear refresh cookie     │
   │                                │ └───────────┬─────────────┘
   │                                │             │
@@ -498,8 +532,9 @@ Browser              FastAPI              Database
   │                    │                    │
   │  Admin retrieves   │                    │
   │  temp_password via │                    │
-  │  GET /admin/temp-  │                    │
-  │  passwords/{token} │                    │
+  │  POST /admin/temp- │                    │
+  │  passwords         │                    │
+  │  (handle in body)  │                    │
   │  and communicates  │                    │
   │  it to new user    │                    │
 ```
@@ -511,8 +546,8 @@ Browser              FastAPI              Database
 5. Admin reviews pending requests via the admin panel (`/admin`)
 6. Admin approves the request — a user account is created with a random temporary password
 7. The user's `force_password_change` flag is set to `True`, requiring them to change their password on first login
-8. The response includes a `retrieval_token` (UUID) instead of the plaintext password
-9. Admin retrieves the temporary password via `GET /api/v1/admin/temp-passwords/{retrieval_token}` (one-time, admin only)
+8. The response includes a `retrieval_token` (UUID) instead of the plaintext password, plus `credential_stored`
+9. Admin retrieves the temporary password via `POST /api/v1/admin/temp-passwords` with `{ "retrieval_token": "…" }` in the request body (one-time, admin only). A `credential_stored` of `false` means the token will not work and the approval must be repeated.
 10. Admin communicates the temporary password to the new user
 11. New user logs in and is redirected to `/profile/change-password?force=true` to set a new password
 
@@ -529,7 +564,7 @@ Browser              FastAPI              Database
 - **Email blocklist:** Configurable domain blocklist for registration requests
 - **CORS:** Explicit allowed methods and headers (no wildcards in production)
 - **Production credentials:** Default credentials (`admin`/`admin`) are rejected in production
-- **User deactivation:** Deactivated users (`is_active=false`) receive HTTP 401 on any authenticated endpoint, even with a valid JWT. The check is performed in `get_current_user_dependency()` on every request.
+- **User deactivation:** Deactivated users (`is_active=false`) are refused on **all three** paths. On any protected endpoint the check in `get_current_user_dependency()` runs on every request and answers `401` with detail `"User account is deactivated"`. At `POST /auth/login` (and `/login/form`) `AuthService.login_user` refuses the row exactly as it refuses a wrong password, so the client sees `401 AUTHENTICATION_FAILED` with the shared detail `"Invalid credentials"` — a deactivated account is not an account-existence oracle, and no token is issued. On `POST /auth/refresh` the row is compared **after** the Redis marker branch, so a deactivated-and-marked user still sees `TOKEN_REVOKED`; a deactivated user whose marker is gone is refused with the same `"User account is deactivated"` detail as the gate. Which authority each surface consults is tabulated in [Backend Architecture](../06-backend/architecture.md#account-deactivation-two-authorities).
 - **Forced password change:** A user with `force_password_change=true` receives HTTP **403 `PERMISSION_DENIED`** on every protected route except the allow-list described in [Login](#1-login). The check runs in `get_current_user_dependency()` after the `is_active` check. `403` is used instead of `401` so the SPA's sign-out interceptor is not triggered into a redirect loop.
 
 ---
