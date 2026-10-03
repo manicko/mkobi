@@ -95,6 +95,25 @@ describe('createDashboardSchema', () => {
 })
 
 describe('updateDashboardSchema', () => {
+  // EB-5 (EXT-007): the backend `DashboardUpdate` now declares
+  // `extra="forbid"`, so any key the writer emits beyond its declared fields is
+  // a request-boundary 422. The write path is
+  // `adminApi.ts::updateDashboard` -> `PUT /dashboards/{dashboard_id}`, and the
+  // form schema is the closed writer surface that feeds it. Pinning the key set
+  // here catches a writer that gains an undeclared key; mocking the transport
+  // would catch the same regression only at far greater cost.
+  const DASHBOARD_UPDATE_DECLARED_KEYS = ['name', 'description', 'config', 'layout_id'] as const
+
+  it('pins the writer key set to declared DashboardUpdate fields', () => {
+    const writerKeys = Object.keys(updateDashboardSchema.shape)
+    // The form writes a closed subset of the backend's declared fields.
+    for (const key of writerKeys) {
+      expect(DASHBOARD_UPDATE_DECLARED_KEYS).toContain(key)
+    }
+    // And it is exactly the two keys the SPA writer sends.
+    expect(new Set(writerKeys)).toEqual(new Set(['name', 'description']))
+  })
+
   it('accepts partial update with name only', () => {
     const result = updateDashboardSchema.safeParse({ name: 'Updated Name' })
     expect(result.success).toBe(true)

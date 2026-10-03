@@ -331,7 +331,7 @@ class TestGraphServiceIntegration:
             name="New Graph",
             type="bar",
             dashboard_id=dashboard_id,
-            config={"test": "config"},
+            config={"title": "test config"},
             dimensions=["dim1", "dim2"],
             metrics=["metric1"],
         )

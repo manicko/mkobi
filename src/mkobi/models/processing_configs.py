@@ -40,6 +40,7 @@ class ProcessingConfigUpdate(BaseModel):
     metric_agg: AggregationFunctionEnum | None = None
 
     model_config = ConfigDict(
+        extra="forbid",
         from_attributes=True,
         json_schema_extra={
             "example": {

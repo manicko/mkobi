@@ -34,7 +34,18 @@ class GraphBase(BaseModel):
 class GraphCreate(GraphBase):
     """Model for creating chart."""
 
-    pass
+    # ``extra="forbid"`` is declared here, not on ``GraphBase``. Pydantic
+    # inherits ``model_config`` into every subclass, and ``GraphBase`` is also
+    # the parent of ``GraphRead`` -- a response model. Forbidding on the base
+    # would therefore reach ``GraphRead`` and, because the policy propagates
+    # into the nested ``GraphConfigDict`` (a ``TypedDict``), reject any stored
+    # ``config`` carrying a key outside that dict's declared set. The dev
+    # seeder writes ``config={"x": ..., "color": ..., "metrics": [...]}``, and
+    # ``metrics`` is not a ``GraphConfigDict`` key, so a base-level forbid would
+    # break the graph read path for seeded data. ``GraphCreate`` is the
+    # route-facing request model, so the policy belongs exactly here. The base
+    # config is composed in so the request schema keeps its published example.
+    model_config = ConfigDict(**GraphBase.model_config, extra="forbid")
 
 
 class GraphUpdate(BaseModel):
@@ -47,6 +58,7 @@ class GraphUpdate(BaseModel):
     metrics: list[str] | None = None
 
     model_config = ConfigDict(
+        extra="forbid",
         from_attributes=True,
         json_schema_extra={
             "example": {
