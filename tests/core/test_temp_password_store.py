@@ -120,6 +120,40 @@ class TestTempPasswordStore:
         store = TempPasswordStore(mock_redis, ttl_seconds=3600)
         assert store._ttl == 3600
 
+    def test_ttl_setting_is_pinned_as_the_accepted_window(self) -> None:
+        """Pin the accepted credential window to the configured TTL surface.
+
+        The temporary credential has no revocation path -- the TTL is its only
+        expiry and the accepted risk is scoped by this value (24 hours by
+        default). Asserting the *default* alone would not notice a silent change
+        to the setting's own default, so this pins both the settings-level
+        default and the value the store resolves through ``get_config()``. A
+        change to the window then fails here and must be reviewed as a change to
+        an accepted risk, not merely a config tweak.
+        """
+        from mkobi.config import get_config
+
+        config = get_config()
+        assert config.temp_password_ttl_seconds == 86400
+        # The production factory binds this exact value into the store.
+        store = TempPasswordStore(MockRedis(), ttl_seconds=config.temp_password_ttl_seconds)
+        assert store._ttl == config.temp_password_ttl_seconds
+
+    def test_store_exposes_no_revocation_method(self) -> None:
+        """Pin that the store has no way to revoke a live credential.
+
+        Under ruling D-06-G = (c) the TTL is the sole expiry: no method removes
+        a token before it expires. This asserts the absence of a revocation
+        surface so that adding one -- a deliberate architectural act -- shows up
+        as a change to this test. It is not a proof of correctness; it is a
+        tripwire against a silent revocation path appearing.
+        """
+        for name in ("revoke", "delete", "invalidate"):
+            assert not hasattr(TempPasswordStore, name), (
+                f"TempPasswordStore gained a revocation surface '{name}'; "
+                "the accepted risk (TTL as sole expiry) is being changed"
+            )
+
     @pytest.mark.asyncio
     async def test_store_and_retrieve_password(self) -> None:
         """Password should be stored and retrieved correctly via pipeline."""

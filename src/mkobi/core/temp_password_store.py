@@ -26,15 +26,56 @@ class TempPasswordStoreUnavailableError(Exception):
 class TempPasswordStore:
     """Redis-backed one-time temporary password storage.
 
-    Passwords are stored with a TTL and deleted immediately upon retrieval.
-    Uses Redis pipeline for atomic GET+DELETE to prevent TOCTOU races.
+    Purpose
+    -------
+    Holds a freshly generated temporary password under a random ``uuid4()``
+    token so an administrator can hand that credential to a user once, after a
+    registration approval or an admin password reset. The token is never
+    persisted; it exists only in the caller's response and in this store.
 
-    The two write/read contracts deliberately differ. ``store`` fails open
-    because by the time it runs the caller has already committed the credential
-    and raising would destroy a real account; ``retrieve`` fails loud because a
-    fault there costs nothing to surface and reporting "not found" is a lie the
-    caller cannot detect. A caller that wants the fail-open behaviour must ask
-    for it by handling the exception; the store never chooses it for them.
+    Lifetime
+    --------
+    The credential is single-use: it is deleted atomically on collection by
+    ``retrieve`` (Redis pipeline GET+DELETE). After a successful collection the
+    key is gone and every later read reports "not found".
+
+    **The TTL is the only expiry.** This store exposes no revocation method
+    whatsoever -- no ``revoke``, ``delete``, ``invalidate`` or equivalent.
+    Nothing in this codebase can remove a live token early, and none of the
+    following events revoke it:
+
+    * deleting the user the credential was issued for;
+    * rejecting or cancelling the registration request;
+    * changing the user's password through any other path;
+    * a caller deciding the credential should no longer be retrievable.
+
+    A token that is issued but never collected therefore remains retrievable by
+    an administrator until the configured TTL elapses. The configured window is
+    ``TEMP_PASSWORD_TTL_SECONDS`` (default 86400 seconds / 24 hours), bound at
+    construction into ``ttl_seconds`` and applied to every ``SET``.
+
+    Accepted risk
+    -------------
+    The absence of a revocation path is a **deliberate, documented risk
+    acceptance**, not an oversight. A retrieval token is minted with ``uuid4()``
+    *after* the caller's transaction commits, and ``RegistrationRequest``
+    persists no token, so a revocation method could only be added by persisting
+    the token (a second transaction or a pre-commit mint) -- which would leave a
+    committed request with no revocable handle at all. That is strictly worse
+    than the current state, in which a retrievable credential at least exists.
+    The residual window is accepted under ruling D-06-G = (c).
+
+    Consequence to keep in view: the caller is still told a credential exists,
+    and nothing reports it absent until the TTL expires.
+
+    Write/read contracts
+    --------------------
+    The two contracts deliberately differ. ``store`` fails open because by the
+    time it runs the caller has already committed the credential and raising
+    would destroy a real account; ``retrieve`` fails loud because a fault there
+    is not a missing token, and reporting "not found" would be a lie the caller
+    cannot detect. A caller that wants the fail-open behaviour must ask for it by
+    handling the returned ``bool``; the store never chooses it for them.
     """
 
     def __init__(self, redis_client: aioredis.Redis, ttl_seconds: int = 86400) -> None:
@@ -54,6 +95,11 @@ class TempPasswordStore:
         returns False so the caller can report the fault. ``True`` means no
         client-visible Redis error occurred; it is not proof that the value is
         durable and readable.
+
+        The ``TTL`` given at construction is the credential's ONLY expiry. No
+        revocation method exists: deleting the user, rejecting the registration
+        request, or changing the password elsewhere does not remove this key.
+        See the class docstring for the accepted-risk statement.
 
         Args:
             token: Unique token identifier for the password.
