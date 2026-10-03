@@ -412,8 +412,13 @@ class TestApplyTransformations:
         assert result.shape[0] == 2
 
     def test_transformations_with_groupby(self):
-        """Test transformations with grouping."""
-        df = pl.DataFrame({"category": ["A", "A", "B"], "value": [10, 20, 30]})
+        """Test transformations with grouping.
+
+        The representative row is the deterministic lexicographic minimum of the
+        non-group columns (DP-007 de-duplication rule), not whatever row Polars
+        happened to present first.
+        """
+        df = pl.DataFrame({"category": ["A", "A", "B"], "value": [20, 10, 30]})
         result = apply_transformations(
             df,
             groupby=["category"],
@@ -421,6 +426,67 @@ class TestApplyTransformations:
 
         assert result.shape[0] == 2  # Two groups
         assert "category" in result.columns
+        assert result.filter(pl.col("category") == "A")["value"].item() == 10
+
+    def test_groupby_without_aggregations_is_input_order_independent(self):
+        """Identical four rows in forward and reversed order store the same value.
+
+        DP-007 evidence: with the arbitrary pick, forward order yielded N=1 and
+        reversed order yielded N=9 for the same four rows.
+        """
+        forward = pl.DataFrame({"g": ["A", "A", "A", "A"], "N": [1, 7, 2, 9]})
+        reversed_ = pl.DataFrame({"g": ["A", "A", "A", "A"], "N": [9, 2, 7, 1]})
+
+        forward_result = apply_transformations(forward, groupby=["g"])
+        reversed_result = apply_transformations(reversed_, groupby=["g"])
+
+        assert forward_result["N"].item() == reversed_result["N"].item() == 1
+
+    def test_groupby_representative_is_lexicographic_minimum(self):
+        """The representative row is the lexicographic minimum, not an incidental pick."""
+        df = pl.DataFrame(
+            {
+                "g": ["A", "A", "A", "A"],
+                "a": [3, 1, 4, 1],
+                "b": [5, 9, 2, 2],
+            }
+        )
+
+        result = apply_transformations(df, groupby=["g"])
+
+        # Sorted by (a, b): (1,2), (1,9), (3,5), (4,2) -> representative (1, 2).
+        assert result["a"].item() == 1
+        assert result["b"].item() == 2
+
+    def test_groupby_null_is_not_the_representative_row(self):
+        """A null in a non-group column is not chosen as the representative row."""
+        df = pl.DataFrame(
+            {
+                "g": ["A", "A"],
+                "value": [None, 5],
+            },
+            schema={"g": pl.Utf8, "value": pl.Int64},
+        )
+
+        result = apply_transformations(df, groupby=["g"])
+
+        assert result["value"].item() == 5
+
+    def test_groupby_with_aggregations_is_unaffected(self):
+        """groupby with aggregations leaves apply_transformations step 2 inert.
+
+        The worker passes groupby only when aggregations is falsy
+        (``groupby=config.groupby if not config.aggregations else None``). With
+        aggregations configured, apply_transformations receives groupby=None, so
+        step 2 is skipped and the frame is untouched -- the common path reaches
+        calculate_aggregations instead.
+        """
+        df = pl.DataFrame({"g": ["A", "A", "B"], "N": [1, 7, 2]})
+
+        result = apply_transformations(df, groupby=None)
+
+        assert result.shape == df.shape
+        assert result["N"].to_list() == [1, 7, 2]
 
     def test_transformations_with_sort(self):
         """Test transformations with sorting."""

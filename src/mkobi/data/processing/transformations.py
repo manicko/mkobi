@@ -65,6 +65,14 @@ def apply_transformations(
     computed field addition, column renaming
     and type casting.
 
+    When ``groupby`` is supplied without ``aggregations`` each group is
+    collapsed to one representative row (deterministic de-duplication): the
+    frame is first sorted deterministically by every remaining column in the
+    frame's own column order with ``nulls_last=True``, then the first row of
+    each group is taken. The representative row is therefore the lexicographic
+    minimum across the non-group columns -- a deliberate, reproducible rule, not
+    an arbitrary pick -- and a null-bearing row is never chosen by accident.
+
     Args:
         df: Source DataFrame.
         config: Configuration dict (filters, computed_fields, rename, dtype).
@@ -98,8 +106,24 @@ def apply_transformations(
         result = _apply_filters(result, filter_list)
 
     # 2. Base grouping (no aggregations)
+    #
+    # De-duplication rule (DP-007). A groupby supplied without aggregations
+    # collapses each group to one representative row, but which row that is must
+    # not depend on input row order. The frame is therefore first sorted
+    # deterministically by every remaining (non-group) column in the frame's own
+    # column order, and the first row of each group is then taken. The
+    # representative row is the lexicographic minimum across the non-group
+    # columns, which is independent of input order and fully reproducible.
+    # Sorting by the group columns alone would leave the within-group order
+    # undefined; every remaining column is included. nulls_last=True so a null
+    # in a non-group column never becomes the representative row by accident.
+    # pl.all().first() is kept as the per-group reducer: the input is ordered
+    # first, so "first" is well defined.
     if groupby:
-        logger.debug("Grouping by: %s", groupby)
+        logger.debug("Grouping by: %s (deterministic de-duplication)", groupby)
+        sort_columns = [column for column in result.columns if column not in groupby]
+        if sort_columns:
+            result = result.sort(sort_columns, nulls_last=True)
         result = result.group_by(groupby).agg(pl.all().first())
 
     # 3. Sorting
