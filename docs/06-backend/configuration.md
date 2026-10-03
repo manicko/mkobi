@@ -79,6 +79,9 @@ All environment variables use the double-underscore (`__`) delimiter for nesting
 | `JWT__ACCESS_TOKEN_EXPIRE_MINUTES` | `jwt.access_token_expire_minutes` | `15` | Token TTL      |
 | `REDIS__HOST`                 | `redis.host`             | `localhost`    | Redis host                      |
 | `REDIS__PORT`                 | `redis.port`             | `6379`         | Redis port                      |
+| `REDIS__DB`                   | `redis.db`               | `0`            | Redis logical database index. Honoured in `.env.example`, compose and `settings/app.yaml`; this row closes a pre-existing documentation gap and is not part of the transport bound below. |
+| `REDIS__SOCKET_TIMEOUT_SECONDS` | `redis.socket_timeout_seconds` | `1.0` | Bound in seconds on a single socket *read*. Without it the transport inherits the library's undeclared default — `socket_timeout=5` with a ten-retry backoff, i.e. eleven 5-second attempts, roughly 59 s, per request during an outage. `1.0 s` sits strictly below the reconciler lease's existing `2.0 s` `asyncio.wait_for` ceiling, so this inner socket bound is the one that fires, and it is far above normal in-subnet latency, so ordinary load is not reported as an outage. `gt=0`, `le=60`. |
+| `REDIS__SOCKET_CONNECT_TIMEOUT_SECONDS` | `redis.socket_connect_timeout_seconds` | `1.0` | Bound in seconds on a single socket *connect*. Set independently of the read bound: a value of `None` would silently inherit `socket_timeout`, coupling the two into one number, so both are always passed explicitly. `gt=0`, `le=60`. |
 | `ADMIN_USERNAME`              | `admin_username`         | `admin`        | Admin user email                |
 | `ADMIN_PASSWORD`              | `admin_password`         | `CHANGE_ME_ADMIN_PASSWORD` | Admin user password (secret)    |
 | `AUTO_MIGRATE`                | `auto_migrate`           | `false`        | Auto-apply Alembic migrations   |

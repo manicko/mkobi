@@ -385,6 +385,21 @@ class RedisSettings(BaseModel):
     port: int = 6379
     db: int = 0
     password: str | None = None
+    # Bounds on a single socket operation. Without these the transport inherits
+    # an undeclared library default: socket_timeout=5 with
+    # Retry(ExponentialWithJitterBackoff(base=0.01, cap=1), retries=10), so a
+    # Redis outage costs eleven 5-second attempts, about 59 s, per request. The
+    # bound is declared here so the number is the project's, not the lockfile's.
+    #
+    # 1.0 s sits strictly below the reconciler lease's existing 2.0 s
+    # asyncio.wait_for ceiling, so the inner socket bound is the one that fires
+    # and the lease's outer guard can never be the ratchet. It is far above
+    # normal in-subnet latency, so ordinary load is not reported as an outage.
+    # The two fields are independent and both are set explicitly: a
+    # socket_connect_timeout of None silently inherits socket_timeout, which
+    # would couple the connect and read bounds into one number.
+    socket_timeout_seconds: float = Field(default=1.0, gt=0, le=60)
+    socket_connect_timeout_seconds: float = Field(default=1.0, gt=0, le=60)
 
 
 # Secret-bearing fields, declared as (outer Settings field, model class, inner
