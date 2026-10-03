@@ -380,12 +380,29 @@ async def _update_processing_log_status(
         if session is not None:
             # Test mode - caller manages transaction (SAVEPOINT pattern in async_db_session).
             # Do NOT commit here - the caller's transaction boundary handles persistence.
-            await session.execute(stmt)
+            result = await session.execute(stmt)
         else:
             # Production mode - create new session with transaction
             async with get_session() as db:
                 async with db.begin():
-                    await db.execute(stmt)
+                    result = await db.execute(stmt)
+        # A zero-row UPDATE means the task id names no row. Logging success and
+        # returning would leave the run's outcome unattributable: the caller
+        # proceeds to replace the dashboard's aggregates while the status row it
+        # believes it wrote does not exist. Raise an already-mapped code instead
+        # (the own-session FAILED compensation reports it). rowcount is None for a
+        # driver that does not report it; treat only an explicit 0 as zero rows.
+        updated_rows = result.rowcount if result.rowcount is not None else 1
+        if updated_rows == 0:
+            logger.error(
+                "Processing log status update matched no row: task_id=%s, status=%s",
+                task_id,
+                status,
+            )
+            raise AppException(
+                code=ErrorCode.NOT_FOUND,
+                detail=f"Processing log {task_id} not found while updating status to {status}",
+            )
         logger.info(
             "Processing log updated: task_id=%s, status=%s", task_id, status
         )

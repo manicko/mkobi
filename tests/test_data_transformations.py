@@ -1119,7 +1119,22 @@ class TestWorkerStoresAllThreeFields:
         from pathlib import Path
 
         from mkobi.data.storage.manager import StorageManager
+        from mkobi.db.repositories.processing_log_repo import ProcessingLogRepository
+        from mkobi.models.enums import ProcessingStatus
         from mkobi.workers.data_worker import process_csv_background
+
+        # The producer creates the processing_logs row before it enqueues the
+        # job, so the worker's status UPDATE always targets an existing row.
+        # Seed that row here: a zero-row status update is a loud failure
+        # (DP-001 / D-05-A.2), and these helpers exercise the worker directly.
+        log = await ProcessingLogRepository().create_log(
+            dashboard_id=dashboard_id,
+            status=ProcessingStatus.UPLOADED,
+            message="Uploaded",
+            db=async_db_session,
+        )
+        await async_db_session.commit()
+        task_id = str(log.id)
 
         with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as f:
             f.write(self._csv())
@@ -1128,7 +1143,7 @@ class TestWorkerStoresAllThreeFields:
         try:
             await process_csv_background(
                 file_path_str=str(csv_path),
-                task_id=str(uuid.uuid4()),
+                task_id=task_id,
                 dashboard_id_str=str(dashboard_id),
                 processing_config_dict={"settings": settings, **settings},
                 mode="overwrite",
@@ -1353,7 +1368,22 @@ class TestLimitAfterAggregationStoredValue:
         from pathlib import Path
 
         from mkobi.data.storage.manager import StorageManager
+        from mkobi.db.repositories.processing_log_repo import ProcessingLogRepository
+        from mkobi.models.enums import ProcessingStatus
         from mkobi.workers.data_worker import process_csv_background
+
+        # The producer creates the processing_logs row before it enqueues the
+        # job, so the worker's status UPDATE always targets an existing row.
+        # Seed that row here: a zero-row status update is a loud failure
+        # (DP-001 / D-05-A.2), and these helpers exercise the worker directly.
+        log = await ProcessingLogRepository().create_log(
+            dashboard_id=dashboard_id,
+            status=ProcessingStatus.UPLOADED,
+            message="Uploaded",
+            db=async_db_session,
+        )
+        await async_db_session.commit()
+        task_id = str(log.id)
 
         with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as f:
             f.write(csv_content)
@@ -1362,7 +1392,7 @@ class TestLimitAfterAggregationStoredValue:
         try:
             await process_csv_background(
                 file_path_str=str(csv_path),
-                task_id=str(uuid.uuid4()),
+                task_id=task_id,
                 dashboard_id_str=str(dashboard_id),
                 # The producer (DataService._execute_upload) passes
                 # ``dict(config_response.settings)`` -- a FLAT dict, all keys at

@@ -8,14 +8,14 @@ from uuid import UUID
 import pytest
 from fastapi import status
 from httpx import AsyncClient
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from mkobi.core.security import hash_password, create_access_token
 from mkobi.db.models.dashboard import Dashboard
 from mkobi.db.repositories.access_repo import AccessRepository
 from mkobi.db.repositories.dashboard_repo import DashboardRepository
 from mkobi.db.repositories.user_repo import UserRepository
-from mkobi.models.enums import DashboardPermission
+from mkobi.models.enums import DashboardPermission, UploadMode
 import uuid
 
 
@@ -705,6 +705,204 @@ N,South,Product12,999999.99,249999.99,2023-01-14,999
         after = set(upload_dir.glob("*.csv*"))
         assert after == before, (
             f"Orphaned file left in tmp_uploads: {after - before}"
+        )
+
+
+
+class TestAcceptingPathCommitOrder:
+    """The accepting path commits before the move and before the enqueue (D-05-A(a))."""
+
+    @pytest.fixture
+    async def test_dashboard(self, async_db_session) -> Dashboard:
+        """Create a test dashboard for the accepting-path tests."""
+        repo = DashboardRepository()
+        dashboard = await repo.create(
+            db=async_db_session,
+            name=f"accepting_path_{uuid.uuid4().hex[:8]}",
+            description="Dashboard for the accepting-path order tests",
+        )
+        await async_db_session.commit()
+        return dashboard
+
+    @pytest.fixture
+    def csv_content(self) -> bytes:
+        """CSV content large enough for MIME detection to pass."""
+        return (
+            b"category,region,sales,profit,date,qty\n"
+            b"A,North,100.50,25.25,2023-01-01,10\n"
+            b"B,South,200.75,50.00,2023-01-02,20\n"
+            b"C,East,150.00,37.50,2023-01-03,15\n"
+        )
+
+    @pytest.fixture
+    def csv_file(self, csv_content: bytes) -> Generator[Path, None, None]:
+        """Create a temporary CSV source file."""
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as f:
+            f.write(csv_content)
+            path = Path(f.name)
+        yield path
+        path.unlink(missing_ok=True)
+
+    async def test_commit_failure_leaves_no_job_and_no_final_file(
+        self,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
+        test_dashboard: Dashboard,
+        csv_file: Path,
+    ) -> None:
+        """A commit failure must not enqueue a job or leave the file at a final path.
+
+        The commit is the transaction boundary of the accepting path, so it must
+        run *before* the file move and *before* the enqueue. A job submitted ahead
+        of the commit is irreversible (RQ, another container) and a moved file with
+        no committed row is unattributable. Observability comes from an independent
+        session: the shared SAVEPOINT session sees uncommitted data and would prove
+        nothing.
+
+        Red before the fix: with commit-last the enqueue already happened and the
+        file already sat at ``{task_id}.csv``.
+        """
+        from mkobi.config import get_config
+        from mkobi.db.models.processing_logs import ProcessingLog
+        from mkobi.services.data_service import DataService
+        from mkobi.db.repositories.processing_log_repo import ProcessingLogRepository
+        from mkobi.db.repositories.aggregated_data_repo import AggregatedDataRepository
+        from mkobi.db.repositories.graph_repo import GraphRepository as _GraphRepo
+
+        access_repo = AccessRepository()
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=test_user["id"],
+            dashboard_id=test_dashboard.id,
+            permission=DashboardPermission.EDIT,
+        )
+        await async_db_session.commit()
+
+        service = DataService(
+            agg_repo=AggregatedDataRepository(),
+            log_repo=ProcessingLogRepository(),
+            graph_repo=_GraphRepo(),
+        )
+
+        mock_queue = MagicMock()
+        mock_queue.enqueue.return_value = MagicMock(id="rq-job-should-not-submit")
+
+        upload_dir = Path(get_config().upload_temp_dir)
+        before = set(upload_dir.glob("*.csv*"))
+
+        with patch(
+            "mkobi.services.data_service.check_dashboard_access", return_value=True
+        ), patch(
+            "mkobi.services.file_processing.enqueue_job",
+            new=AsyncMock(side_effect=AssertionError("enqueue must not run on commit failure")),
+        ) as mock_enqueue, patch(
+            "mkobi.core.task_queue.get_rq_queue", return_value=mock_queue
+        ):
+            with pytest.raises(RuntimeError, match="forced commit failure"):
+                with patch.object(
+                    async_db_session, "commit", new=AsyncMock(side_effect=RuntimeError("forced commit failure"))
+                ):
+                    await service.process_upload(
+                        file_path=csv_file,
+                        dashboard_id=test_dashboard.id,
+                        user_id=test_user["id"],
+                        filename="test.csv",
+                        content_type="text/csv",
+                        mode=UploadMode.OVERWRITE,
+                        db=async_db_session,
+                    )
+
+        # No job may be enqueued if the commit did not succeed.
+        mock_enqueue.assert_not_called()
+        mock_queue.enqueue.assert_not_called()
+
+        # The renamed final file is ``{processing_log.id}.csv``. A failed commit
+        # leaves no committed log row, so no such file may exist. Read the log
+        # ids from an independent session and assert none names a file on disk.
+        async with async_session_maker() as independent:
+            result = await independent.execute(
+                ProcessingLog.__table__.select().where(
+                    ProcessingLog.dashboard_id == test_dashboard.id
+                )
+            )
+            committed_log_ids = [row["id"] for row in result.mappings().all()]
+        assert committed_log_ids == []
+        for log_id in committed_log_ids:
+            assert not (upload_dir / f"{log_id}.csv").exists()
+
+        # And no new unattributable .csv appeared in the shared upload directory.
+        leaked = set(upload_dir.glob("*.csv*")) - before
+        assert leaked == set(), f"unattributable final file(s) left: {leaked}"
+
+    async def test_failed_commit_keeps_no_committed_uploaded_row(
+        self,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
+        test_dashboard: Dashboard,
+        csv_file: Path,
+    ) -> None:
+        """After a commit failure an independent session sees no UPLOADED row.
+
+        This is the other half of the ruled order: the commit that would publish
+        the UPLOADED row is the first thing the accepting path does, so a forced
+        failure leaves the row (and the whole unit of work) rolled back. The
+        independent session is what distinguishes a rolled-back row from a row
+        merely invisible to the shared SAVEPOINT session.
+        """
+        from mkobi.db.models.processing_logs import ProcessingLog
+        from mkobi.services.data_service import DataService
+        from mkobi.db.repositories.processing_log_repo import ProcessingLogRepository
+        from mkobi.db.repositories.aggregated_data_repo import AggregatedDataRepository
+        from mkobi.db.repositories.graph_repo import GraphRepository as _GraphRepo
+
+        access_repo = AccessRepository()
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=test_user["id"],
+            dashboard_id=test_dashboard.id,
+            permission=DashboardPermission.EDIT,
+        )
+        await async_db_session.commit()
+
+        service = DataService(
+            agg_repo=AggregatedDataRepository(),
+            log_repo=ProcessingLogRepository(),
+            graph_repo=_GraphRepo(),
+        )
+
+        with patch(
+            "mkobi.services.data_service.check_dashboard_access", return_value=True
+        ), patch(
+            "mkobi.services.file_processing.enqueue_job",
+            new=AsyncMock(return_value="rq-job-should-not-submit"),
+        ):
+            with pytest.raises(RuntimeError, match="forced commit failure"):
+                with patch.object(
+                    async_db_session, "commit", new=AsyncMock(side_effect=RuntimeError("forced commit failure"))
+                ):
+                    await service.process_upload(
+                        file_path=csv_file,
+                        dashboard_id=test_dashboard.id,
+                        user_id=test_user["id"],
+                        filename="test.csv",
+                        content_type="text/csv",
+                        mode=UploadMode.OVERWRITE,
+                        db=async_db_session,
+                    )
+
+        async with async_session_maker() as independent:
+            result = await independent.execute(
+                ProcessingLog.__table__.select().where(
+                    ProcessingLog.dashboard_id == test_dashboard.id
+                )
+            )
+            rows = result.mappings().all()
+
+        assert rows == [], (
+            "a commit failure must leave no committed processing_logs row; "
+            f"independent session saw {rows}"
         )
 
 

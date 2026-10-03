@@ -230,17 +230,29 @@ async def process_upload_with_session(
         db=db,
     )
 
-    # Move file to final location with log ID as filename BEFORE commit
-    # This allows cleanup if enqueue fails
+    # Commit the accepting path BEFORE the move and the enqueue. The commit is
+    # the transaction boundary: a failure here must leave no job in RQ and no
+    # file at a final path, so both effects are ordered after it. A file move or
+    # an enqueue that raced ahead of the commit is irreversible and cannot be
+    # retracted by a rollback (RQ submission is out-of-process). The residual
+    # failure is the other direction: a failure between this commit and the move
+    # leaves a committed UPLOADED row with no file and no job, and a failure
+    # between the move and the enqueue leaves a file with no job. Both are
+    # reclaimed by the orphan sweep.
+    await db.commit()
+
+    # Move file to final location with log ID as filename. The row is durable by
+    # this point, so a move failure leaves a committed UPLOADED row with no file;
+    # the sweep reclaims it. No rollback is attempted here: the commit cannot be
+    # undone, and the row must stay readable so its fate is attributable.
     final_file_path = upload_dir / f"{log.id}{file_ext}"
     try:
         file_path.replace(final_file_path)
     except Exception:
         logger.error(
-            "Failed to move file to final path, rolling back",
+            "Failed to move file to final path after commit, leaving row for the sweep",
             exc_info=True,
         )
-        await db.rollback()
         raise
 
     logger.info(
@@ -250,8 +262,9 @@ async def process_upload_with_session(
         mode,
     )
 
-    # Enqueue job BEFORE commit for proper transaction atomicity
-    # If enqueue fails, we rollback and clean up the moved file
+    # Enqueue the job last. The file is in place, so a consumer that picks the
+    # job up finds it. If the enqueue fails, remove the moved file: the row
+    # remains committed but the file has no job, which the sweep reclaims.
     try:
         queue_job_id = await enqueue_processing_job(
             file_path=str(final_file_path),
@@ -261,14 +274,9 @@ async def process_upload_with_session(
             processing_config=processing_config,
         )
     except Exception as exc:
-        logger.error("Enqueue failed, rolling back transaction: %s", exc)
-        # Clean up the moved file on enqueue failure
+        logger.error("Enqueue failed, removing the moved file: %s", exc)
         final_file_path.unlink(missing_ok=True)
-        await db.rollback()
         raise
-
-    # Now commit after successful enqueue
-    await db.commit()
 
     logger.info(
         "Task enqueued: queue_job_id=%s, task_id=%s, dashboard_id=%s, mode=%s, config=%s",

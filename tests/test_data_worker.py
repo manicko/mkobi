@@ -532,6 +532,40 @@ class TestDataWorker:
 
         mock_session.execute.assert_called_once()
 
+    async def test_update_processing_log_status_raises_on_zero_row_update(
+        self, mock_session, caplog
+    ):
+        """A status UPDATE that matches no row is a loud failure, not a warning.
+
+        The consumer's terminal status write must be attributable: a task id with
+        no row would otherwise leave the aggregates replaced while the log claims
+        the run completed. The helper must raise an already-mapped ErrorCode and
+        must not log the success line; the test-mode contract (no commit) holds.
+        """
+        import logging
+        from mkobi.utils.exceptions import AppException, ErrorCode
+
+        task_id = str(uuid4())
+        mock_result = MagicMock()
+        mock_result.rowcount = 0
+        mock_session.execute.return_value = mock_result
+
+        with caplog.at_level(logging.INFO), pytest.raises(AppException) as exc_info:
+            await _update_processing_log_status(
+                task_id=task_id,
+                status=ProcessingStatus.COMPLETED,
+                message="Processing completed",
+                session=mock_session,
+            )
+
+        assert exc_info.value.code == ErrorCode.NOT_FOUND
+        assert (
+            "Processing log updated" not in caplog.text
+        ), "a zero-row update must not log the success line"
+        # Still a non-committing helper (the three commit.assert_not_called
+        # assertions elsewhere pin this shape).
+        mock_session.commit.assert_not_called()
+
     # --- cleanup_stale_processing_logs tests ---
 
     async def test_cleanup_stale_processing_logs_finds_stale_entries(
