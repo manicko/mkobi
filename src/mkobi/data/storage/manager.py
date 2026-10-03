@@ -9,6 +9,13 @@ Features:
 - Does not manage transactions (commit/rollback is external)
 - Uses SQLAlchemy Core
 - No race condition
+
+Dimension identity
+------------------
+``_canonicalize_dims`` is applied at every write surface (``_bulk_insert``,
+``_bulk_upsert`` and ``upsert_aggregate``) so a dimension value is stored as
+its canonical string and the conflict target ``((dims)::text)`` matches. See
+:func:`_canonicalize_dim_scalar` for the rule.
 """
 
 from __future__ import annotations
@@ -34,8 +41,10 @@ def _normalize_json_keys(data: Any) -> Any:
     """Recursively sort dictionary keys for deterministic JSON serialization.
 
     Ensures that semantically identical JSON objects produce the same text
-    representation regardless of original key ordering. This is critical for
-    PostgreSQL UPSERT conflict detection on JSONB columns cast to text.
+    representation regardless of original key ordering. Two tests assert this
+    key-sort contract. Note that jsonb canonicalises key order itself, so this
+    sort is cosmetic for index identity -- it is not what makes the conflict
+    target stable.
 
     Args:
         data: Any JSON-serializable data structure.
@@ -48,6 +57,89 @@ def _normalize_json_keys(data: Any) -> Any:
     if isinstance(data, list):
         return [_normalize_json_keys(item) for item in data]
     return data
+
+
+def _canonicalize_dim_scalar(value: Any) -> str:
+    """Canonicalise a single dimension value to its stored string form.
+
+    Row identity on ``aggregated_data`` is the unique index
+    ``uq_aggregated_data_dashboard_graph_dims`` on
+    ``(dashboard_id, graph_id, dims::text)``, and every write surface names the
+    conflict target ``text("((dims)::text)")``. The same logical value renders
+    differently with its native type -- ``{"region": "1"}`` under a ``Utf8``
+    column and ``{"region": 1}`` under an ``Int64`` column -- so no conflict
+    match occurs and one category becomes two rows, doubling every chart total.
+
+    The rule (ruling ``D-05-E``):
+
+    - ``None`` -> ``""`` (unchanged).
+    - A value with ``isoformat`` (``date``, ``datetime``) -> its ISO string,
+      keeping the ``T`` separator. A blanket ``str()`` would give
+      ``'2024-01-01 00:00:00'`` and silently re-space every stored datetime.
+    - ``int``, ``float``, ``bool`` -> ``str(value)``. ``str(True) == "True"`` is
+      distinct from ``str(1) == "1"``, so a boolean dimension does not collide
+      with a 0/1 dimension. A ``Float64`` value holding ``1e-07`` becomes the
+      string ``'1e-07'``, which ``->>`` returns unchanged -- native storage
+      would render it through ``numeric`` as ``0.0000001`` and make it
+      unreadable by the read path's ``astext == str(value)`` comparison.
+    - Anything else -> ``str(value)``.
+
+    ``metrics`` are deliberately NOT canonicalised -- numbers there are the data.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    return str(value)
+
+
+def _canonicalize_dims(data: Any) -> dict[str, Any]:
+    """Canonicalise a ``dims`` mapping so one logical category is one row.
+
+    Delegates the key-sort contract to :func:`_normalize_json_keys` and maps
+    every scalar value through :func:`_canonicalize_dim_scalar`, so the value
+    PostgreSQL serialises into the index key is the exact same bytes for every
+    write surface. Nested dicts and lists are canonicalised recursively so the
+    key-sort contract is preserved at every level. This lives in the storage
+    layer -- not in ``AggregationService._coerce_dim_value`` -- because the
+    conflict target ``((dims)::text)`` is evaluated by PostgreSQL on the value
+    about to be inserted, so this is the only placement where the index key and
+    the stored value are provably identical, and the only one that covers all
+    three write surfaces including a hand-built ``save_aggregates`` call that
+    bypasses the service.
+
+    Args:
+        data: A ``dims`` mapping (already validated as a dict).
+
+    Returns:
+        The same structure with keys sorted and scalar values canonicalised.
+    """
+    return {
+        key: _canonicalize_dims_value(nested)
+        for key, nested in _normalize_json_keys(data).items()
+    }
+
+
+def _canonicalize_dims_value(value: Any) -> Any:
+    """Recursively canonicalise a dims value: scalars to str, containers kept.
+
+    Args:
+        value: A scalar, dict or list from a ``dims`` mapping.
+
+    Returns:
+        Scalars mapped through :func:`_canonicalize_dim_scalar`; dicts and lists
+        rebuilt recursively with their keys sorted.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _canonicalize_dims_value(nested)
+            for key, nested in _normalize_json_keys(value).items()
+        }
+    if isinstance(value, list):
+        return [_canonicalize_dims_value(item) for item in value]
+    return _canonicalize_dim_scalar(value)
 
 
 class StorageManager:
@@ -186,7 +278,7 @@ class StorageManager:
             dashboard_id=dashboard_id,
         )
 
-        normalized_dims = _normalize_json_keys(dims)
+        normalized_dims = _canonicalize_dims(dims)
 
         stmt = insert(AggregatedData).values(
             dashboard_id=dashboard_id,
@@ -312,7 +404,7 @@ class StorageManager:
                 {
                     "dashboard_id": dashboard_id,
                     "graph_id": agg["graph_id"],
-                    "dims": _normalize_json_keys(agg["dims"]),
+                    "dims": _canonicalize_dims(agg["dims"]),
                     "metrics": agg["metrics"],
                 }
                 for agg in chunk
@@ -343,7 +435,7 @@ class StorageManager:
                 {
                     "dashboard_id": dashboard_id,
                     "graph_id": agg["graph_id"],
-                    "dims": _normalize_json_keys(agg["dims"]),
+                    "dims": _canonicalize_dims(agg["dims"]),
                     "metrics": agg["metrics"],
                 }
                 for agg in chunk

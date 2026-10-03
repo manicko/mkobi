@@ -51,8 +51,17 @@ def _resolve_metric_agg(metric_agg: AggregationFunctionEnum | str) -> Aggregatio
 def _coerce_dim_value(value: Any) -> str | int | float | bool:
     """Convert a Polars value to a JSON-safe native Python type.
 
-    Preserves int, float, and bool as-is for correct sorting in the frontend.
-    Converts date/datetime types to ISO format strings.
+    Converts date/datetime types to ISO format strings and ``None`` to ``""``,
+    leaving native scalars (int, float, bool) as-is.
+
+    Native scalars are preserved **here** because this layer builds the
+    aggregate record; the stored-row identity is enforced one layer down, in
+    ``data/storage/manager.py::_canonicalize_dims``, which ``str()``-canonicalises
+    every scalar dimension value at the write path. Chart order does NOT depend
+    on these native types: it is set upstream by :meth:`_apply_chart_sorting` on
+    the Polars frame, before coercion, and no frontend code sorts on a dim value.
+    Keeping the two concerns separable preserves the layering -- do not move the
+    canonicalisation rule into this function.
     """
     if value is None:
         return ""
