@@ -696,8 +696,8 @@ class TestFileValidation:
 
         Verifies:
         1. CSV files with proper content are detected as text/csv and pass validation
-        2. Plain text files are detected as text/plain or application/octet-stream
-           and are rejected (not in allowed MIME types)
+        2. Plain text files are detected as text/plain and are rejected
+           (not in allowed MIME types)
         3. Gzip files are detected as application/gzip and pass validation
 
         This test uses the actual libmagic detection to ensure MIME validation
@@ -722,18 +722,14 @@ class TestFileValidation:
         )
 
         # Test 2: Plain text file should be rejected (MIME not in allowed list)
-        # Note: libmagic detects this as text/plain, but the fallback on systems
-        # without libmagic returns application/octet-stream for content without
-        # commas/newlines. Both are not in the allowed MIME types list.
         txt_file = tmp_path / "test_mime.txt"
         txt_content = b"This is plain text without CSV structure\nNo commas or proper CSV format here"
         txt_file.write_bytes(txt_content)
 
         detected_txt = detect_mime_type_from_content(txt_file)
-        # Both text/plain (libmagic) and application/octet-stream (fallback) are
-        # not in the allowed MIME types list
-        assert detected_txt in ("text/plain", "application/octet-stream"), (
-            f"Expected 'text/plain' or 'application/octet-stream', got '{detected_txt}'"
+        # libmagic reports text/plain, which is not in the allowed MIME types list.
+        assert detected_txt == "text/plain", (
+            f"Expected 'text/plain', got '{detected_txt}'"
         )
 
         # Plain text should be rejected with MIME error
@@ -754,6 +750,9 @@ class TestFileValidation:
         gz_file.write_bytes(buf.getvalue())
 
         detected_gz = detect_mime_type_from_content(gz_file)
+        # MimeTypeEnum has two gzip members and libmagic's choice between
+        # application/gzip and application/x-gzip is version-dependent, so both
+        # remain admissible.
         assert detected_gz in ("application/gzip", "application/x-gzip"), (
             f"Expected 'application/gzip' or 'application/x-gzip', got '{detected_gz}'"
         )

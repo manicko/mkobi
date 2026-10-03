@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
+import magic
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.config import get_config
@@ -23,51 +24,25 @@ from mkobi.models.enums import (
 
 logger = get_logger(__name__)
 
-# Try to import python-magic, fall back to content-based detection if unavailable
-try:
-    import magic
 
-    def detect_mime_type_from_content(file_path: Path) -> str:
-        """Detect MIME type from actual file content using python-magic.
+def detect_mime_type_from_content(file_path: Path) -> str:
+    """Detect MIME type from actual file content using libmagic.
 
-        Args:
-            file_path: Path to the file to analyze.
+    libmagic is a hard startup dependency: ``main.check_dependencies`` refuses
+    to start the backend when ``python-magic`` is not importable, so there is
+    no heuristic fallback and no host-dependent branch. The verdict is the
+    container's libmagic version, not the host's.
 
-        Returns:
-            str: Detected MIME type string.
-        """
-        with open(file_path, "rb") as f:
-            file_buffer = f.read(2048)
-        detected_mime = magic.from_buffer(file_buffer, mime=True)
-        return detected_mime or "application/octet-stream"
+    Args:
+        file_path: Path to the file to analyze.
 
-except ImportError:
-
-    def detect_mime_type_from_content(file_path: Path) -> str:
-        """Detect MIME type from file content using gzip magic bytes fallback.
-
-        This fallback is used when python-magic/libmagic is not available
-        (e.g., on Windows without libmagic installed).
-
-        Args:
-            file_path: Path to the file to analyze.
-
-        Returns:
-            str: Detected MIME type string (text/csv or application/gzip).
-        """
-        with open(file_path, "rb") as f:
-            file_buffer = f.read(2048)
-
-        # Check for gzip magic bytes (1f 8b)
-        if file_buffer[:2] == b"\x1f\x8b":
-            return "application/gzip"
-
-        # If content looks like CSV (contains commas and newlines), treat as text/csv
-        # This is a best-effort fallback - production should use python-magic
-        if b"\n" in file_buffer and (b"," in file_buffer or b";" in file_buffer):
-            return "text/csv"
-
-        return "application/octet-stream"
+    Returns:
+        str: Detected MIME type string.
+    """
+    with open(file_path, "rb") as f:
+        file_buffer = f.read(2048)
+    detected_mime = magic.from_buffer(file_buffer, mime=True)
+    return detected_mime or "application/octet-stream"
 
 
 def validate_mime_type(file_path: Path) -> None:

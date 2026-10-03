@@ -12,7 +12,7 @@ from pydantic_settings import BaseSettings, YamlConfigSettingsSource
 from pydantic_settings.sources import PydanticBaseSettingsSource
 from platformdirs import user_data_dir
 
-from mkobi.models.enums import EnvironmentEnum, FileExtensionEnum, MimeTypeEnum
+from mkobi.models.enums import EnvironmentEnum, FileExtensionEnum
 
 logger = logging.getLogger(__name__)
 
@@ -525,10 +525,6 @@ class UploadSettings(BaseModel):
     allowed_extensions: list[FileExtensionEnum] = [
         FileExtensionEnum.CSV_GZ,
         FileExtensionEnum.CSV,
-    ]
-    allowed_mime_types: list[MimeTypeEnum] = [
-        MimeTypeEnum.TEXT_CSV,
-        MimeTypeEnum.APPLICATION_GZIP,
     ]
     lazy_threshold_mb: float = 10.0
 
@@ -1047,11 +1043,6 @@ class Settings(BaseSettings):
     def allowed_file_types(self) -> list[str]:
         """Return list of allowed file extensions."""
         return [ext.value for ext in self.upload.allowed_extensions]
-
-    @property
-    def allowed_mime_types(self) -> list[str]:
-        """Return list of allowed MIME types."""
-        return [mime.value for mime in self.upload.allowed_mime_types]
 
     @property
     def lazy_threshold_mb(self) -> float:

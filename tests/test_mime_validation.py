@@ -2,6 +2,11 @@
 
 These tests verify that MIME type detection from file content works correctly
 and rejects spoofed Content-Type headers.
+
+Host premise: the suite now runs against libmagic. python-magic is a hard
+startup dependency enforced by main.check_dependencies, and no heuristic
+fallback exists, so the expected verdicts are the test container's libmagic
+verdicts and are not host-dependent.
 """
 
 import gzip
@@ -23,7 +28,12 @@ from mkobi.models.enums import DashboardPermission
 
 
 class TestMimeTypeValidation:
-    """Test server-side MIME type detection via python-magic."""
+    """Test server-side MIME type detection via python-magic.
+
+    libmagic is a hard startup dependency (main.check_dependencies) and there is
+    no heuristic fallback; libmagic and the deleted heuristic agreed on all five
+    cases below, so no behavioural change was needed.
+    """
 
     @pytest.fixture
     async def test_dashboard(self, async_db_session) -> Dashboard:
@@ -293,8 +303,10 @@ class TestMimeTypeDetectionFunction:
         elf_file.write_bytes(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00")
 
         detected = detect_mime_type_from_content(elf_file)
-        # Should be detected as some executable type (varies by system)
-        assert "executable" in detected or "octet-stream" in detected
+        # libmagic in the test image reports application/octet-stream for this
+        # 16-byte ELF header. The old "executable or octet-stream" allowance was
+        # a host-branch allowance with no fallback left to justify it.
+        assert detected == "application/octet-stream"
 
     def test_detect_plain_text_mime(self, tmp_path: Path) -> None:
         """Detect MIME type returns appropriate type for plain text content."""
@@ -304,8 +316,9 @@ class TestMimeTypeDetectionFunction:
         text_file.write_bytes(b"just some plain text without csv structure")
 
         detected = detect_mime_type_from_content(text_file)
-        # Plain text without CSV structure should be detected as text/plain or similar
-        assert detected in ("text/plain", "application/octet-stream")
+        # The "application/octet-stream" alternative was the deleted fallback's
+        # return and is now unreachable; libmagic reports text/plain.
+        assert detected == "text/plain"
 
 
 class TestValidateMimeType:

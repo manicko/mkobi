@@ -290,12 +290,6 @@ class TestSettingsProperties(TestSettingsBase):
         assert "csv" in extensions
         assert "csv.gz" in extensions
 
-    def test_allowed_mime_types_property(self):
-        """Test allowed_mime_types property."""
-        settings = Settings()
-        mime_types = settings.allowed_mime_types
-        assert "text/csv" in mime_types
-
     def test_max_file_size_property(self):
         """Test max_file_size property (in bytes)."""
         settings = Settings()

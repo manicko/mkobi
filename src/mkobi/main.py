@@ -22,6 +22,7 @@ REQUIRED_MODULES = [
     "asyncpg",
     "rq",
     "tenacity",
+    "magic",
 ]
 
 
