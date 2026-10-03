@@ -537,6 +537,22 @@ class UploadSettings(BaseModel):
         super().__init__(**data)
 
 
+class FrontendSettings(BaseModel):
+    """Frontend build settings.
+
+    The built SPA bundle is served by app.py only when the configured directory
+    exists and carries an ``index.html``. The location is configuration rather
+    than a literal in two places, so the mount and the /health/detailed
+    component can never disagree about which directory is served.
+    """
+
+    # Defaults to the CWD-relative value that was hard-coded before, so the
+    # container's working directory and the served bundle are unchanged.
+    dist_dir: str = Field(default="frontend/dist", alias="dist_dir")
+
+    model_config = {"populate_by_name": True}
+
+
 class EmailSettings(BaseModel):
     """Email settings."""
 
@@ -609,6 +625,9 @@ class Settings(BaseSettings):
 
     # --- Upload ---
     upload: UploadSettings = UploadSettings()
+
+    # --- Frontend ---
+    frontend: FrontendSettings = FrontendSettings()
 
     # --- Redis ---
     redis: RedisSettings = RedisSettings()
@@ -1048,6 +1067,11 @@ class Settings(BaseSettings):
     def lazy_threshold_mb(self) -> float:
         """Threshold in MB above which the loader builds the frame via scan_csv."""
         return self.upload.lazy_threshold_mb
+
+    @property
+    def frontend_dist_dir(self) -> str:
+        """Alias for FRONTEND__DIST_DIR; the built SPA bundle location."""
+        return self.frontend.dist_dir
 
     @property
     def max_file_size(self) -> int:

@@ -7,6 +7,7 @@ a FastAPI instance using the factory pattern.
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -341,11 +342,13 @@ def create_app() -> FastAPI:
                 "error": str(e),
             }
 
-        # Check if static files are mounted
-        import os
+        # Check if static files are mounted. The path and the verdict come from
+        # the one helper the mount itself uses, so this component can never
+        # report a directory the mount does not serve (ART-007).
+        bundle_dir, bundle_available = resolve_frontend_bundle()
         components["static_files"] = {
-            "status": "available" if os.path.isdir("frontend/dist") else "unavailable",
-            "path": "frontend/dist",
+            "status": "available" if bundle_available else "unavailable",
+            "path": str(bundle_dir),
         }
 
         # Report the stale-processing reconciler's liveness and lease state. A
@@ -384,23 +387,49 @@ def create_app() -> FastAPI:
     return application
 
 
+def resolve_frontend_bundle() -> tuple[Path, bool]:
+    """Resolve the configured SPA bundle directory and its servability.
+
+    The single source of truth for where the built frontend lives and whether it
+    can be served. The directory is the configured ``FRONTEND__DIST_DIR``
+    (default ``frontend/dist``) resolved to an absolute path, so the reported
+    location is meaningful regardless of the process working directory. The
+    bundle is servable only when the directory exists *and* carries an
+    ``index.html``, which is exactly the condition the catch-all mount below
+    requires.
+
+    Both the mount in :func:`_setup_static_files` and the ``static_files``
+    component of ``/health/detailed`` call this one helper, so the route table
+    and the health verdict cannot drift apart (ART-007).
+
+    Returns:
+        tuple[Path, bool]: The resolved bundle directory and whether it is
+            servable.
+    """
+    static_dir = Path(get_config().frontend.dist_dir).resolve()
+    index_path = static_dir / "index.html"
+    return static_dir, static_dir.is_dir() and index_path.is_file()
+
+
 def _setup_static_files(application: FastAPI) -> None:
     """Sets up static file serving for React SPA.
 
-    Mounts static files from frontend/dist with SPA fallback enabled.
-    Uses custom SPAStaticFiles class to serve index.html for non-existent
-    paths, enabling proper client-side routing for the React application.
+    Mounts static files from the configured frontend bundle with SPA fallback
+    enabled, but only when the shared bundle predicate reports the bundle
+    servable. Uses custom SPAStaticFiles class to serve index.html for
+    non-existent paths, enabling proper client-side routing for the React
+    application.
     """
-    from pathlib import Path
     from starlette.staticfiles import StaticFiles as BaseStaticFiles
     from starlette.responses import FileResponse
     from starlette.exceptions import HTTPException
 
-    static_dir = Path("frontend/dist")
+    static_dir, bundle_available = resolve_frontend_bundle()
     index_path = static_dir / "index.html"
 
-    # Only register static files and SPA fallback when frontend build exists
-    if static_dir.exists() and index_path.exists():
+    # Only register static files and SPA fallback when the shared predicate
+    # reports the bundle servable - the same predicate /health/detailed reports.
+    if bundle_available:
         logger.info("Mounting static files from %s", static_dir)
 
         # Set of API prefixes for robust path checking
