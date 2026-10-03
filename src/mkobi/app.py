@@ -257,6 +257,16 @@ def create_app() -> FastAPI:
     # application for these paths (hand-over HO-4).
     documents_enabled = config.environment != EnvironmentEnum.PRODUCTION
 
+    # Slash handling runs ahead of route resolution and therefore ahead of every
+    # Depends. With the default (True), a declared path ending in "/" requested
+    # without its slash answers an anonymous 307 before any credential is
+    # examined, which is an existence oracle over the four collection paths
+    # (EB-4 / EXT-006). Disabling it makes the no-slash variant 404 instead. It
+    # must be set here, on the application router: the redirect is decided by the
+    # top-level router on the full path, so the per-router redirect_slashes flags
+    # elsewhere cannot suppress it (phase 08's D-08-7 deletes those; the ones in
+    # this tree are inert for this direction and left untouched). Re-declaring
+    # the four routes on "" would only move the oracle to the slash direction.
     application = FastAPI(
         title=config.app.name,
         description="BI Dashboard System API",
@@ -265,6 +275,7 @@ def create_app() -> FastAPI:
         docs_url="/docs" if documents_enabled else None,
         redoc_url="/redoc" if documents_enabled else None,
         openapi_url="/openapi.json" if documents_enabled else None,
+        redirect_slashes=False,
         lifespan=lifespan,
     )
 

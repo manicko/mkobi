@@ -163,10 +163,22 @@ After completing TASK_012 and TASK_016, the Layout API should be fully functiona
 
 ### Dashboards
 - **GET /api/v1/dashboards/my** - List user's dashboards
-- **POST /api/v1/dashboards** - Create dashboard (admin)
+- **GET /api/v1/dashboards/** - List all dashboards (admin)
+- **POST /api/v1/dashboards/** - Create dashboard (admin)
 - **GET /api/v1/dashboards/{id}** - Get dashboard details
 - **PUT /api/v1/dashboards/{id}** - Update dashboard (admin)
 - **DELETE /api/v1/dashboards/{id}** - Delete dashboard (admin)
+
+### Collection paths
+The four collection endpoints below are declared — and served — with a trailing
+slash. A request without the slash is **not** redirected; it answers `404`, the
+same as an undeclared path, so an unauthenticated caller cannot enumerate which
+collection paths exist.
+- **GET /api/v1/users/** - List all users (admin)
+- **POST /api/v1/users/** - Create user (admin)
+- **GET /api/v1/graphs/** - List graphs available to the user
+- **POST /api/v1/graphs/** - Create graph (admin)
+- **GET /api/v1/admin/logs/** - List processing logs (admin)
 
 ### Data
 - **GET /api/v1/data/aggregated** - Get aggregated data for charts
