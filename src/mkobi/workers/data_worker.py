@@ -62,8 +62,13 @@ _WARNING_SUMMARY_SEPARATOR = " | Warnings: "
 _TRUNCATION_MARKER = "...[truncated]"
 
 
-def _map_processing_error_to_code(error: Exception) -> str:
+def _map_processing_error_to_code(error: BaseException) -> str:
     """Map processing exception to ErrorCode string.
+
+    Accepts ``BaseException`` because the worker's failure handlers now catch
+    ``BaseException`` (to reclaim the input file on cancellation) and still
+    classify the caught value. The body reads only ``code``/``str``/``isinstance``,
+    all of which are defined on ``BaseException``.
 
     Classifies by the exception's own code where one is available: an
     ``AppException`` (or any exception exposing a ``code`` that is a member of
@@ -578,7 +583,11 @@ async def _process_csv_file_async(
     transaction that publishes the PROCESSING transition, then a main
     transaction that holds the dashboard's rebuild exclusion, writes the
     aggregates and commits the terminal COMPLETED transition together. The
-    test path leaves every write inside the caller's SAVEPOINT.
+    input file is unlinked only after that main transaction has committed, and
+    the failure handler (which catches ``BaseException`` for cleanup only and
+    re-raises) retains its own unlink so a commit failure cannot leak the file.
+    The test path leaves every write inside the caller's SAVEPOINT and unlinks
+    through the same shared failure/success handling.
 
     Args:
         file_path_str: Path to CSV file as string.
@@ -803,11 +812,6 @@ async def _process_csv_file_async(
             processing_config_dict=processing_config_dict,
         )
 
-        # Clean up temp file
-        if file_path.exists():
-            await asyncio.to_thread(file_path.unlink)
-            logger.info("Temp file deleted: %s", file_path)
-
         # Update status to completed (within same transaction). The completion
         # sentence a client renders is preserved; any validation warnings are
         # appended after an explicit separator under the column's length cap.
@@ -826,6 +830,12 @@ async def _process_csv_file_async(
             finished_at=datetime.now(UTC),
             session=session,
         )
+
+        # The input file is NOT unlinked here. It is unlinked by the caller after
+        # this function returns, i.e. after the surrounding transaction block has
+        # exited -- after the commit in production (DP-016: a process killed
+        # before the commit must leave the row and the file with a shared fate)
+        # and after the caller's SAVEPOINT work in tests.
 
         return {
             "success": True,
@@ -849,17 +859,34 @@ async def _process_csv_file_async(
                 started_at=datetime.now(UTC),
                 session=db_session,
             )
-            return await _run_with_transaction(db_session)
-        except Exception as e:
+            result = await _run_with_transaction(db_session)
+            # Success-path unlink. Symmetric with the production branch: it runs
+            # after the caller's transaction work. If anything raises instead of
+            # reaching here, the ``except BaseException`` handler below reclaims
+            # the file.
+            if file_path.exists():
+                await asyncio.to_thread(file_path.unlink)
+                logger.info("Temp file deleted: %s", file_path)
+            return result
+        except BaseException as e:
+            # BaseException, not Exception: asyncio.CancelledError inherits
+            # BaseException, so an ``except Exception`` handler cannot reclaim
+            # the file when the job is cancelled (DP-016, first half). This
+            # handler awaits (the compensation write and the threaded unlink), so
+            # it treats cancellation exactly as a failure: it is not a bare
+            # ``finally``, and the original exception is re-raised below.
             error_msg = str(e)
             error_code = _map_processing_error_to_code(e)
             logger.exception("Processing failed: task_id=%s, error=%s, code=%s", task_id, error_msg, error_code)
 
-            # Clean up temp file on error
+            # Clean up temp file on error. The success path unlinks after the
+            # transaction commit; this failure-path unlink is retained so a
+            # commit failure -- which never reaches the success-path unlink --
+            # still reclaims the file rather than leaking it (D-05-B).
             if file_path.exists():
                 try:
                     await asyncio.to_thread(file_path.unlink)
-                except Exception:
+                except BaseException:
                     logger.warning(
                         "Failed to clean up temp file: %s",
                         file_path,
@@ -882,6 +909,14 @@ async def _process_csv_file_async(
         # The failure-compensation handler wraps the whole block so it also covers
         # failures raised before either transaction runs (get_session() or
         # session.begin()), not just failures from _run_with_transaction.
+        #
+        # The success-path unlink lives in the ``else`` branch, which runs only
+        # after the ``async with session.begin()`` block has exited -- i.e. only
+        # after the main transaction has committed. A commit failure makes
+        # session.begin()'s __aexit__ re-raise, so the ``else`` branch is skipped
+        # and the ``except`` branch's retained unlink reclaims the file. That
+        # retention is load-bearing: without it, a commit failure would leak the
+        # file, since the success-path unlink is now after the commit (D-05-B).
         try:
             # First transaction: publish PROCESSING on its own short-lived session
             # so any independent connection observes the job in flight. Committing
@@ -912,17 +947,35 @@ async def _process_csv_file_async(
                     # Second transaction: the work plus the terminal transition.
                     # COMPLETED commits with the aggregate write, so a dashboard
                     # never reports completed with aggregates that did not commit.
-                    return await _run_with_transaction(session)
-        except Exception as e:
+                    result = await _run_with_transaction(session)
+            # Reached only after the main transaction committed. Because the
+            # success path no longer unlinks inside the transaction body, the file
+            # is still present here; unlink it now, so a process killed before the
+            # commit leaves the row and the file with a shared fate (DP-016 first
+            # and second halves).
+            if file_path.exists():
+                await asyncio.to_thread(file_path.unlink)
+                logger.info("Temp file deleted: %s", file_path)
+            return result
+        except BaseException as e:
+            # BaseException, not Exception: asyncio.CancelledError inherits
+            # BaseException, so an ``except Exception`` handler cannot reclaim the
+            # file when the job is cancelled (DP-016, first half). This handler
+            # awaits (the compensation write and the threaded unlink), so it
+            # treats cancellation exactly as a failure: it is not a bare
+            # ``finally``, and the original exception is re-raised below.
             error_msg = str(e)
             error_code = _map_processing_error_to_code(e)
             logger.exception("Processing failed: task_id=%s, error=%s, code=%s", task_id, error_msg, error_code)
 
-            # Clean up temp file on error
+            # Clean up temp file on error. Retained deliberately: the success-path
+            # unlink is now after the commit, so a commit failure reaches only
+            # this branch; removing this unlink would leak a file on every commit
+            # failure (D-05-B).
             if file_path.exists():
                 try:
                     await asyncio.to_thread(file_path.unlink)
-                except Exception:
+                except BaseException:
                     logger.warning(
                         "Failed to clean up temp file: %s",
                         file_path,
@@ -941,7 +994,7 @@ async def _process_csv_file_async(
                     finished_at=datetime.now(UTC),
                     error_code=error_code,
                 )
-            except Exception as status_err:
+            except BaseException as status_err:
                 logger.exception(
                     "Failed to update processing log status to FAILED: task_id=%s, error=%s",
                     task_id,

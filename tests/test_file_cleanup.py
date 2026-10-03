@@ -1,4 +1,5 @@
 """Tests for file cleanup utilities."""
+import asyncio
 import os
 import shutil
 import tempfile
@@ -11,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 
+from mkobi.models.enums import ProcessingStatus
 from mkobi.services.file_cleanup import cleanup_stale_temp_files
 
 
@@ -359,12 +361,18 @@ class TestProcessingFailureReportedOnOwnSession:
 
 
 class TestRolledBackMainTransactionLeavesNoLeakedFile:
-    """A failed commit of the main transaction must not leak the temp file.
+    """A failed commit of the main transaction must still not leak the temp file.
 
-    The success path unlinks the temp file *inside* the transaction body, so a
-    commit failure rolls the status back but the file is already gone and the
-    compensation's ``if file_path.exists()`` guard makes its own unlink a no-op.
-    Moving the unlink after the commit would leak the file here.
+    The success path unlinks the temp file *after* the main transaction commits
+    (ruling D-05-B), so at the instant the commit fails the file is **still
+    present** and the success-path unlink never runs. No file leaks because the
+    failure-path unlink in ``_process_csv_file_async`` is **retained**: that
+    handler reclaims the very file the success path has not yet reached. The
+    assertion below is therefore inverted relative to the pre-ruling version
+    (which expected the file to be gone because it was unlinked inside the
+    transaction body); the reason no file leaks is the retained failure-path
+    unlink, and the final ``list(tmp_path.glob("*.csv*")) == []`` is the genuine
+    guard that a commit failure still cleans up.
     """
 
     @staticmethod
@@ -374,8 +382,8 @@ class TestRolledBackMainTransactionLeavesNoLeakedFile:
         Records whether the temp file still exists at the moment the commit
         fails (``__aexit__``, after the block body ran) - that is the instant
         that distinguishes an unlink kept inside the transaction body (already
-        gone) from one moved after the commit (still present, and leaked on any
-        path that does not reach it).
+        gone) from one moved after the commit (still present, and reclaimed by
+        the retained failure-path unlink).
         """
 
         class _FailingBegin:
@@ -414,7 +422,6 @@ class TestRolledBackMainTransactionLeavesNoLeakedFile:
         import polars as pl
 
         import mkobi.workers.data_worker as data_worker
-        from mkobi.models.enums import ProcessingStatus
         from mkobi.workers.data_worker import CSVLoader
 
         task_id = uuid4()
@@ -491,9 +498,155 @@ class TestRolledBackMainTransactionLeavesNoLeakedFile:
         assert len(failed_writes) == 1
         assert "session" not in failed_writes[0]
 
-        # The unlink ran inside the transaction body: the file was already gone
-        # when the main transaction failed to commit, and the compensation's own
-        # unlink was therefore a no-op. Moving the unlink after the commit would
-        # leave the file present at this instant.
-        assert observed.get("file_exists_at_commit") is False
+        # The unlink now runs after the commit, so the file is still present when
+        # the main transaction fails to commit. It does not leak because the
+        # retained failure-path unlink reclaims it (ruling D-05-B): the final
+        # glob assertion below is the guard that a commit failure still cleans up.
+        assert observed.get("file_exists_at_commit") is True
         assert list(tmp_path.glob("*.csv*")) == []
+
+    @pytest.mark.asyncio
+    async def test_cancellation_still_removes_the_file(
+        self, tmp_path
+    ):
+        """A cancelled run must reclaim the temp file (DP-016, first half).
+
+        ``asyncio.CancelledError`` inherits ``BaseException``, so the old
+        ``except Exception`` handler could never reach it and a cancelled run
+        kept its file. This drives a **mocked** ``CancelledError`` through the
+        production path. A mocked one is chosen over a real asyncio cancellation
+        because it exercises the handler's own behaviour (its ``except`` clause
+        and its re-raise) rather than asyncio's task-cancellation plumbing, and
+        the exception type is what the handler discriminates on.
+        """
+        import polars as pl
+
+        import mkobi.workers.data_worker as data_worker
+        from mkobi.workers.data_worker import CSVLoader
+
+        task_id = uuid4()
+        task_file = tmp_path / f"{task_id}.csv"
+        task_file.write_bytes(b"category,sales\n1,\"unclosed quote\n")
+
+        status_mock = AsyncMock(return_value=None)
+        # Force a cancellation after the main transaction has begun, not during
+        # parsing. CancelledError inherits BaseException; the old `except
+        # Exception` would not have caught it.
+        store_mock = AsyncMock(side_effect=asyncio.CancelledError())
+
+        async def successful_session():
+            session = AsyncMock()
+            session.execute = AsyncMock()
+            session.begin = MagicMock()
+            return session
+
+        @asynccontextmanager
+        async def fake_get_session():
+            yield await successful_session()
+
+        valid_frame = pl.DataFrame({"category": ["a"], "sales": [1]})
+
+        raised: BaseException | None = None
+        with patch(
+            "mkobi.workers.data_worker._update_processing_log_status", new=status_mock
+        ), patch(
+            "mkobi.workers.data_worker._store_aggregates", new=store_mock
+        ), patch(
+            "mkobi.workers.data_worker.get_session", new=fake_get_session
+        ), patch(
+            "mkobi.workers.data_worker.acquire_dashboard_rebuild_lock",
+            new=AsyncMock(),
+        ), patch.object(
+            CSVLoader, "load_csv", return_value=valid_frame
+        ):
+            try:
+                await data_worker._process_csv_file_async(
+                    file_path_str=str(task_file),
+                    task_id=str(task_id),
+                    dashboard_id_str="00000000-0000-0000-0000-000000000000",
+                    processing_config_dict=None,
+                    mode="overwrite",
+                    db_session=None,
+                )
+            except BaseException as exc:  # noqa: BLE001 - we assert on the type below
+                raised = exc
+
+        # The cancellation still propagates: the handler must not swallow it.
+        assert isinstance(raised, asyncio.CancelledError)
+        # The file is reclaimed even though the exception is not an Exception.
+        assert list(tmp_path.glob("*.csv*")) == []
+        # The failure was still reported on the helper's own session (no arg).
+        failed_writes = [
+            call.kwargs
+            for call in status_mock.await_args_list
+            if call.kwargs.get("status") == ProcessingStatus.FAILED
+        ]
+        assert len(failed_writes) == 1
+        assert "session" not in failed_writes[0]
+
+    @pytest.mark.asyncio
+    async def test_failing_commit_still_removes_the_file(
+        self, tmp_path
+    ):
+        """A failed commit must unlink the file, else every commit failure leaks.
+
+        This is the guard on D-05-B's mandatory condition. The success path now
+        unlinks after the commit, so on a commit failure the file is present at
+        commit time (asserted here) and only the **retained** failure-path
+        unlink reclaims it. A move that dropped that unlink would fail this test.
+        """
+        import polars as pl
+
+        import mkobi.workers.data_worker as data_worker
+        from mkobi.workers.data_worker import CSVLoader
+
+        task_id = uuid4()
+        task_file = tmp_path / f"{task_id}.csv"
+        task_file.write_bytes(b"category,sales\n1,\"unclosed quote\n")
+
+        observed: dict[str, Any] = {}
+        # The status helper is mocked whole, so it never opens a session itself;
+        # the only get_session() call is the main transaction. Make that one fail
+        # to commit.
+        failing = self._session_with_failing_commit(observed, task_file)
+        sessions = [failing]
+
+        @asynccontextmanager
+        async def counting_get_session():
+            yield sessions.pop(0)
+
+        status_mock = AsyncMock(return_value=None)
+        valid_frame = pl.DataFrame({"category": ["a"], "sales": [1]})
+
+        raised: BaseException | None = None
+        with patch(
+            "mkobi.workers.data_worker._update_processing_log_status", new=status_mock
+        ), patch(
+            "mkobi.workers.data_worker._store_aggregates", new=AsyncMock(return_value=None)
+        ), patch(
+            "mkobi.workers.data_worker.get_session", new=counting_get_session
+        ), patch(
+            "mkobi.workers.data_worker.acquire_dashboard_rebuild_lock",
+            new=AsyncMock(),
+        ), patch.object(
+            CSVLoader, "load_csv", return_value=valid_frame
+        ):
+            try:
+                await data_worker._process_csv_file_async(
+                    file_path_str=str(task_file),
+                    task_id=str(task_id),
+                    dashboard_id_str="00000000-0000-0000-0000-000000000000",
+                    processing_config_dict=None,
+                    mode="overwrite",
+                    db_session=None,
+                )
+            except BaseException as exc:  # noqa: BLE001 - we assert on the type below
+                raised = exc
+
+        assert isinstance(raised, RuntimeError)
+        assert "main transaction commit failed" in str(raised)
+        # The file was still present when the commit failed - the success-path
+        # unlink had not run - and the failure path reclaimed it.
+        assert observed.get("file_exists_at_commit") is True
+        assert list(tmp_path.glob("*.csv*")) == []
+
