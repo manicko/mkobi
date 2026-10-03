@@ -923,3 +923,363 @@ class TestRolledBackMainTransactionLeavesNoLeakedFile:
         assert observed.get("file_exists_at_commit") is True
         assert list(tmp_path.glob("*.csv*")) == []
 
+
+class TestAcceptedArtefactTerminalStateRule:
+    """The accepted artefact is scratch space: gone on every terminal state.
+
+    This class states and asserts the rule that ruling **D-06-A = (b)** makes
+    explicit. ``_process_csv_file_async`` owns it: once a job reaches a terminal
+    state -- COMPLETED or FAILED -- the input file is removed. The removal is a
+    *designed* property, not an accident, and this class is where the design is
+    held to account.
+
+    The rule's scope is stated honestly. Three failure edges each delete:
+    rollback, cancellation, and commit failure. The one state in which a file
+    outlives its task is a *hard process kill* mid-job, where RQ never runs the
+    handler; there the file is left to the stale-age sweep. The boundary test at
+    the end of this class asserts that residual rather than pretending the
+    invariant is total.
+
+    These tests drive the production path (``db_session=None``) with the same
+    mock shape used elsewhere in this module. They do not duplicate the
+    implementation; they assert the terminal state the implementation reaches.
+    """
+
+    @staticmethod
+    def _write_task_file(tmp_path: Path) -> tuple[Any, Path]:
+        """Create a task file whose parse would fail; the body patches the loader."""
+        task_id = uuid4()
+        task_file = tmp_path / f"{task_id}.csv"
+        task_file.write_bytes(b"category,sales\n1,\"unclosed quote\n")
+        return task_id, task_file
+
+    @staticmethod
+    def _ok_session() -> MagicMock:
+        """A mock session whose ``begin()`` block commits normally."""
+        session = MagicMock()
+        session.execute = AsyncMock()
+        session.begin = MagicMock()
+        return session
+
+    @staticmethod
+    def _session_that_rolls_back() -> MagicMock:
+        """A mock session whose ``begin()`` block rolls back on a body exception.
+
+        ``__aexit__`` returns falsy, so a body exception propagates and no commit
+        happens -- the *rollback* edge, distinct from a commit failure (which
+        raises on a *successful* body).
+        """
+
+        class _RollingBackBegin:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        session = MagicMock()
+        session.execute = AsyncMock()
+        session.begin = lambda: _RollingBackBegin()
+        return session
+
+    async def _run_with_session(
+        self,
+        tmp_path: Path,
+        session: MagicMock,
+        status_mock: AsyncMock,
+        store_mock: AsyncMock,
+    ) -> BaseException | None:
+        """Drive the production path once with one main-transaction session.
+
+        Only the main transaction opens ``get_session`` here: the status helper
+        is mocked whole, so it never opens a session of its own. Returns the
+        raised exception, or None on a normal return.
+        """
+        import polars as pl
+
+        import mkobi.workers.data_worker as data_worker
+        from mkobi.workers.data_worker import CSVLoader
+
+        task_id, task_file = self._write_task_file(tmp_path)
+
+        @asynccontextmanager
+        async def one_session():
+            yield session
+
+        valid_frame = pl.DataFrame({"category": ["a"], "sales": [1]})
+        raised: BaseException | None = None
+        with patch(
+            "mkobi.workers.data_worker._update_processing_log_status", new=status_mock
+        ), patch(
+            "mkobi.workers.data_worker._store_aggregates", new=store_mock
+        ), patch(
+            "mkobi.workers.data_worker.get_session", new=one_session
+        ), patch(
+            "mkobi.workers.data_worker.acquire_dashboard_rebuild_lock",
+            new=AsyncMock(),
+        ), patch.object(
+            CSVLoader, "load_csv", return_value=valid_frame
+        ):
+            try:
+                await data_worker._process_csv_file_async(
+                    file_path_str=str(task_file),
+                    task_id=str(task_id),
+                    dashboard_id_str="00000000-0000-0000-0000-000000000000",
+                    processing_config_dict=None,
+                    mode="overwrite",
+                    db_session=None,
+                )
+            except BaseException as exc:  # noqa: BLE001 - asserted by callers
+                raised = exc
+        return raised
+
+    def _failed_writes(self, status_mock: AsyncMock) -> list[Any]:
+        """Return the status writes carrying ``ProcessingStatus.FAILED``."""
+        return [
+            call.kwargs
+            for call in status_mock.await_args_list
+            if call.kwargs.get("status") == ProcessingStatus.FAILED
+        ]
+
+    @pytest.mark.asyncio
+    async def test_rollback_after_aggregates_are_staged_removes_the_artefact(
+        self, tmp_path
+    ):
+        """Edge 1: the transaction rolls back after the aggregates are staged.
+
+        The aggregates are stored successfully inside the transaction body, then
+        the terminal COMPLETED write raises before the block can exit. The body
+        exception makes ``__aexit__`` roll back rather than commit, so the
+        success-path unlink (which sits after the commit) is never reached and
+        the failure handler must reclaim the file. The run produced no durable
+        aggregates, so the artefact must be gone.
+        """
+        status_mock = AsyncMock(return_value=None)
+
+        async def status_raises_on_completed(**kwargs):
+            if kwargs.get("status") == ProcessingStatus.COMPLETED:
+                raise RuntimeError("rollback after staging aggregates")
+            return None
+
+        status_mock.side_effect = status_raises_on_completed
+        store_mock = AsyncMock(return_value=None)
+
+        session = self._session_that_rolls_back()
+        raised = await self._run_with_session(tmp_path, session, status_mock, store_mock)
+
+        # The rollback still propagates and the aggregates were staged first:
+        # the COMPLETED write is what raised, after ``_store_aggregates`` ran, so
+        # this is genuinely "the transaction fails after the aggregates are
+        # staged".
+        assert isinstance(raised, RuntimeError)
+        assert "rollback after staging aggregates" in str(raised)
+        assert store_mock.await_count == 1
+        # The ruled state: artefact absent on the rollback edge.
+        assert list(tmp_path.glob("*.csv*")) == []
+        # The failure is still reported on the helper's own session (no arg),
+        # so the FAILED row survives the rollback it reports.
+        failed_writes = self._failed_writes(status_mock)
+        assert len(failed_writes) == 1
+        assert "session" not in failed_writes[0]
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_the_job_removes_the_artefact(self, tmp_path):
+        """Edge 2: ``asyncio.CancelledError`` during the job removes the artefact.
+
+        ``CancelledError`` inherits ``BaseException``, so the pre-``5e73e37``
+        ``except Exception`` handler could not reach it and a cancelled run kept
+        its file. This is the edge ``5e73e37`` made reachable; the test asserts
+        it rather than assuming it. A mocked ``CancelledError`` is used because
+        the exception type is what the handler discriminates on.
+        """
+        status_mock = AsyncMock(return_value=None)
+        store_mock = AsyncMock(side_effect=asyncio.CancelledError())
+
+        session = self._ok_session()
+        raised = await self._run_with_session(tmp_path, session, status_mock, store_mock)
+
+        # The cancellation propagates -- the handler must not swallow it.
+        assert isinstance(raised, asyncio.CancelledError)
+        # The ruled state: artefact absent on the cancellation edge.
+        assert list(tmp_path.glob("*.csv*")) == []
+        failed_writes = self._failed_writes(status_mock)
+        assert len(failed_writes) == 1
+        assert "session" not in failed_writes[0]
+
+    @pytest.mark.asyncio
+    async def test_commit_failure_removes_the_artefact_and_not_before(self, tmp_path):
+        """Edge 3: the commit itself raising removes the artefact.
+
+        The block body succeeds, so the failure comes from the commit on exit,
+        not from the body (that is the rollback edge). The file is still present
+        at commit time -- the success-path unlink sits after the commit -- and the
+        retained failure-path unlink reclaims it, so no commit failure leaks.
+        """
+        status_mock = AsyncMock(return_value=None)
+        store_mock = AsyncMock(return_value=None)
+
+        observed: dict[str, Any] = {}
+        task_id = uuid4()
+        task_file = tmp_path / f"{task_id}.csv"
+        task_file.write_bytes(b"category,sales\n1,\"unclosed quote\n")
+        session = TestRolledBackMainTransactionLeavesNoLeakedFile._session_with_failing_commit(
+            observed, task_file
+        )
+
+        @asynccontextmanager
+        async def one_session():
+            yield session
+
+        import polars as pl
+
+        import mkobi.workers.data_worker as data_worker
+        from mkobi.workers.data_worker import CSVLoader
+
+        valid_frame = pl.DataFrame({"category": ["a"], "sales": [1]})
+        raised: BaseException | None = None
+        with patch(
+            "mkobi.workers.data_worker._update_processing_log_status", new=status_mock
+        ), patch(
+            "mkobi.workers.data_worker._store_aggregates", new=store_mock
+        ), patch(
+            "mkobi.workers.data_worker.get_session", new=one_session
+        ), patch(
+            "mkobi.workers.data_worker.acquire_dashboard_rebuild_lock",
+            new=AsyncMock(),
+        ), patch.object(
+            CSVLoader, "load_csv", return_value=valid_frame
+        ):
+            try:
+                await data_worker._process_csv_file_async(
+                    file_path_str=str(task_file),
+                    task_id=str(task_id),
+                    dashboard_id_str="00000000-0000-0000-0000-000000000000",
+                    processing_config_dict=None,
+                    mode="overwrite",
+                    db_session=None,
+                )
+            except BaseException as exc:  # noqa: BLE001 - asserted below
+                raised = exc
+
+        assert isinstance(raised, RuntimeError)
+        assert "main transaction commit failed" in str(raised)
+        # The file was still present at the instant the commit failed: the
+        # success-path unlink had not run, which is what makes the retained
+        # failure-path unlink load-bearing.
+        assert observed.get("file_exists_at_commit") is True
+        # The ruled state: artefact absent on the commit-failure edge.
+        assert list(tmp_path.glob("*.csv*")) == []
+
+    @pytest.mark.asyncio
+    async def test_every_terminal_status_leaves_the_artefact_absent(self, tmp_path):
+        """The invariant: for every terminal status the artefact is gone.
+
+        COMPLETED (the success path commits, then unlinks) and FAILED (the
+        failure path rolls back and unlinks) are the two terminal states of
+        ``ProcessingStatus``. Both must leave no file behind. This is the
+        terminal-state invariant stated once for the whole set, so a future
+        terminal status cannot be added without confronting it.
+        """
+        terminal_states = [
+            s for s, targets in ProcessingStatus.valid_transitions().items() if not targets
+        ]
+        assert set(terminal_states) == {
+            ProcessingStatus.COMPLETED,
+            ProcessingStatus.FAILED,
+        }
+
+        # COMPLETED: a clean run reaches the success path and unlinks after the
+        # commit.
+        success_status = AsyncMock(return_value=None)
+        success_raised = await self._run_with_session(
+            tmp_path, self._ok_session(), success_status, AsyncMock(return_value=None)
+        )
+        assert success_raised is None
+        assert list(tmp_path.glob("*.csv*")) == []
+
+        # FAILED: a run that raises mid-transaction rolls back and unlinks in the
+        # failure handler.
+        failed_status = AsyncMock(return_value=None)
+        failure_raised = await self._run_with_session(
+            tmp_path,
+            self._ok_session(),
+            failed_status,
+            AsyncMock(side_effect=RuntimeError("forced failure")),
+        )
+        assert isinstance(failure_raised, RuntimeError)
+        assert list(tmp_path.glob("*.csv*")) == []
+
+    @pytest.mark.asyncio
+    async def test_interrupted_run_leaves_the_file_to_the_stale_age_sweep(
+        self, setup_temp_dir_fixture
+    ):
+        """The honest boundary: a hard kill skips every edge, so the sweep owns it.
+
+        A hard process kill (SIGKILL/OOM/container stop) mid-job never runs RQ's
+        handler, so the file outlives its task. The invariant above is therefore
+        scoped to *reached* terminal states, and this test asserts the residual
+        explicitly instead of overstating the rule. The kill is modelled by
+        making the success-path unlink a no-op: the job returns success with the
+        file still on disk, which is exactly the state a kill after the commit
+        and before the unlink leaves behind. ``cleanup_stale_temp_files`` then
+        reclaims it, so the residual is bounded rather than unbounded.
+
+        The task file is written into the *configured* upload directory (the
+        autouse fixture's temp dir), because that is the directory the sweep
+        globs -- the same directory a real interrupted run would leave it in.
+        """
+        import polars as pl
+
+        import mkobi.workers.data_worker as data_worker
+        from mkobi.workers.data_worker import CSVLoader
+
+        tmp_path = Path(setup_temp_dir_fixture)
+        task_id, task_file = self._write_task_file(tmp_path)
+
+        status_mock = AsyncMock(return_value=None)
+        store_mock = AsyncMock(return_value=None)
+        session = self._ok_session()
+
+        @asynccontextmanager
+        async def one_session():
+            yield session
+
+        real_unlink = Path.unlink
+
+        def _noop_unlink(self, *args, **kwargs):
+            # Model the process dying before the unlink lands: this process never
+            # removes the file, and no handler runs either.
+            return None
+
+        valid_frame = pl.DataFrame({"category": ["a"], "sales": [1]})
+        with patch(
+            "mkobi.workers.data_worker._update_processing_log_status", new=status_mock
+        ), patch(
+            "mkobi.workers.data_worker._store_aggregates", new=store_mock
+        ), patch(
+            "mkobi.workers.data_worker.get_session", new=one_session
+        ), patch(
+            "mkobi.workers.data_worker.acquire_dashboard_rebuild_lock",
+            new=AsyncMock(),
+        ), patch.object(Path, "unlink", _noop_unlink), patch.object(
+            CSVLoader, "load_csv", return_value=valid_frame
+        ):
+            await data_worker._process_csv_file_async(
+                file_path_str=str(task_file),
+                task_id=str(task_id),
+                dashboard_id_str="00000000-0000-0000-0000-000000000000",
+                processing_config_dict=None,
+                mode="overwrite",
+                db_session=None,
+            )
+
+        # The interruption boundary: the file outlives its task.
+        assert task_file.exists()
+
+        # The sweep is what bounds the residual. Restore the real unlink before
+        # sweeping, so this is the sweep's own removal and not the no-op.
+        with patch.object(Path, "unlink", real_unlink):
+            result = cleanup_stale_temp_files(max_age_hours=0)
+        assert result.deleted == 1
+        assert not task_file.exists()
+

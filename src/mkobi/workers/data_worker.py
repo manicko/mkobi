@@ -583,12 +583,46 @@ async def _process_csv_file_async(
     The production path uses two ordered commits: a short own-session
     transaction that publishes the PROCESSING transition, then a main
     transaction that holds the dashboard's rebuild exclusion, writes the
-    aggregates and commits the terminal COMPLETED transition together. The
-    input file is unlinked only after that main transaction has committed, and
-    the failure handler (which catches ``BaseException`` for cleanup only and
-    re-raises) retains its own unlink so a commit failure cannot leak the file.
-    The test path leaves every write inside the caller's SAVEPOINT and unlinks
-    through the same shared failure/success handling.
+    aggregates and commits the terminal COMPLETED transition together. The test
+    path leaves every write inside the caller's SAVEPOINT.
+
+    **The accepted artefact is scratch space (ruling D-06-A = (b)).** Once the
+    job reaches a *terminal* state -- COMPLETED or FAILED -- the input file is
+    removed, and that removal is a *designed* property of the system, not an
+    accident. It is not retained past a terminal state and cannot be reprocessed
+    from disk; the operator's only recourse is to ask the uploader for the file
+    again. This is stated here because this function owns the rule, and it is
+    asserted by ``tests/test_file_cleanup.py``.
+
+    The rule has three deliberate edges, each of which removes the file:
+
+    * **Success** -- the file is unlinked only *after* the main transaction has
+      committed, never before. A rollback must not be able to destroy the only
+      copy of the data the aggregates were derived from, so the unlink is
+      ordered strictly after the commit.
+    * **Failure / rollback** -- the run produced no durable aggregates, so the
+      handler (which catches ``BaseException`` for cleanup only and re-raises)
+      removes the file. That handler keeps its own unlink on purpose: because the
+      success-path unlink now sits after a commit that can fail, removing it
+      would leak the file on every commit failure.
+    * **Commit failure** -- the commit itself raising is the case the retained
+      failure-path unlink exists to reclaim; the success-path unlink is never
+      reached when the commit fails.
+
+    **The interrupted-run boundary.** A *hard process kill* mid-job (SIGKILL,
+    OOM, container stop) reaches none of these edges: RQ never runs the handler,
+    so the file survives until the stale-age sweep (``cleanup_stale_temp_files``)
+    reclaims it. That is the one terminal-ish state in which the file outlives
+    its task, and it is bounded by the sweep's age threshold rather than by this
+    function. Stated explicitly so the terminal-state invariant's scope is
+    honest rather than overstated.
+
+    **The accepting path's own removal.** A third physical removal site lives
+    outside this function, in
+    ``services/file_processing.py::enqueue_processing_job``: when the enqueue
+    itself fails, the already-moved file is unlinked and the exception re-raised.
+    That path never reaches a PROCESSING row, so it is the same rule seen from
+    the admitting side -- a run that never started leaves nothing behind.
 
     Args:
         file_path_str: Path to CSV file as string.
@@ -861,10 +895,10 @@ async def _process_csv_file_async(
                 session=db_session,
             )
             result = await _run_with_transaction(db_session)
-            # Success-path unlink. Symmetric with the production branch: it runs
-            # after the caller's transaction work. If anything raises instead of
-            # reaching here, the ``except BaseException`` handler below reclaims
-            # the file.
+            # Deletion site 1 of 3 (success). Terminal state reached: remove the
+            # scratch artefact. Runs after the caller's transaction work, so a
+            # rollback cannot reach it; the ``except BaseException`` handler below
+            # reclaims the file on any failure instead (D-06-A = (b)).
             if file_path.exists():
                 await asyncio.to_thread(file_path.unlink)
                 logger.info("Temp file deleted: %s", file_path)
@@ -880,10 +914,11 @@ async def _process_csv_file_async(
             error_code = _map_processing_error_to_code(e)
             logger.exception("Processing failed: task_id=%s, error=%s, code=%s", task_id, error_msg, error_code)
 
-            # Clean up temp file on error. The success path unlinks after the
-            # transaction commit; this failure-path unlink is retained so a
-            # commit failure -- which never reaches the success-path unlink --
-            # still reclaims the file rather than leaking it (D-05-B).
+            # Deletion site 2 of 3 (failure/rollback, test path). The run did not
+            # produce durable aggregates, so the scratch artefact is removed.
+            # Retained deliberately: the success-path unlink sits after the
+            # transaction commit, so a commit failure -- which never reaches the
+            # success path -- is reclaimed only here (D-05-B, D-06-A = (b)).
             if file_path.exists():
                 try:
                     await asyncio.to_thread(file_path.unlink)
@@ -949,11 +984,13 @@ async def _process_csv_file_async(
                     # COMPLETED commits with the aggregate write, so a dashboard
                     # never reports completed with aggregates that did not commit.
                     result = await _run_with_transaction(session)
-            # Reached only after the main transaction committed. Because the
+            # Deletion site 1 of 3 (success, production path). Reached only after
+            # the main transaction committed: terminal COMPLETED. Because the
             # success path no longer unlinks inside the transaction body, the file
             # is still present here; unlink it now, so a process killed before the
             # commit leaves the row and the file with a shared fate (DP-016 first
-            # and second halves).
+            # and second halves). Ordered strictly after the commit -- a rollback
+            # must not destroy the only copy of the data the aggregates came from.
             if file_path.exists():
                 await asyncio.to_thread(file_path.unlink)
                 logger.info("Temp file deleted: %s", file_path)
@@ -969,10 +1006,12 @@ async def _process_csv_file_async(
             error_code = _map_processing_error_to_code(e)
             logger.exception("Processing failed: task_id=%s, error=%s, code=%s", task_id, error_msg, error_code)
 
-            # Clean up temp file on error. Retained deliberately: the success-path
-            # unlink is now after the commit, so a commit failure reaches only
-            # this branch; removing this unlink would leak a file on every commit
-            # failure (D-05-B).
+            # Deletion site 2 of 3 (failure/rollback, production path). The run
+            # produced no durable aggregates, so the scratch artefact is removed.
+            # Retained deliberately: the success-path unlink is now after the
+            # commit, so a commit failure reaches only this branch; removing this
+            # unlink would leak a file on every commit failure (D-05-B,
+            # D-06-A = (b)).
             if file_path.exists():
                 try:
                     await asyncio.to_thread(file_path.unlink)
