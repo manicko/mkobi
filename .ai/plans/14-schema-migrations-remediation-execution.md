@@ -519,11 +519,61 @@ DDL on `aggregated_data` is a decision and index DDL elsewhere is not."**
 
 ### MIGB-4 — `uq_aggregated_data_dashboard_graph_dims`: 83 MB, ~8× the GIN, and the UPSERT's conflict target (MIG-002 adjacent, D-14-C)
 
+> **Interaction note, recorded 2026-10-03 — cluster 13's `P11-constraint` touches this block's subject
+> and does not change its answer.** `P11-constraint` requires that, after dimension-value
+> canonicalisation, `"1"`, `"2"`, `"10"`, `"20"` present and order as **1, 2, 10, 20** and **never** in
+> text order, and that **ordering is derived from the semantic type of the source column, not from the
+> stored text**. This block's conflict target is `text("((dims)::text)")` — the canonical text.
+>
+> **The two are compatible and they are about different things, and the register says so in as many
+> words: `P11-constraint` "does not reopen `D-05-E` or the index identity."** The index is the
+> **identity** key — it decides which stored row is *the same row*. `P11-constraint` is a
+> **presentation-layer** constraint on how a row's value is *displayed and ordered*. **A block that
+> hashed the expression, narrowed it, or dropped it on the strength of `P11-constraint` would be
+> solving a sorting problem by destroying an identity guarantee** — and would break
+> `StorageManager`'s UPSERT conflict detection, which this block names as read-only and invariant.
+>
+> **What does change, and it changes the *inputs* to this block's decision rather than the decision:**
+> the read-path ordering fallback. `D-05-K` (plan 18, **RULED and LANDED `660b6d5`**) put an interim
+> `ORDER BY id` on all three read methods rather than waiting for `aggregated_data.ordinal` — and
+> **`ordinal` is exactly the DDL `C05-5` hands to this plan.** So the ordering half of
+> `P11-constraint` is already waiting on **this** phase's column, which is the reason this block's
+> decision is worth taking now rather than after cluster 13's presentation work starts. **And it must
+> not be taken twice:** the semantic-type source that `P11-constraint` requires is **not derivable from
+> `ordinal`**, which supplies position and not type — so this block must not read "add the ordinal
+> column" as "the ordering constraint is now satisfied."
+>
+> **⚠ HAND-OVER ARRIVED — cluster 14, 2026-10-03. `P11-constraint`'s ordering type source is PERSISTED,
+> and that is a schema change, so it lands HERE. Two things must not be merged, and this paragraph is the
+> place that says so.**
+>
+> | | Question | Owner | Status |
+> | - | -------- | ----- | ------ |
+> | **1** | **`aggregated_data.ordinal`** — does a stored aggregate carry its position in the order? | plan 14 (`C05-5` / `MIGB-13`), fed by plan 18's `PB-15` under `D-05-K` | **RULED and already partially satisfied** — the interim `ORDER BY id` shipped in `660b6d5` |
+> | **2** | **`P11-constraint`'s declared type** — does a stored aggregate carry the **semantic type** of each dimension value, so that `"1"`, `"2"`, `"10"`, `"20"` can order as 1, 2, 10, 20? | **plan 14, at `MIGB-4`**, fed by plan 18's `PB-5` | **RULED (cluster 14): PERSISTED.** Rejected the alternative — deriving it at display time from the processing config — because **an edit to that configuration would reorder data already uploaded**, with no upload and no history entry to explain it |
+>
+> **Position and type are different columns with different answers**, and the three edge cases cluster 13
+> named are exactly where they diverge: leading zeros (`"007"` — position 7 in a numeric sort, but a
+> string by declaration), scientific notation (`"1e-07"`, which the shipped `D-05-E` rule produces
+> deliberately — a float by declaration, `0.0000001` by position), and the empty string's position.
+> **A single column cannot serve both, and merging them would re-create the defect `P11-constraint`
+> exists to prevent.** **No migration is authored in this document pass, and this plan must not author
+> one under the `C05-5` / `C06-3` discipline already described here** — it names the obligation, sizes it
+> against `MIGB-4`'s existing index-cost question, and schedules it.
+>
+> **`P11-sub` is the trap this hand-over must carry into its implementation:** `"1"` and `"1.0"` remain
+> **distinct categories**. A persisted numeric type sorts them as **two values of one type** and must
+> **never** normalise `1.0` to `1`. **The column design that satisfies "sort numerically" is the same one
+> that merges them, so the constraint has to be stated in the revision's own test, not only in this
+> plan.**
+
+---
+
 | Field | Value |
 | ----- | ----- |
 | **Semantic target** | **`uq_aggregated_data_dashboard_graph_dims`** — measured `UNIQUE btree (dashboard_id, graph_id, ((dims)::text))`, **83 480 kB at 375 000 rows ≈ 8× the GIN's 9 872 kB, larger than the table's own data** · its counterpart declaration in **`db/models/aggregated_data.py::AggregatedData.__table_args__`** · its counterpart declaration in `000000000000` · **the UPSERT conflict target `text("((dims)::text)")`** in `data/storage/manager.py::StorageManager._bulk_upsert` and `::upsert_aggregate` — **read-only, and the invariant this block must not break** · phase 05's `DP-003` canonicalisation claim (whether `jsonb`'s canonical text rendering is a faithful identity, and whether `'1'` can be prevented from storing separately from `1`) — **read-only** |
 | **Discharges** | **`D-14-C`'s resolution** — the same record as phase 11's **`DP-11-J`**, co-signed, not duplicated. It discharges **`MIG-002`'s adjacent half**: `MIG-002` names this index as the *sibling access path over the same column* and establishes that it, too, cannot serve `->> 'k'`. It discharges **no** `MIG-*` finding on its own, and this plan says so rather than manufacturing one. |
-| **blocked_by** | **`D-14-C`** (hard — **this is `DP-11-J`**, whose chooser is the **Coordinator**, with phase 05 and phase 14 as co-signers) · **`MIGB-2`** (hard — the index-DDL policy) · **`MIGB-3`** (hard — same table, same lock window, one revision per commit; whichever lands second sees the other's state). Soft: **`MIGB-0`**. |
+| **blocked_by** | **`D-14-C`** (hard — **this is `DP-11-J`**, whose chooser is the **Coordinator**, with phase 05 and phase 14 as co-signers) · **`MIGB-2`** (hard — the index-DDL policy) · **`MIGB-3`** (hard — same table, same lock window, one revision per commit; whichever lands second sees the other's state). Soft: **`MIGB-0`**. **`P11-constraint` (cluster 13) does NOT block this block** — see the interaction note in the block's prose, because the two are compatible and reading them as rivals would produce the wrong revision. |
 | **Execution order** | **11**, immediately after `MIGB-3` and never in parallel with it. |
 | **Risk — implementation** | **HIGH, and the fatality is specific.** **Dropping this index silently breaks UPSERT conflict detection.** `ON CONFLICT` requires a unique index on the inferred target; without `uq_…dims::text` the statement fails outright with `InvalidColumnReferenceError` — which is *loud*, not silent — but a **narrowed** or **hashed** variant changes what "duplicate" means, and *that* degradation is silent: a dashboard that reports success while serving two rows for one `(graph, dims)` pair. The two failure modes must be told apart in the runbook, because they look the same in a code review and only one of them fails a test. The second trap is that a hash of `dims::text` is **not** a canonicalisation fix and **not** a conflict-target fix: it changes the index's key, and phase 05's `DP-003` is the only place that may decide whether canonical text is a faithful identity. |
 | **Risk — rollout** | **The highest lock exposure in the phase, and it differs by option.** **(a) Leave** — no DDL, no lock, no exposure. **(b) Narrow the expression** — a **full index build** on 375 000 rows, `SHARE` lock, **blocking every UPSERT for the whole build**, in one transaction inside `env.py`, where `CONCURRENTLY` is not available (`D-14-F`). **(c) Hash instead of indexing `dims::text`** — the same full build and the same lock. **(d) Drop** — `ACCESS EXCLUSIVE`, milliseconds, **and the upload path breaks**. **`back-fill volume`: zero rows for (a) and (d); for (b) and (c) it is a full index build over the measured 375 000 rows, which is the phase's first non-trivial index rebuild and is the only reason `D-14-F` exists.** |

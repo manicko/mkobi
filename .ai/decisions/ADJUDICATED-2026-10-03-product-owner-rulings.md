@@ -155,7 +155,28 @@ Delete the `admin.py` docstring landed by `2174895` — its subject no longer de
 `AZ-2`'s token-minting census must enumerate every other minting path by name** and state it out of
 scope with a reason. "We only fixed the two the report named" is not an acceptable answer.
 
-### `D-04-F` (plan 17) — revocation-read failure · **`B`**
+### `D-04-F` (plan 17) — revocation-read failure · ~~**`B`**~~ · **⚠ STRUCK — SUPERSEDED BY CLUSTER 14**
+
+> **⚠ THIS RULING IS STRUCK, 2026-10-03, by cluster 14 (`Q-1`).** It is **not deleted** — a register that
+> erases its own reasoning is a register that re-litigates — and the text below is left standing as the
+> ruling that was made. **Read it as history: cluster 14 ruled the opposite, and the cluster-14 ruling is
+> the one in force.**
+>
+> **What cluster 2 got wrong, and it is worth recording because the reasoning was sound and the
+> conclusion was still wrong.** Cluster 2 reasoned that *"failing closed produces a mass logout that reads
+> as a mass credential compromise."* **That diagnosis is correct and it is not the whole trade**: a mass
+> logout that reads as a compromise is **visible**, and a degraded mode that admits revoked tokens is
+> **silent**. Cluster 14's ruling rests on the asymmetry — **the session store is the session boundary, and
+> a refusal is visible while a bypass is not.** The mass logout is an operational annoyance with a
+> timestamp; the bypass is a security defect with no symptom. Availability does not win a question where
+> the thing being bought with it is the user's own revocation.
+>
+> **What survives from cluster 2, and it is not nothing:** the WARNING-or-above logging requirement. **A
+> fail-closed store fault still has to be logged at WARNING or above on every occurrence** — "fail loud"
+> means the operator is told, not only that the user is refused. Cluster 14 carries this forward
+> explicitly.
+
+**The struck ruling, retained verbatim:**
 
 **Fail OPEN, with a logged degraded mode.** The degraded mode **must be logged at WARNING or above
 on every revocation-read failure** — a silent fail-open is not the ruling, it is the defect the
@@ -163,7 +184,8 @@ ruling forbids. Availability wins over strictness, because failing closed produc
 that reads as a mass credential compromise.
 
 **Accepted, stated as a commitment:** a user deactivated mid-session retains access for the duration
-of a Redis outage. Release note.
+of a Redis outage. Release note. **— NO LONGER ACCEPTED. This commitment is withdrawn by cluster 14;
+a user deactivated mid-session is refused for the duration of a Redis outage.**
 
 ---
 
@@ -227,7 +249,13 @@ posture. `docs/01-auth/auth-api.md`'s claim that limiting "fails open by default
 other direction** and must be corrected — its home is phase 04's `AB-6` documentation row.
 
 **Do not conflate two different surfaces.** The rate limiter (`D-15-M`, plan 15) and the
-revocation-read path (`D-04-F`, plan 17) are separate. INPUT B's fail-open ruling applies to the
+revocation-read path (`D-04-F`, plan 17) are separate. INPUT B's **revocation-read** ruling is **STRUCK
+by cluster 14** - it applied to the revocation read only, and it no longer says what it said. It
+never extended to the rate limiter, and **cluster 14's fail-closed ruling does not either.**
+Both surfaces now fail closed, **for different reasons and by different routes**: the limiter is
+an intentional documented default (`D-15-M`), the revocation read is a boundary (`cluster 14`). **Both
+being fail-closed is a coincidence of direction, not a shared decision**, and a later reader
+must not cite one as precedent for the other.
 **revocation read** only; it does **not** extend to the rate limiter.
 
 ---
@@ -547,8 +575,21 @@ production topology must be stated so no reader over-reads it. Unblocks `EB-7`.
 
 # Cluster 10 — Rulings that remain open
 
-Both inputs agree these are **not** owner business decisions. They are Planner or Coordinator
-technical authority and stay open. A plan may not read this file as deciding them.
+**> SUPERSEDED IN PART — amended 2026-10-03 (second session).** This cluster was written as a
+> catch-all for records "not owner business decisions". **That blanket is no longer true.** Clusters
+> **11**, **12** and **13**, appended below, rule a material part of the list below — the `D-05-*`
+> domain-owner set (plans 05 and 18), `D-08-3`, `D-16-7`, `C12-4`, `DP-10-12`, `D-04-D`, `D-04-C`,
+> `D-04-J`, `D-04-L` and the `D-04-*` records plan 17 inherits. **A plan must not read this cluster
+> as deciding any record that cluster 12 now rules, and must not read it as *declining* to rule one.**
+> A second fact of the same kind: several records this cluster lists as open were **already ruled and
+> landed** in commits that predate this file — `D-04-B` (`1fd6e69`), `D-04-E` (`01ea7e4`), `D-04-I`
+> (`62b859a`), `D-04-K` (`be0d779`) and the whole `D-05-*` set (see cluster 11 and plan 18 §1.3).
+> **Production code is king: where the tree shows a record landed, this cluster's "open" is wrong and
+> the plan is corrected to the tree, not the reverse.**
+
+What remains true of the list below: every record **not** named in clusters 11–13 is still Planner or
+Coordinator technical authority, still unpicked by the owner, and a block that needs one names the gap
+in its commit body and proceeds without inventing the answer.
 
 `07` `DP-2`(closed by consequence — see Cluster 3), `DP-3`, `DP-4`, `DP-5`, `DP-8`, `DP-9`, `DP-10` ·
 `08` `D-08-1`, `D-08-2`, `D-08-3`, `D-08-5`…`D-08-8`, `D-08-11` · `09` `DP-09-A`…`DP-09-F`, `DP-09-H` ·
@@ -561,6 +602,377 @@ technical authority and stay open. A plan may not read this file as deciding the
 
 **If a block needs one of these to proceed, it names the gap in its commit body and proceeds without
 inventing the answer.**
+
+---
+
+# Cluster 11 — Landed corrections (Tech Lead, 2026-10-03)
+
+Two decisions in this corpus were ruled **and shipped**. Several plans and code-context files still
+record them as open. **Correct every occurrence; do not schedule the work.** Both are corrections, not
+rulings: they settle what the code already does.
+
+**A third fact belongs here and is recorded once, because a plan must not be corrected against one
+commit and left stale against its seventeen siblings.** **The whole of phase 04 and the whole of phase
+05 have landed.** Every `AB-0`…`AB-11` block and every `PB-0`…`PB-18` block is in the tree, and each
+commit body names the `D-04-*` / `D-05-*` ruling it executed. Plan 17 and plan 18 are therefore
+**records of a completed phase, not queues**, and their decision registers read **RULED + LANDED**
+rather than open. The per-record mapping is in plan 18 §1.3 and plan 17 §(f); a plan cites the commit,
+never this file, for that table. **Two of those landed rulings contradicted this file** — `D-04-F` and
+`D-04-L` — and both divergences were recorded verbatim where they were found rather than reconciled
+here. **BOTH ARE NOW ARBITRATED: cluster 14 (2026-10-03) rules both, and this file has been amended to
+match.** `D-04-F`'s cluster-2 entry is **struck in place** and points at cluster 14; `D-04-L`'s cluster-12
+entry now records that the shipped `34c9459` is **reversed by a scheduled correction**. **This
+paragraph is retained in its original tense deliberately: it records that a divergence existed and was
+put to the owner rather than silently reconciled by a planner, which is the fact a later reader needs
+most.**
+
+### `D-05-E` (plans 05, 18) — dimension value canonicalisation · **RULED (a) and LANDED as `d865f2c`**
+
+*"fix(storage): canonicalise dimension values so one category is one row"*
+
+The rule **as implemented**, in `src/mkobi/data/storage/manager.py::_canonicalize_dim_scalar`:
+
+| Input | Stored form |
+| ----- | ----------- |
+| `None` | `""` |
+| `date` / `datetime` | ISO string, **keeping the `T` separator** |
+| `int` / `float` / `bool` | `str(value)` |
+| anything else | `str(value)` |
+
+**`metrics` are deliberately not canonicalised** — the defect this record concerns is *dimension*
+identity, and canonicalising a measure would re-key the aggregate on a value no chart filters by.
+
+**Applied at all three write surfaces** (`manager.py:281`, `:407`, `:438`).
+
+**Why the storage layer and not the writer.** The conflict target `text("((dims)::text)")` is evaluated
+by PostgreSQL **on the value about to be inserted**, so the storage layer is the only placement where
+the index key and the stored value are *provably* identical — and the only one covering all three write
+surfaces, including a hand-built `save_aggregates` call that bypasses the service. Canonicalising in
+the reader would hide the symptom and leave every stored row wrong.
+
+**Residual, stated not eliminated:** already-split rows are **not** repaired; they are corrected by the
+next overwrite-mode upload for that dashboard. A one-off remediation query is not in scope. The
+`aggregated_data.ordinal` DDL and the canonicalisation index line remain a phase-14 hand-over (`C05-5`).
+
+**Why `D-05-E` is on this cluster and not cluster 13.** Cluster 13's `P11` changes what a canonicalised
+value *looks like* to a user and constrains how it *orders*. `P11-constraint` is explicit that it **does
+not reopen `D-05-E` or the index identity**: the canonical text is the identity and storage
+representation; ordering is derived from the semantic type of the source column, not from the stored
+text. Two presentation surfaces are therefore new work and are named where they are owned — plan 18
+(`extract_filter_values`, the option list, the read path) and plan 16 (axis labels and tooltips).
+
+### `D-05-N` (plans 05, 18) — empty selection · **RULED (a) and LANDED as `ed644e7`**
+
+*"fix(processing): fail an empty overwrite selection and guard the filter-value write"*
+
+Implemented at `src/mkobi/workers/data_worker.py:1184-1213`:
+
+- A graph is **"skipped"** when `AggregationService.aggregate_for_dashboard` returns no records for it.
+- The guard raises `AppException(code=ErrorCode.PROCESSING_FAILED)` with a detail from
+  `_empty_selection_detail` naming **up to `_MAX_SKIPPED_GRAPH_NAMES = 20` graphs**.
+- The detail is **bounded** because `processing_logs.message` is `String(1000)`.
+- The guard sits **before both clears**: `StorageManager.save_aggregates`' internal `delete_by_dashboard`
+  **and** `DataService.clear_dashboard_values`. Guarding only one still loses data, and that is the
+  whole correctness argument.
+
+**No new `ProcessingStatus` member and no Alembic migration**: `FAILED` already exists with a frontend
+renderer. This is the asymmetry with `D-05-F`(a), whose cost *is* a migration and is therefore a
+hand-over to phase 14.
+
+**Residual work, and it belongs to cluster 13.** The product-experience half is `P3` below, which
+ratifies the shipped reason-naming message, forbids the settings link, and adds nothing to the shipped
+text. **No finding is renumbered.**
+
+---
+
+# Cluster 12 — Technical rulings (Tech Lead owns these; the Product Owner was not asked)
+
+**All fixed at option (a).** Record the ruling, its rationale in one or two sentences, and its residual
+cost. **Do not re-open the alternatives** — a rejected option stays in its plan's table, marked
+rejected, with the reason.
+
+| Record | Plan(s) | Ruling | Rationale and residual |
+| ------ | ------- | ------ | ---------------------- |
+| **`D-05-C`** | 18 (`PB-6`) | `groupby` **without** `aggregations` keeps working, under an **explicit, written, deterministic rule**: collapse duplicate category rows **by first occurrence, after a deterministic sort**. The stored number changes; it becomes **reproducible**. **(b)** (reject the configuration) and **(c)** (delete the branch) are **rejected**. | Reproducibility is the finding; rejection and deletion both convert a working configuration into a new failure class. **Residual:** stored values change for every dashboard configured this way, and the "recalculates on first upload" note is `P4`'s obligation. **Landed `d4acdbd`.** |
+| **`D-05-D`** | 18 (`PB-7`) | `limit` applies **after** aggregation, so it means **"top N by the aggregated metric"**. Stored values change; this is the meaning every reader already assumes. **(b)** reject `limit` without `sort_by`, and **(c)** require `sort_by` whenever `limit` is set, are **rejected**. | Both rejections create a new failure class for configurations that work today, and (b) rejects on a key the settings type did not declare. **Residual:** the value change, announced by `P4`. **Landed `67e28fa`.** |
+| **`D-05-F`** | 18 (`PB-9`) | Data-quality warnings are **summarised into `processing_logs.message`** (`String(1000)`) under an **explicit cap and truncation rule**. **No new `ProcessingStatus` value and no migration.** The never-true `column_types` check **is fixed so it can become true**. | The status column is a native PostgreSQL ENUM, so option (a) is a migration and therefore phase 14's. **Residual:** a client rendering `processing_logs.message` now sees warning text where it saw only the completion sentence — and `P2` makes that text a first-class user-visible state. **Landed `b63589c`.** |
+| **`D-05-G`** | 18 (`PB-8`) | The settings boundary is validated at the **worker edge, not at the API**. An unrecognised key is reported **naming the key**. **Existing stored payloads keep loading.** Option (a) (API-side `extra="forbid"`) is **rejected**: it applies a documented 422 **retroactively** to stored JSONB across every dashboard. **The fate of `ProcessingSettingsModel` is recorded explicitly.** | Retroactive rejection of stored data is not a fix, it is a migration without a migration. **Residual:** one runtime consumer must remember the key set, which is why `P5` requires the key to be named and linked. **Landed `31397db`, as an option (a′) — a fifth option forced by a real constraint: a `TypedDict` cannot emit `additionalProperties: false`, so the OpenAPI tripwire the plan demanded is unwritable against one.** `P5` supersedes the user-visible half of this ruling — see the note after the table. |
+| **`D-05-P`** | 18 (`PB-10`) | The group-less `yoy` case **is fixed inside `PB-10`**, not filed. | Filing it would **ship a known order-dependent defect onto a newly-reachable path** — the same defect class `PB-6` and `PB-7` exist to remove. **Landed `a6ad7d2`.** |
+| **`D-04-D`** | 17 (inherited from 04) | The abuse bound is keyed **per identifier as the primary bound, plus a generous per-IP ceiling**. **Per-IP-only is rejected**: an office NAT or a shared egress would lock out many legitimate users. | The availability hazard is half of `AUTH-001`; removing the IP bound abandons the other half. **Residual:** a deployment behind one egress has a ceiling that must be tuned, and the ceiling is deliberately generous. **Landed `659734e` then corrected by `5ac2ea3`, which raised the peer ceiling to 10× the identifier bound at every site** — the landed shape is exactly this ruling, which is why it is recorded as confirmed rather than new. `P7` adds only what the user is shown. |
+| **`D-04-J`** | 17 (inherited from 04) | Ruled **per sub-question**: changing one's own password **does** end that user's other sessions; an administrative reset **does** end **all** of that user's sessions; refresh **does not** rotate the cookie. | The first two close a live window; the third would need reuse detection, whose cross-tab false-positive risk is the frontend's call. **Residual:** the presented refresh token stays valid until its own TTL. **Landed `4600e5d`, which also raised `D-04-M`** — a thirteenth record absent from this file. `P6` adds only what the user is shown. |
+| **`D-04-C`** | 17 (inherited from 04) | A credential-store fault reports **503** and **fails loudly**. **404 is rejected** — it reads as "no temporary password exists" and hides an outage. | A status a client cannot distinguish from absence is a lie the administrator cannot detect. **Residual:** a 503 is indistinguishable from any other upstream outage by status alone; the detail string is the only discriminator. **Landed `478015b`.** `P9` adds only what the user is shown. |
+| **`D-04-L`** | 17 (inherited from 04) | A non-admin account occupying the configured admin address logs a **WARNING naming the account and its role**, and **startup continues**. **Refusing to start is rejected.** | A boot failure on a configuration that is wrong *today and wrong invisibly* converts a misconfiguration into an outage. **⚠ SUPERSEDED IN ITS TREE-FACING HALF BY CLUSTER 14, which confirms this ruling and reverses the shipped `34c9459`, which raises `ValueError` in production.** The direction of travel is unchanged and the shipped code is now the thing that must move; the remaining open questions were the implementation shape and `P10`'s surface, and cluster 14 answers both. |
+| **`D-16-3`** | 16 | Bar charts keep `'category'` as the **default** when the converted layout supplies **no** `xaxis.type`. Stored values are honoured; **no existing dashboard changes visually.** **Product sign-off given.** | The constant is removable on library grounds alone, and nothing in the repository asserts a bar trace needs a categorical axis — but honouring stored values is the direction `D-16-1` already chose, and a rendering change to every existing bar chart is a cost no product owner has agreed to pay. **Residual: none visual. The axis type becomes editable in graph settings instead — `P12`.** |
+| **`D-16-7`** | 16 | `filterValues` freshness: invalidate on upload **and** pin an explicit **`staleTime: Infinity`**, so refresh is **event-driven** and the contract is legible. **Product sign-off given.** | An inherited finite default makes the invalidation redundant and hides that a list's freshness depends on every writer being remembered. **Residual:** `Infinity` makes the invalidation load-bearing — a second writer becomes a visible bug instead of a silent one. That is the intended dependency direction. |
+| **`C12-4`** | 12 | The client-facing error-code vocabulary is assigned a **single registry owner: the Coordinator**, as a **cross-tier contract**. **Phase 12 files requests and does not edit the register.** | Three phases have claimed fragments of one vocabulary and none owns it; a register with three owners is three registers. **Residual:** the Coordinator must actually maintain it, and `AZ-11`'s notice is the first entry. |
+| **`D-08-3`** | 08 (`CQLT-9`) | **Amend both documents.** The `ButtonVariant` / `ComponentSize` vocabulary is **presentation-side only and is not server-enforced**. **No stored layout can be rejected.** "Implement the declared validation" is **rejected** on the grounds that the accepted shape is **not derivable from the repository** and enforcement would reject existing stored layouts. | An implementor who guesses produces a validator that rejects the product's own layouts, against twenty live `definition=` call sites. **Residual:** the *integration* half of the finding stays open and must stay open until someone writes the shape down. |
+| **`DP-10-12`** | 10 | The worker's liveness detection gets a **faster second probe plus a stop grace period**, keeping the existing slow proof-based check. **Retuning the single threshold alone is rejected** — faster detection, more false restarts. | The shipped wrapper judges a worker on a proof window of roughly eight minutes; moving one threshold trades detection speed for restarts of healthy workers. Two probes plus a grace period improve detection **without** that trade. |
+
+### Two of these are superseded in part, not complete
+
+- **`D-05-G` is superseded in its user-visible half by cluster 13 `P5`, and `P5`'s affordance is settled
+  by cluster 14.** The boundary **stays at the
+  worker edge** and the stored-payload compatibility is unchanged. What changes is what the user is
+  shown: the message **names the exact key** — shipped in `31397db` — *and* the run must offer a route to
+  remove it. **Cluster 14 rules the shape, and this paragraph is superseded on that point: the setting
+  name travels as structured data in the RFC 7807 body, and the interface renders the control itself.
+  The message text stays readable prose and carries no link-shaped string** — a link inside a
+  1000-character `processing_logs.message` is the rejected option and must not reappear. Emitting side:
+  plan 18's `PB-8`. Rendering side: plan 13's `DP-13-P`. **A plan that records `D-05-G` as "complete with
+  nothing more to do" is wrong about the surface and right about the boundary.**
+- **`D-04-D` is superseded in its user-visible half by cluster 13 `P7`.** The **bound is unchanged** —
+  per-identifier primary with a per-IP ceiling. What changes is what the throttled user is shown.
+
+---
+
+# Cluster 13 — Product-experience rulings (Product Owner, 2026-10-03)
+
+These answer questions **no phase previously owned**. Each is recorded in the plan that owns the
+surface, with **the user-visible outcome stated as the acceptance criterion**. Where a ruling adds to a
+cluster-12 ruling rather than replacing it, the addition is named — a plan must not record either half
+alone.
+
+| # | Surface and owner | Ruled — the user-visible outcome is the acceptance criterion | Rejected |
+| - | ------------------ | ----------------------------------------------------------- | -------- |
+| **P1** | **Upload completion** · plan 13 (the status renderer), plan 18 (`C05-11`) | After a successful upload the user **stays on the dashboard**. A **confirmation toast** appears, and the dashboard itself carries a **persistent status line** progressing **"Processing…" → "Updated at &lt;time&gt;"**. | redirect to a separate processing-history page · toast-only with no persistent indicator |
+| **P2** | **A distinct warnings state exists** · plan 13 (the status renderer), plan 16 (`CHTB-5`) | **"Completed with warnings" is a distinct amber state, separate from the green "Updated".** The user can **open it to see what the warnings were**. | no separate state with an expandable warning link · log-only with nothing in the interface |
+| **P3** | **Empty selection** · plan 18 (`PB-3`), ratified | The failed run shows the **reason naming the skipped graphs** and **no link** to the dashboard's graph or filter settings. Existing data is preserved. **Already implemented by `ed644e7`; this ruling ratifies it and adds nothing.** | adding a link to the settings screen · a generic message with no reason |
+| **P5** | **An unrecognised setting key** - plan 18 (`PB-8`) to **EMIT**, plan 13 (`DP-13-P`) to **RENDER** | The run fails with a message **naming the exact key**, and the run **offers a route to remove it**. **This is cluster 13's addition to `D-05-G`; the boundary does not move.** **The affordance's shape is settled by cluster 14: the setting name is STRUCTURED DATA in the RFC 7807 body, and the interface renders the control itself - the message text carries no link-shaped string** | a message naming the key with no route to fix it (the user knows what is wrong and cannot do anything) - a generic validation message - **(cluster 14) an instruction in the message text with manual navigation**: it works once and then the user is guessing the path - **(cluster 14) literal link syntax in the message**: a link-shaped string inside a 1000-character log column is prose another surface has to parse |
+| **P6** | **Session ended by a password change** · plan 17 (`AB-8`), plan 13 | The user sees the **normal login screen with no explanation**. | "Your session was ended because your password was changed" · a generic "session expired" notice |
+| **P7** | **Rate limiting** · plan 17 (`AB-6`), plan 13 | The throttled user sees **"Too many attempts. Try again later"** — **no countdown, no remaining-attempts display**. **This is cluster 13's addition to `D-04-D`; the bound is unchanged.** | a countdown · a remaining-attempts display |
+| **P8** | **Forced password change** · plan 17 (`AB-3`), plan 13 | After login the user lands on a **single reachable screen, "Set a new password", which states the reason. The rest of the application is inaccessible.** | a dashboard banner with the app still usable · login blocked with an error until an administrator resets the password |
+| **P10** | **Non-admin occupying the admin address** - plan 17 (`AB-10`, and the `34c9459` reversal), plan 13 for the administration-area surface | A **startup log entry and a persistent warning in the administration area**, until it is resolved. **Its precondition is settled by cluster 14: startup NEVER blocks, in any environment, so the administration area is always reachable and this surface can exist at all** | startup log only (an operator not watching logs at boot never learns the deployment is misconfigured) - nothing surfaced (the current behaviour) - **(cluster 14) refuse in production only** - it makes a misconfiguration an outage in the environment that matters most - **(cluster 14) refuse in every environment** - same objection, uniformly |
+| **P11** | **Dimension value presentation — one canonical value everywhere** · plan 18 (options, read path), plan 16 (axis labels, tooltips) | Dropdown options, chart axis labels and tooltips all show the **same canonical text form**, so a category supplied two different ways appears **once**, and **the value a user picks is exactly the value that is stored**. | preserve the native type for display · preserve the native type and de-duplicate silently · defer entirely |
+| **P11-constraint** | **Canonical text is identity and storage, not ordering or presentation type** - plan 18 (ordering), plan 16 (axis order), and **plan 14 for the persisted type (cluster 14 hand-over)** | After canonicalisation, `"1"`, `"2"`, `"10"`, `"20"` must present and order as **1, 2, 10, 20** - **never** in text order as 1, 10, 2, 20. **Ordering is derived from the semantic type of the source column, not from the stored text.** Read this as a **constraint on the presentation layer only**: it does **not** reopen `D-05-E` or the index identity. **WHERE THE TYPE COMES FROM is settled by cluster 14: the declared type is PERSISTED alongside each stored aggregate, so already-uploaded data keeps its order permanently and editing the upload configuration does not retroactively reorder stored rows** | ordering by the stored text - **(cluster 14) deriving the type from the processing configuration at display time**, because an edit to that configuration would then change the order of data already uploaded |
+| **P12** | **Chart axis type** · plan 16 | **Nothing in the chart interface.** The **graph settings screen shows the axis type explicitly and allows editing it**. | a one-off notice per graph on first render with a new axis type · nothing at all |
+| **P13** | **Failure and recovery on the dashboard** · plan 16 (`CHTB-5`), plan 13 | The dashboard **keeps its last good data** with a marker **"data may be out of date — last updated &lt;time&gt;"**, and **a transient failure never leaves a chart empty**. | clearing the charts and showing an error · leaving the data with no marker |
+
+### Edge cases the constraint implies, and who pins them
+
+`P11-constraint` is only implementable once three answers exist, and **they are not assumptions** — the
+owning block's **Researcher** pins them and the Implementor writes them down:
+
+1. A value with **leading zeros** (`"007"`) must **not** be reordered as the number `7`.
+2. **Scientific notation** (`"1e-07"`, which the shipped `D-05-E` rule produces **deliberately**) must
+   **not** be reordered as a float.
+3. The **empty string** must sort in a **defined** position.
+
+### Known surfaces to verify and state, not to assume
+
+Cluster 13 does not assert what a file does. Each of the following is **work to verify**, named so a
+later reader can tell an assumption from a measurement:
+
+- `services/aggregation_service.py::extract_filter_values` sorts with
+  `key=lambda v: (isinstance(v, str), v)`, which places **all non-strings before all strings**. Once
+  option values are derived from the canonical form this becomes **text ordering** — the exact defect
+  `P11-constraint` forbids. **This is the primary work item for `P11`.**
+- The **option list** is built in memory from **native-typed** records (`workers/data_worker.py:1246`)
+  and saved to `dashboard_filter_values`. `P11` requires it to be **derived from the canonical form**
+  instead. That is the work, stated as work.
+- **Chart axis order** is set upstream by `AggregationService._apply_chart_sorting` on the Polars frame
+  **before** coercion (`aggregation_service.py:61-62`), so it should already be native-ordered.
+  **Verify this and record the finding. Do not assert it.**
+- **Read-path ordering** currently falls back to `ORDER BY id`
+  (`db/repositories/aggregated_data_repo.py:205`). Note the interaction with plan 18 `PB-15` / `D-05-K`
+  (interim ordering) and plan 14 `MIGB-4`, so the same question is **not decided twice**.
+
+### ~~Four questions that could not be applied without a further owner decision~~ — **ALL CLOSED, answered 2026-10-03**
+
+> **This table is RETAINED as history and is fully superseded by cluster 14.** It records what was asked
+> and what was known at the time; **the answers are in cluster 14**, and each row below names its ruling.
+> **No row here is an open question any more.** It is kept because a register that erases what it asked
+> cannot show whether an answer was an answer or a guess, and because the divergence paragraphs in
+> the plans point at these identifiers.
+
+**All four were answered on 2026-10-03, all at the recommended option, and all now superseded by cluster 14.**
+
+| # | Divergence as it stood | The question as asked | Now |
+| - | ----------------------- | ------------------- | --- |
+| **Q-1** | **`D-04-F`.** Cluster 2 ruled the revocation read **fail OPEN, with a logged degraded mode**. The tree ships **fail CLOSED with a distinct outcome**: `5b6cceb` raises a co-located `RevocationStoreUnavailableError`, mapped to **503 `SERVICE_UNAVAILABLE`** on protected requests and on `POST /auth/refresh`, reasoning that a blanket fail-closed turns a Redis degradation into a mass sign-out. | **Which behaviour is authoritative — the register's fail-open, or the shipped fail-closed-with-503?** | **ANSWERED — (a).** Accept the shipped behaviour; **cluster 2 struck in place**, its reasoning retained and its reasoning's flaw named: the session store is the session boundary, and a refusal is visible while a bypass is silent. **Cluster 14.** |
+| **Q-2** | **`D-04-L` with `P10`.** Cluster 12 rules a **WARNING naming the account and its role, and startup continues** — refusing to start is **rejected**. `P10` additionally requires a **persistent warning in the administration area**. The tree ships the opposite: `34c9459` **raises `ValueError` in production**. | **Should a non-admin occupant of the admin address be a startup log entry plus an administration-area warning in EVERY environment including production?** | **ANSWERED — (a).** Warn in every environment; **never block startup**. `34c9459`'s production branch is **reversed by scheduled correction** owned by plan 17's `AB-10`; `P10`'s surface is owned by plan 13's `CT-11` and is blocked by nothing but that reversal. **Cluster 14.** |
+| **Q-3** | **`P5`'s remediation affordance.** `P5` requires the message to **name the exact key** (shipped in `31397db`) **and carry a route to remove it** (not shipped). The message is written into `processing_logs.message`, a `String(1000)` rendered by the client. | **Should the route be carried as structured data rather than as link syntax inside a 1000-character log message? And which phase owns emitting it?** | **ANSWERED — (a).** Structured data in the RFC 7807 body; **the interface renders the control**. Emitting: plan 18's `PB-8`. Rendering: plan 13's `DP-13-P`, **extended, not duplicated**. **Cluster 14.** |
+| **Q-4** | **`P11-constraint`'s ordering source.** Ordering must come from the **source column's semantic type**, and nothing carries it alongside the stored value. `ordinal` supplies **position, not type**. | **Should the declared type be persisted with the aggregate, or derived at read time from the processing config's `column_types`?** | **ANSWERED — (a).** **Persisted.** It is a **schema change and therefore a hand-over to plan 14** at `MIGB-4`, kept separate from the `ordinal` question. **Cluster 14.** |
+
+---
+
+### The four open questions are CLOSED — all answered, all at the recommended option
+
+**Raised 2026-10-03 by this file; answered 2026-10-03 by the Product Owner, all four at option (a).**
+**The questions are retained, because a register that erases what it asked cannot show whether the
+answers were answers or guesses.** Each row points at its cluster-14 ruling.
+
+| # | What was asked | Status | Answered by |
+| - | -------------- | ------ | ----------- |
+| **Q-1** | `D-04-F`: cluster 2 ruled the revocation read fail-open; the tree ships fail-closed-with-503. Which is authoritative? | **CLOSED — (a).** Accept the shipped fail-closed behaviour and **amend cluster 2**. Cluster 2's entry is struck in place above, with its reasoning retained and its reasoning's flaw named. | **Cluster 14** |
+| **Q-2** | `D-04-L` + `P10`: cluster 12 rules warn-and-continue; `34c9459` raises `ValueError` in production; `P10` needs a reachable administration area. Which startup behaviour? | **CLOSED — (a).** **Warn in every environment including production; never block startup.** The production branch is **reversed by scheduled correction**, not by an edit to `src/` in these documents. | **Cluster 14** |
+| **Q-3** | `P5`: the remediation affordance — link syntax in the message, structured data, or text instruction? | **CLOSED — (a).** **Structured data in the RFC 7807 body; the interface renders the control; the message text stays readable prose.** Two homes, both recorded. | **Cluster 14** |
+| **Q-4** | `P11-constraint`: where does the ordering type come from — persisted, or read from the processing configuration? | **CLOSED — (a).** **Persisted alongside each stored aggregate.** It is a schema change, therefore **a hand-over to plan 14**, and it is **not** satisfied by `aggregated_data.ordinal`. | **Cluster 14** |
+
+---
+
+# Cluster 14 — The four answers (Product Owner, 2026-10-03)
+
+Four rulings, each closing a question this file raised. **All are option (a), and in each case that is
+the option the report recommended — which is worth stating plainly, because a register where every
+open question resolves to the suggested answer is a register someone should read sceptically. The
+scepticism is warranted here in one direction only: option (a) was recommended because it was the
+*least destructive to stored data and the least lossy of information*, not because it was the safest
+default. Q-1 in particular **reverses** an earlier Product Owner ruling rather than confirming it, and
+Q-2 **reverses shipped code**. A pattern of "recommended accepted" that never once rejects a
+recommendation would be a signal; this set reverses two earlier positions and rejects two plausible
+alternatives in each case.**
+
+---
+
+### Q-1 · `D-04-F` — revocation-read failure · **RULED: fail CLOSED, with a dedicated 503**
+
+**The ruling.** **Accept the shipped behaviour** — `5b6cceb`, a co-located
+`RevocationStoreUnavailableError` mapped to **503 `SERVICE_UNAVAILABLE`** on protected requests and on
+`POST /auth/refresh` — **and amend cluster 2**, which is struck in place above rather than overwritten.
+A revocation read over a healthy store still answers 401 `TOKEN_REVOKED`, so the genuinely-revoked case
+is unchanged and **only the unreachable case is in scope here**.
+
+**The reason, and it is the whole ruling.** **The session store is the session boundary, and a refusal
+is visible while a bypass is silent.** Cluster 2's reasoning — that failing closed produces a mass
+logout reading as a credential compromise — is correct about the *symptom* and silent about the
+alternative one: a degraded mode that admits revoked tokens has **no symptom at all**. **The mass logout
+is an operational annoyance with a timestamp; the bypass is a security defect with none.** Availability
+does not win a question where the thing being bought with it is the user's own revocation.
+
+**What survives from cluster 2 and is carried forward: the logging requirement.** **Every revocation-read
+store fault must be logged at WARNING or above**, fail-closed or not. "Fail loud" means the operator is
+told, not only that the user is refused — and this is the one part of cluster 2 that cluster 14 does not
+discard, because a 503 with no log line is an outage nobody can diagnose.
+
+| Option | Disposition |
+| ------ | ----------- |
+| **(a) Accept the shipped fail-closed with a dedicated 503, amend cluster 2** | **RULED.** Already implemented; the ruling is a confirmation plus a register correction, which is why it is cheap. |
+| **(b) Fail open with a logged degraded mode** | **REJECTED — and it is the rejected option that a reader is most likely to reach for**, because it is what cluster 2 said and because availability arguments are intuitive. Its cost is silent: a deactivated or revoked user keeps access for the duration of an outage and nothing anywhere says so. |
+| **(c) Fail closed *plus* a bounded degraded mode** | **REJECTED, and the report flagged it as acceptable, so the reason must be stated rather than assumed.** It was put to the owner because it honours both cluster 2's stated reason and `5b6cceb`'s: refuse when the store is unreachable, but admit during a **short bounded** window so a Redis restart is not a mass logout. **It is rejected because the bound has to be a TTL on the revocation marker, and a TTL is exactly the defect `D-04-M` exists to fix.** `D-04-M` (cluster 12, plan 17) exists because a bare existence marker cannot distinguish an already-issued credential from one minted afterwards; a degraded mode reintroduces precisely that ambiguity, with a window in which it is exploitable. **Option (c) is not rejected as a bad idea — it is rejected as a collision with a ruling this same register made two hours earlier, and that collision is the reason.** |
+
+**Residual work: none in code.** The behaviour shipped in `5b6cceb`; `87dd36d` added the OpenAPI half and
+removed the 503 `407d770` had wrongly added to `auth_public_responses`. **What remains is documentation
+and one record:** plan 17's `D-04-F` row, plan 04's `D-04-F` row and `AB-5`'s options table must stop
+describing the fail-open default, and any document asserting it must be corrected in plan 04's `AB-11`
+documentation scope. **No new `ErrorCode`** — `SERVICE_UNAVAILABLE` already exists and needed no frontend
+entry.
+
+---
+
+### Q-2 · `D-04-L` with `P10` — non-admin occupant of the admin address · **RULED: warn in every environment; never block startup**
+
+**The ruling.** **A non-admin account occupying the configured admin address logs a WARNING naming the
+account and its role, and startup continues — in production, in development, and in every environment
+between them. Refusing to start is rejected outright.** This **confirms cluster 12's ruling** and
+**reverses the shipped `34c9459`**, which raises `ValueError` in production and warns only in
+development.
+
+**Why the reversal is scheduled work and not an edit.** `src/` is outside the scope of this document
+pass, and a register that narrates a code change without scheduling it is how a ruling dies. The
+correction is therefore recorded in **plan 17** as a named, owned, blocked-on-nothing item, and
+`34c9459`'s own commit body — which says *"the boot path can now fail where it previously continued
+silently"* — becomes the description of the defect being corrected rather than of the intended state.
+
+**The reason, which is cluster 12's and is not re-argued.** A boot failure on a configuration that is
+wrong *today and wrong invisibly* converts a misconfiguration into an outage. **The stronger reason is
+`P10`:** a persistent warning in the administration area is **unreachable in a deployment that refuses
+to boot**, so a production refusal and `P10` are mutually exclusive. Cluster 14 chooses `P10`, and the
+startup behaviour follows it rather than the other way round.
+
+| Option | Disposition |
+| ------ | ----------- |
+| **(a) Warn in every environment, never block startup** | **RULED.** The only option under which `P10`'s administration-area warning can exist at all. |
+| **(b) Refuse in production only** | **REJECTED.** It has the objection in its most concentrated form: the environment that matters most is the one that refuses to boot, and a development environment that continues would teach an operator that the check is advisory. |
+| **(c) Refuse in every environment** | **REJECTED.** Same objection, uniformly — and it is strictly worse than (b), because it also removes the operator's chance to fix the misconfiguration from inside the running system. |
+
+**Residual work — scheduled, not performed.**
+- **The reversal itself**, owned by **plan 17's `AB-10`** (`ensure_admin_user` in
+  `services/starter.py`): the production branch of `34c9459` becomes a warning. **It is a one-branch
+  change and it touches no stored row**, which is why it is cheap and why it was not worth a migration
+  debate.
+- **`P10`'s administration-area warning**, owned by **plan 13** (`CT-11`, the administration area). **Its
+  blocker is the reversal above and nothing else**: once startup never blocks, the surface exists and can
+  be built. **Recording that dependency explicitly is the point of this ruling** — before it, `P10` was
+  blocked by an unbuildable precondition, and the two looked like one unresolved question rather than a
+  ruling and its consequence.
+- **The `rowcount` branch and the minimal `SELECT` are unchanged** — `role` and `id` only, no
+  `password_hash` read, no credential logged. Cluster 14 rules a log line, not a query.
+
+---
+
+### Q-3 · `P5` — the remediation affordance · **RULED: structured data, interface-rendered control**
+
+**The ruling.** **The failure response carries the setting name as structured data, and the interface
+renders the control itself. The message text stays readable inside the 1000-character
+`processing_logs.message`.**
+
+**The boundary, stated explicitly because it is the ruling's substance: the backend supplies the fact,
+the client owns the affordance.** The backend's obligation is to make the offending key *machine-
+readable*; the client's is to present a way to remove it. Neither is asked to do the other's job, and
+the sentence is written here because the two homes were previously recorded as one ambiguous sentence
+("the message carries a link") that quietly assigned the affordance to whichever surface happened to be
+reading the message.
+
+**Two homes, both recorded, and neither is optional.**
+
+| Home | Owner | What it owes |
+| ---- | ----- | ------------ |
+| **Emitting** | **Plan 18, `PB-8`** — the worker/settings boundary | The **RFC 7807 body** carries an `ErrorCode` **plus the offending key** as a named field, so nothing link-shaped is embedded in a log message. **Note that `31397db` shipped the naming as prose inside `processing_logs.message`, which is the half that stays and is correct; what cluster 14 adds is the machine-readable field alongside it, not a replacement for the prose.** |
+| **Rendering** | **Plan 13, `DP-13-P`** — the existing status-renderer record, **extended rather than duplicated** | The client renders the **control** — a control that navigates to the settings screen and names the key — from the structured field. **`DP-13-P` is extended; no second record is created**, because the renderer is the same component and a second record would split one surface across two plans. |
+
+| Option | Disposition |
+| ------ | ----------- |
+| **(a) Structured data in the RFC 7807 body; the interface renders the control** | **RULED.** The message stays prose, the affordance becomes a control, and **no surface has to parse another surface's output.** |
+| **(b) An instruction in the message text, with manual navigation** | **REJECTED.** It works exactly once — the first time the user reads the sentence — and after that the user is guessing the path to the settings screen. **It also pushes the cost of an affordance onto prose, where it cannot be tested.** |
+| **(c) Literal link syntax in the message** | **REJECTED, and it is the option that must not reappear.** A link-shaped string inside a 1000-character log column is **prose that another surface has to parse**: it must survive escaping, truncation, log aggregation that strips markup, and a reader that renders the column as plain text. **The 1000-character bound is what makes this concrete rather than theoretical** — a message long enough to be useful is long enough to be truncated, and a truncated link is worse than no link. |
+
+**Residual work.** Both halves are unbuilt and both are named. **The boundary does not move**: `D-05-G`
+remains validated at the worker edge with existing stored payloads still loading, and cluster 14 changes
+only what travels in the failure response and what the client does with it.
+
+---
+
+### Q-4 · `P11-constraint` — the ordering type source · **RULED: persisted alongside each stored aggregate**
+
+**The ruling.** **The dimension's declared type is persisted alongside each stored aggregate.** Two
+properties follow, and they are the ruling: **the order of already-uploaded data stays correct
+permanently**, and **editing the upload configuration afterwards does not retroactively reorder stored
+rows.**
+
+| Option | Disposition |
+| ------ | ----------- |
+| **(a) Persist the declared type alongside each stored aggregate** | **RULED.** The order is a property of **the data**, not of **the configuration that happened to produce it**, and only a persisted source makes that true for rows that already exist. |
+| **(b) Derive the type from the processing configuration at display time** | **REJECTED, and the reason is a single sentence: an edit to that configuration would change the order of data already uploaded.** A user who corrects a `column_types` entry would silently see every previously-uploaded category list reshuffle — **with no upload, no run, and no entry in any history to explain it.** That is the same class of defect as `P4`'s "recalculates on first upload", except there the change is attributable to a run and here it is attributable to nothing. |
+
+**This ruling is a schema change, and that is its most important consequence.** By the project's
+migration rule it is therefore **a hand-over to plan 14** — recorded there at `MIGB-4`, alongside the
+existing `MIGB-*` blocks and the `C05-5` / `C06-3` discipline already described in that plan. **No
+migration is authored in this document pass, and none may be authored in plan 18 or plan 16.**
+
+**What this ruling does *not* do, and the distinction is load-bearing.**
+
+- **It does not satisfy itself via `aggregated_data.ordinal`.** The two must **not** be merged.
+  `ordinal` supplies **position**; `P11-constraint` requires **type**. A column that says *where a value
+  sits in the order* cannot tell a reader *how to order the next value*, and the three edge cases cluster
+  13 named — leading zeros, scientific notation, the empty string — are all cases where a position and a
+  type give different answers.
+- **It does not reopen `D-05-E` or the index identity.** Canonical text remains the identity and storage
+  representation. The persisted type is **additional data about how to present that identity**, not a
+  change to what the identity is.
+- **It does not collide with `P11-sub`.** `1` and `1.0` remain **distinct categories**, so **a numeric
+  type must not collapse them**: `"1"` sorts before `"1.0"` as two values of one numeric type, and any
+  implementation that normalises `1.0` to `1` on the strength of "it is a number" violates `P11-sub` while
+  claiming to satisfy `P11-constraint`. **This is the most likely way to get this ruling wrong**, and it
+  is recorded in the hand-over so the implementer meets it before writing the column, not after.
+
+**Residual work, in three places, all named.**
+- **Plan 14, at `MIGB-4`** — the persisted-type DDL hand-over, kept separate from the `ordinal` question
+  (`D-05-K`, plan 18's `PB-15`).
+- **Plan 18, from `PB-5`** — the write-side hand-over: what the aggregate store must persist alongside
+  each dimension value. **Plan 18 authors no migration** (`R-05-12`); it names the obligation and hands it
+  over.
+- **Plan 13 and plan 16** — the read and presentation side, which render an order they are given and
+  **compute none**.
 
 ---
 
@@ -577,7 +989,7 @@ inventing the answer.**
 | `DP-12-E`/`D-04-I` behaviour | login+refresh | every request | **B** | Closes the mid-session hole |
 | `DP-12-E` commit shape | two commits | Planner | **A** | Ordering is the mitigation |
 | `DP-12-F` docstring/scope | (b)+(i) | Planner | **A** | Census must enumerate every minting path |
-| `D-04-F` revocation read | — | fail open | **B** | Availability; WARNING log makes it non-silent |
+| ~~`D-04-F` revocation read~~ → **cluster 14** | — | ~~fail open~~ → **fail closed, 503, shipped `5b6cceb`** | ~~**B**~~ → **A (cluster 14)** | **Cluster 2's availability rationale is struck: the session store is the session boundary, and a refusal is visible while a bypass is silent. The WARNING-or-above logging requirement survives** |
 | `DP-1` / `DP-10-2` liveness | (a) | A | **B** | Both agreed |
 | `D-15-G`+`H` detailed health | strip, stay public | admin-gate | **A+B** | Gate **and** reduce, so a false outage is survivable |
 | rate limiter posture | fail closed | Planner | **A** | Keep the shipped default; ≠ `D-04-F`'s surface |
@@ -608,4 +1020,57 @@ inventing the answer.**
 | `DP-6` body strictness | writes only | B | **B** | Same content; reads stay permissive |
 | `DP-12` schema surface | app+hand-over | Planner | **A** | Records nginx as the real control |
 
-**Count: 37 decisions adjudicated — 15 INPUT B, 16 INPUT A, 4 merged, 2 new.**
+**Count: 37 decisions adjudicated — 15 INPUT B, 16 INPUT A, 4 merged, 2 new.** *(Clusters 1–10
+only. Clusters 11–13 are counted separately below and are **not** merged into this table: clusters
+11–13 are corrections and fresh rulings, not reconciliations of two inputs.)*
+
+**Clusters 11–13 at a glance.**
+
+| Cluster | Records | Nature |
+| ------- | ------- | ------ |
+| **11** | `D-05-E`, `D-05-N` | **Corrections.** Ruled *and already shipped*; plans and code-context files that still record them as open are stale and must be corrected, not scheduled. |
+| **12** | `D-05-C`, `D-05-D`, `D-05-F`, `D-05-G`, `D-05-P`, `D-04-D`, `D-04-J`, `D-04-C`, `D-04-L`, `D-16-3`, `D-16-7`, `C12-4`, `D-08-3`, `DP-10-12` | **Technical rulings**, Tech Lead's authority, the Product Owner not asked. All option (a). Two — `D-05-G`, `D-04-D` — are **superseded in their user-visible half** by cluster 13. |
+| **13** | `P1`…`P13`, with `P11-sub` and `P11-constraint` | **Product-experience rulings.** Each answers a question no phase previously owned; each is recorded in the plan that owns the surface, with the user-visible outcome as the acceptance criterion. |
+
+| **14** | **Q-1** `D-04-F`, **Q-2** `D-04-L`+`P10`, **Q-3** `P5`, **Q-4** `P11-constraint` | **The four answers.** All at option (a). Two reverse earlier positions — cluster 2's `D-04-F` (struck in place) and the shipped `34c9459` (reversed by scheduled correction). Two are **schema-touching hand-overs with named owners**, not code changes. |
+
+**Cluster 11–14 total: 34 records** — 2 corrections, 14 technical rulings, 14 product-experience
+rulings, 4 answers. **Combined with clusters 1–10: 71 records of record in this file.**
+
+**Reconciled open-record count — updated 2026-10-03 after cluster 14. TWO CATEGORIES, DELIBERATELY NOT
+MERGED, because they belong to different people.**
+
+### A. Awaiting the **Product Owner** — **ZERO.**
+
+**No record in this file awaits an owner decision.** All four questions this register raised are answered
+(cluster 14), and the two earlier rulings that disagreed with the tree have been arbitrated rather than
+left open: `D-04-F`'s cluster-2 entry is **struck in place** and replaced by cluster 14, and `D-04-L`'s
+cluster-12 entry is **confirmed with the shipped code reversed by scheduled correction**. **Two schema
+consequences were created by cluster 14 and both are hand-overs with named owners, not open questions:
+`P5`'s structured error body (plan 18 `PB-8` to emit, plan 13 `DP-13-P` to render) and `P11-constraint`'s
+persisted type (plan 14 at `MIGB-4`, from plan 18's `PB-5`).**
+
+### B. Open with a **technical** chooser — these are the Tech Lead's, not the Product Owner's.
+
+| Count | Records | Chooser |
+| ----- | ------- | ------- |
+| **1** | `D-16-6` (`CHT-003` vs phase 12's `AZ-8`: serialise, co-commit, or defer) | **Coordinator** |
+| **9** | plan 08 `D-08-1`, `D-08-2`, `D-08-5`, `D-08-6`, `D-08-7`, `D-08-8`, `D-08-9`, `D-08-10`, `D-08-11` | **Tech Lead**, one with **phase 14** and one with **phase 03/04** informed |
+| **1** | `D-04-G` (what lands first: the docstring correction or the core block — largely moot by block order, retained deliberately) | **Planner** |
+| **plan 09's own** | `VAL-09-004` / `C09-3` (the rate limiter's `fail_closed=True` default, after the 2026-10-03 ruling was withdrawn) · `DP-09-A` … `DP-09-H` | **Planner** |
+| **plan 13's own** | the **ten** unpicked `DP-13-*` — `A`, `E`, `F`, `G`, `J`, `K`, `L`, `M`, `N`, `O` | **Tech Lead / Planner / Coordinator** as each row states |
+| **plan 11's own** | `DP-11-A` … `DP-11-H`, `DP-11-J` and the rest of its register | as each row states |
+
+### C. Ruled and closed, but **found in the tree and absent from a plan's declared set**
+
+| Count | Record | Why it is listed separately |
+| ----- | ------ | --------------------------- |
+| **1** | `D-04-M` | **RULED and LANDED** in `4600e5d`, raised by the Tech Lead during `AB-8` because the first `D-04-J` implementation could not express credential rotation. **It is now recorded in plan 17's register *and* plan 04's**, so the two agree. **Not a divergence and not open** — a correctly-ruled record that no plan had declared. |
+
+### Movement across this pass
+
+| Pass | Movement |
+| ---- | -------- |
+| Clusters 11–13 | plan 18 **−16 open**; plan 17 **−10 open** and its register section **restored**; plan 16 **−1 open**. **+25 rulings applied, +1 record found.** |
+| Cluster 14 | **−4 owner questions, all closed.** **+2 hand-overs created** (both schema-touching, both with named owners). **+2 reversals scheduled** (`34c9459`'s production branch; cluster 2's `D-04-F` entry struck in place). **+1 record added to plan 04.** |
+| **Net, all passes** | **Owner-decision queue: 4 → 0. Technical-chooser queue: 22 → 20.** |

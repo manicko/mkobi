@@ -1581,15 +1581,41 @@ Whichever is chosen, **B3 lands first** and PB-14's Implementor must read its co
 | **(b)** reject the pair at validation | Loud and cheap. A **new failure class** for configurations that work today, and `ProcessingSettingsDict` does not even declare `limit` (that gap is PB-8's), so the rejection is on a key the settings type does not describe. |
 | **(c)** require `sort_by` whenever `limit` is set | The strongest determinism guarantee; the most configurations become invalid, and the message must name the missing key. |
 
-### D-05-E — DP-003: what is the canonicalisation rule for `dims` identity?
+### D-05-E — DP-003: what is the canonicalisation rule for `dims` identity? · **RULED (a) and LANDED as `d865f2c`**
 
-**Owner:** domain owner **+ phase 14** (the index's DDL implication). **Blocks:** PB-5 (hard).
+**Owner:** domain owner **+ phase 14** (the index's DDL implication). **Blocks:** PB-5 (hard) — **released,
+PB-5 landed**. **Status corrected 2026-10-03:** this record was still carried as open here while the rule
+had been ruled and shipped. The authority is
+`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` **cluster 11**, and the shipped
+implementation is in `src/mkobi/data/storage/manager.py::_canonicalize_dim_scalar`, applied at all three
+write surfaces.
+
+**The rule as implemented**, which is more specific than option (a)'s one line and is the form any
+reader needs: `None` → `""`; `date`/`datetime` → **ISO string keeping the `T` separator**; `int`/`float`/`bool`
+→ `str(value)`; anything else → `str(value)`. **`metrics` are deliberately not canonicalised.**
+
+**Why the storage layer and not the writer — the placement question this record left open.** The
+conflict target `text("((dims)::text)")` is evaluated by PostgreSQL **on the value about to be
+inserted**, so the storage layer is the only placement where the index key and the stored value are
+*provably* identical, and the only one covering all three write surfaces **including a hand-built
+`save_aggregates` call that bypasses the service.** Canonicalising in the reader would hide the symptom
+and leave every stored row wrong. **This is why the option table's (a) row says "at the ruled point" in
+`PB-5`'s definition of done rather than naming one: the tree, not the option, settled it.**
+
+**Residual, stated not eliminated:** already-split rows are **not** repaired — they are corrected by the
+next overwrite-mode upload for that dashboard, and a one-off remediation query is out of scope. The
+`aggregated_data.ordinal` DDL and the canonicalisation index line remain phase 14's (`C05-5`).
+
+**Cluster 13's `P11` does not reopen this.** `P11-constraint` is explicit that canonical text is the
+identity and storage representation and that **ordering is a presentation-layer concern derived from the
+source column's semantic type** — a different question, owned by plan 18's option-list work and plan 16's
+axis labels.
 
 | Option | Trade-off |
 | ------ | --------- |
-| **(a)** `str()` every scalar dim | Matches the read path's existing `dims[key].astext == str(value)` comparison exactly, so write and read agree by construction. Costs the **native type** in stored `dims`, which `_coerce_dim_value` deliberately preserves "for correct sorting in the frontend" — so this reverses a deliberate design decision, and the frontend sort path is the consumer inventory PB-5's Auditor must produce. Also needs a stated rule for `True` vs `"True"` vs `1`. |
-| **(b)** preserve native values in `metrics`, canonicalise only the key | Keeps the existing coercion semantics and changes identity only. Two representations of one value then exist, which is a **read-side** question: a filter value arriving as `int` must still match. Narrower; the compatibility cost is confined to `dims` consumers. |
-| **(c)** a cast at parse time (in the worker's cast loop) | Canonicalises before aggregation, so `_coerce_dim_value` becomes a pass-through. Couples identity to the **optional** `column_types`: an unconfigured dashboard gets no canonicalisation and the defect returns. |
+| **(a)** `str()` every scalar dim | Matches the read path's existing `dims[key].astext == str(value)` comparison exactly, so write and read agree by construction. Costs the **native type** in stored `dims`, which `_coerce_dim_value` deliberately preserves "for correct sorting in the frontend" — so this reverses a deliberate design decision, and the frontend sort path is the consumer inventory PB-5's Auditor must produce. Also needs a stated rule for `True` vs `"True"` vs `1`. **RULED and LANDED (`d865f2c`).** The two sub-questions the row names were both answered by the shipped rule: the `True`/`1` case is one rule (`str(value)`), and the frontend sort concern is now cluster 13's `P11-constraint`, which **keeps** native ordering rather than surrendering it. |
+| **(b)** preserve native values in `metrics`, canonicalise only the key | Keeps the existing coercion semantics and changes identity only. Two representations of one value then exist, which is a **read-side** question: a filter value arriving as `int` must still match. Narrower; the compatibility cost is confined to `dims` consumers. **REJECTED — the two representations are the defect, not a narrower way to pay for it.** |
+| **(c)** a cast at parse time (in the worker's cast loop) | Canonicalises before aggregation, so `_coerce_dim_value` becomes a pass-through. Couples identity to the **optional** `column_types`: an unconfigured dashboard gets no canonicalisation and the defect returns. **REJECTED — an unconfigured dashboard silently keeps the defect, which is the worst of the three because it is invisible.** |
 
 Any option implying an index change is an explicit hand-over to phase 14 (C05-5); PB-5 must not author a
 migration.
@@ -1691,20 +1717,39 @@ on writing the corrections.
 | **(b)** interleave: run the unblocked phase-05 blocks (PB-4, PB-3, PB-11) first, then 05 after B2/B3 | **The plan's default**, encoded in the block map: those three touch no transaction boundary, no `session.begin()` and no sweep. The cost is coordination discipline — they must not touch `services/file_processing.py`, `_process_csv_file_async` or the cleanup task, and PB-3's fixture should wait for C05-2. |
 | **(c)** phase 05 first | Rejected by C-3's own ruling: it would stall a CRITICAL fix on a schedule this phase does not control. Recorded so it is not re-proposed. |
 
-### D-05-N — DP-004: what does an empty selection report? *(raised by this Planner; not in the code context's list)*
+### D-05-N — DP-004: what does an empty selection report? *(raised by this Planner; not in the code context's list)* · **RULED (a) and LANDED as `ed644e7`**
 
-**Owner:** domain owner + the frontend's `failed` renderer. **Blocks:** PB-3 (hard).
+**Owner:** domain owner + the frontend's `failed` renderer. **Blocks:** PB-3 (hard) — **released, PB-3
+landed**. **Status corrected 2026-10-03:** carried here as open while the rule had been ruled and
+shipped. Authority: `.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` **cluster 11**;
+implementation at `src/mkobi/workers/data_worker.py:1184-1213`.
 
 `save_aggregates` returns `0` before its own clear, so an overwrite matching no graph dimension keeps the
 stale rows, clears the filter values, and the run reports `COMPLETED`. The report's Rollout Safety is
 explicit: **DP-004's fix deliberately turns a silent no-op into a failed run, so the status text and the
 frontend's `failed` rendering must be agreed before merge.** No decision record covers that agreement.
 
+**As shipped.** A graph is **"skipped"** when `AggregationService.aggregate_for_dashboard` returns no
+records for it; the guard raises `AppException(code=ErrorCode.PROCESSING_FAILED)` with a detail from
+`_empty_selection_detail` naming **up to `_MAX_SKIPPED_GRAPH_NAMES = 20` graphs**, and the detail is
+**bounded** because `processing_logs.message` is `String(1000)`. **It sits before both clears** —
+`StorageManager.save_aggregates`' internal delete **and** `DataService.clear_dashboard_values` — and
+guarding only one still loses data, which is the whole correctness argument. **No new `ProcessingStatus`
+member and no migration:** `FAILED` already exists with a frontend renderer. `StorageManager` no longer
+short-circuits an empty `clear_old=True` call before its own delete either, so the latent "rows kept,
+filter values wiped" state cannot be reached. **`DP-005`'s production code was already shipped by
+`8953bf7`; this block added the verification.**
+
+**The residual is cluster 13's `P3`, and it adds nothing to the shipped text:** the failed run shows the
+reason naming the skipped graphs and **no link** to the dashboard's graph or filter settings, existing
+data is preserved, and both a link to the settings screen and a generic reasonless message are
+**rejected**. `P3` **ratifies** the implementation. **No finding is renumbered.**
+
 | Option | Trade-off |
 | ------ | --------- |
-| **(a)** fail the run, naming the graphs that were skipped | Correct, loud, and the report's own recommendation. Requires the message agreed with the frontend's `failed` rendering, and a run that used to "succeed" now fails visibly — for exactly those dashboards whose upload does not match their chart dimensions. |
-| **(b)** complete with an explicit "no graph matched" status text and **no** deletion | Preserves the old rows and filter values, so revert-safe and non-breaking. The dashboard is left in a state nobody asked for, and the message is the only signal — the class of defect this finding is about. |
-| **(c)** delete the stale rows and complete, naming what was cleared | Semantically defensible (an overwrite that matches nothing *means* an empty dashboard) and the only option under which `data-flow.md` becomes literally true. It destroys data on a mis-typed upload — the most destructive outcome in the phase. |
+| **(a)** fail the run, naming the graphs that were skipped | Correct, loud, and the report's own recommendation. Requires the message agreed with the frontend's `failed` rendering, and a run that used to "succeed" now fails visibly — for exactly those dashboards whose upload does not match their chart dimensions. **RULED and LANDED (`ed644e7`).** The agreement this row demanded turned out not to need a new `ProcessingStatus`: `FAILED` already had a renderer, and the 20-graph cap is what made the detail fit a `String(1000)` column without truncation. |
+| **(b)** complete with an explicit "no graph matched" status text and **no** deletion | Preserves the old rows and filter values, so revert-safe and non-breaking. The dashboard is left in a state nobody asked for, and the message is the only signal — the class of defect this finding is about. **REJECTED — "the message is the only signal" is the finding's complaint, not an answer to it.** |
+| **(c)** delete the stale rows and complete, naming what was cleared | Semantically defensible (an overwrite that matches nothing *means* an empty dashboard) and the only option under which `data-flow.md` becomes literally true. It destroys data on a mis-typed upload — the most destructive outcome in the phase. **REJECTED — destroys data on a mis-typed upload.** |
 
 Under (a) and (b) the guard must sit **before** `clear_dashboard_values` in `_store_aggregates` as well
 as before `save_aggregates`' own clear, because the filter-value list is wiped independently of the
@@ -1844,21 +1889,31 @@ C-3's record.
 | - | ----- | ---------------------- | ---------- |
 | 1 | **PB-0** | none | — |
 | 2 | **PB-4** | none | — |
-| 3 | **PB-3** | **D-05-N** ruled · **C05-2** recorded | PB-0 |
+| 3 | **PB-3** | **`D-05-N` ruled AND LANDED (`ed644e7`) - gate discharged** · **C05-2** recorded | PB-0 |
 | 4 | **PB-11** | none | PB-0 |
-| 5 | **PB-2** | **D-05-H** ruled | PB-0 |
-| 6 | **PB-8** | **D-05-G** ruled **with** its caller inventory | PB-0 |
-| 7 | **PB-9** | **D-05-F** ruled · PB-8's commit read | PB-8 |
-| 8 | **PB-5** | **D-05-E** ruled · **phase-03 B2 landed** · the first-change-scope plan exists | PB-8, PB-9 |
-| 9 | **PB-6** | **D-05-C** ruled · PB-8 landed (same function) | PB-8 |
-| 10 | **PB-7** | **D-05-D** ruled · PB-6 landed (same function) | PB-8, PB-6 |
-| 11 | **PB-10** | **D-05-P** ruled | PB-0 |
-| 12 | **PB-12** | **D-05-O** ruled · `config.py` re-read for phase-01's concurrent state | PB-0 |
-| 13 | **PB-15** | **D-05-K** ruled · the phase-14 hand-over written | PB-8 |
-| 14 | **PB-1** | **D-05-A** and **D-05-A.2** ruled · **C05-2 recorded** · **phase-03 B3 landed and read** | PB-0 |
-| 15 | **PB-14** | **D-05-B** and **D-05-J** ruled · the Auditor's helper investigation complete · **phase-03 B3 landed and read** | PB-1 |
-| 16 | **PB-13** | **D-05-I** ruled · phase-03 B3's horizon value read (or its absence recorded) | PB-14 |
-| 17 | **PB-16** | **D-05-L** confirmed · every block whose behaviour it describes has landed | PB-1, PB-2, PB-3, PB-5, PB-8, PB-9, PB-12, PB-13, PB-14, PB-15 |
+| 5 | **PB-2** | **`D-05-H` ruled and LANDED (`1e869f6`) - discharged** | PB-0 |
+| 6 | **PB-8** | **`D-05-G` ruled AND LANDED (`31397db`, as option `a'`) with its caller inventory - discharged** | PB-0 |
+| 7 | **PB-9** | **`D-05-F` ruled AND LANDED (`b63589c`) - discharged** · PB-8's commit read | PB-8 |
+| 8 | **PB-5** | **`D-05-E` ruled AND LANDED (`d865f2c`) - discharged** · **phase-03 B2 landed** · the first-change-scope plan exists | PB-8, PB-9 |
+| 9 | **PB-6** | **`D-05-C` ruled AND LANDED (`d4acdbd`) - discharged** · PB-8 landed (same function) | PB-8 |
+| 10 | **PB-7** | **`D-05-D` ruled AND LANDED (`67e28fa`) - discharged** · PB-6 landed (same function) | PB-8, PB-6 |
+| 11 | **PB-10** | **`D-05-P` ruled AND LANDED (`a6ad7d2`) - discharged** | PB-0 |
+| 12 | **PB-12** | **`D-05-O` ruled AND LANDED (`916a021`) - discharged** · `config.py` re-read for phase-01's concurrent state | PB-0 |
+| 13 | **PB-15** | **`D-05-K` ruled AND LANDED (`660b6d5`) - discharged** · the phase-14 hand-over written | PB-8 |
+| 14 | **PB-1** | **`D-05-A` and `D-05-A.2` ruled AND LANDED (`ae6b66e`) - discharged** · **C05-2** recorded · **phase-03 B3 landed and read** | PB-0 |
+| 15 | **PB-14** | **`D-05-B` and `D-05-J` ruled AND LANDED (`6a2c04a` + `5e73e37`, split per `D-05-R`/§E.2) - discharged** · the Auditor's helper investigation complete · **phase-03 B3 landed and read** | PB-1 |
+| 16 | **PB-13** | **`D-05-I` ruled AND LANDED (`ee0f0f5`) — discharged** · phase-03 B3's horizon value read (or its absence recorded) | PB-14 |
+| 17 | **PB-16** | **`D-05-L` confirmed AND LANDED (`af00a45`) — discharged** · every block whose behaviour it describes has landed | PB-1, PB-2, PB-3, PB-5, PB-8, PB-9, PB-12, PB-13, PB-14, PB-15 |
+
+**This queue is EXECUTED — every gate is discharged.** The landing commit per block is in
+`.ai/plans/18-data-pipeline-implementation-execution.md` §1.2, which is the phase's record of what shipped
+and in what order; this table is kept because the queue's *shape* is what `D-05-M` chose and what
+`PB-17`'s position-2 placement depended on. **`D-05-M` itself is CLOSED by `R-18-6`** — the interleave
+option it chose is the order above, and phase 03's B2/B3 were already ancestors when it ran. **`PB-17`
+and `PB-18` are not in this table** because they are phase-18 blocks, and both discharged: the ruling log
+is `.ai/plans/_code-context/05-data-pipeline-reconciliation-note.md` §E, and the independent pass landed
+as `85912d6`. **Plan 18 remains the implementation record; nothing here schedules or re-opens landed
+work.**
 
 **Executable today without a ruling: PB-0, PB-4, PB-11** — and PB-3 once **D-05-N** and **C05-2** are
 recorded, which is the cheapest decision in the phase and unblocks the block that carries DP-005's

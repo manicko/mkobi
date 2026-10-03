@@ -2112,6 +2112,19 @@ were all executable already; what the ruling removes is the topology question it
 
 ### DP-11-E — Should the unused GIN index be dropped, documented, or kept?
 
+**⚠ CROSS-PLAN DUPLICATE, recorded 2026-10-03: this record is phase 14's `D-14-B`.** One question,
+registered from two tiers. **Plan 14 states the equivalence on `D-14-B`, on `MIGB-3`, on `X-02`'s
+`O-02` row, on `O-01`/`O-02`, in its out-of-scope register and in `MIGB-3`'s `blocked_by`
+("co-signed with phase 11's `DP-11-E`, not re-decided here") — six times. This plan stated it zero
+times, which is the asymmetry that let one question read as two.** **Nothing is merged and nothing is
+renumbered:** `DP-11-E` stays this plan's record, `D-14-B` stays phase 14's, and each is now cited
+from the other. **What each side owns:** `DP-11-E` is the **measurement and the disposition** — the
+index is unused because the code emits `->>`, and `VAL-11-001`'s measurement (`->>` is **2.5×–8.1×
+faster** in both measured shapes, and neither operator reaches the GIN) is what makes option (c)
+unauthorised. `D-14-B` is the **DDL half**, scheduled as phase 14's `MIGB-3`, plus the
+documentation half, which is `MIGB-12` and shares a paragraph with this plan's `PRF-1` (`C14-3`).
+**The co-signer is named rather than assumed: Tech Lead, with phase 05 and phase 11.**
+
 **Alternatives.** (a) fix the documentation only (the report's recommendation) · (b) drop the index and
 reclaim ~5–80 B/row of write cost · (c) change the code to emit `@>` so the index becomes live.
 **Chooser.** **Tech Lead.** (c) is the inversion `VAL-11-001` warns against and is **not authorised by
@@ -2189,6 +2202,31 @@ rows — roughly 8× the GIN (9,872 kB) and larger than the table's own data**, 
 indexes are small. It is the largest write-amplification object here, and **phase 05's `DP-003`
 (type-sensitive aggregate identity) multiplies it without bound**. That makes it the real cost of
 `DP-003`, and `DP-003` is phase 05's.
+
+**⚠ CROSS-PLAN DUPLICATE, recorded 2026-10-03: this record is phase 14's `D-14-C`, and phase 14 says so
+explicitly** — in its `X-08` reconciliation row ("`MIGB-4` is blocked by `D-14-C`, which **is** `DP-11-J`
+— the same record, not a second one"), on `D-14-C` itself, in its out-of-scope register and in
+`MIGB-4`'s `blocked_by`. **Nothing is merged and nothing is renumbered:** `DP-11-J` stays this plan's
+record, `D-14-C` stays phase 14's. **What each side owns:** `DP-11-J` prices the write amplification and
+raises it; `D-14-C` is the **DDL question** — narrow the index, hash the expression, or drop it —
+scheduled as `MIGB-4`, which phase 05's `C05-5` also feeds (`aggregated_data.ordinal`).
+**Chooser: Coordinator, with phase 05 and phase 14 as co-signers.** Phase 05's `R-05-12` forbids phase
+05 authoring a migration, and this plan's `R-11-8` forbids this plan dropping the index — so the record
+is co-signed by design rather than by accident.
+
+**Two facts that arrived after this record was written, and both narrow it rather than widen it.**
+**One:** `D-05-E` is **RULED and LANDED** (`d865f2c`) — dimension values are canonicalised in the
+storage layer, so the index key and the stored value are provably identical and the "type-sensitive
+aggregate identity" premise above is **no longer a live defect**. **The index still costs 83 MB of write
+amplification**, so the DDL question survives; what it no longer has to weigh is the correctness
+consequence of two spellings of one category. **Two:** `P11-constraint` (cluster 13) requires ordering to
+be derived from the **source column's semantic type** and **not** from the stored text — and the
+`text("((dims)::text)")` conflict target is the canonical text. **Those two rulings are compatible and
+they are not the same thing:** the index is the *identity* key and `P11-constraint` is a *presentation*
+constraint, and the register says so in as many words (*it does not reopen `D-05-E` or the index
+identity*). **An implementor must not read `P11-constraint` as an argument for hashing or dropping the
+expression**, and this plan should not be cited as one.
+
 
 **Alternatives.** (a) hand it to phase 05 as `DP-003`'s write-cost consequence and let `PB-5`'s
 canonicalisation absorb it · (b) a phase-11 measurement block that prices index write amplification

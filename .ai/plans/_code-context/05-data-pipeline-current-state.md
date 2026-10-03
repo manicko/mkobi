@@ -539,24 +539,33 @@ single piece of evidence that DP-014's `success` documentation drift is long-sta
 
 ## 6. Decision-record status
 
-| Record | Status at HEAD | Note |
-|---|---|---|
-| **D-05-A** | **Open** — mechanism decision | But the sub-premise (b) is factually wrong: `FileNotFoundError` maps to `FILE_UPLOAD_ERROR`, not `"encoding"`, and it is *not* wrapped by `CSVLoader.load_csv`. Fix the premise, then rule. |
-| **D-05-B** | **Open** | Nothing landed. |
-| **D-05-C** | **Open** | Nothing landed. |
-| **D-05-D** | **Open** | Nothing landed. |
-| **D-05-E** | **Open** | Nothing landed. |
-| **D-05-F** | **Decided by the tree** — `processing_status` is a native PG ENUM and `4479eb53fd4e` already removed `success` | The PB-5/PB-9 "Auditor" task is discharged: any new member (e.g. `GRAPH`) needs an Alembic migration. Routing to phase 14 is correct. |
-| **D-05-G** | **Open**, and the stated tripwire does not exist | `tests/test_openapi.py` tests `ErrorResponse` schema only. PB-8 must add a route-declaration assertion or drop the gate. |
-| **D-05-H** | **Open**, and now **more urgent** | The `db_session is None` branch in `_store_aggregates` bypasses B2's advisory lock and splits the aggregate write from the COMPLETED update across two connections. D-05-H(b) (delete) should be preferred over (a) (fix both). |
-| **D-05-I** | **Partially moot** | (b) dedicated `STALE_UPLOADED_TIMEOUT_MINUTES` and the `timedelta(minutes=1)` premise are moot — `907e052` already reused `Settings.stale_processing_timeout_minutes`. Only (c) "document the key's other consumer" survives, and the docstring already does it. |
-| **D-05-J** | **Open, and under-scoped** | The ruling must also cover `tests/test_upload_api.py::test_cleanup_task_files_called_during_processing`, which phase 06's plan assigns to phase 05 but phase 05's plan never names. |
-| **D-05-K** | **Open** | Nothing landed. |
-| **D-05-L** | **Open** | Nothing landed. |
-| **D-05-M** | **Open** | Nothing landed. |
-| **D-05-N** | **Open** | Nothing landed. |
-| **D-05-O** | **Open** | Nothing landed. |
-| **D-05-P** | **Open** — unreachability argument **strengthened** | `ProcessingSettingsDict` still declares no `yoy_config` / `share_config` / `metrics` fields, and `ProcessingConfig` has `yoy_config` but `models/types.py` does not. `tests/test_data_transformations.py::TestCalculateYoY` still has grouped-only coverage. |
+| Record | Status | Landed as | Note |
+|---|---|---|---|
+| **D-05-A** | **RULED (a) and LANDED** | `ae6b66e` | Order = `commit` → `file move` → `enqueue`. The sub-premise this row flagged as factually wrong **was** wrong and the implementing commit corrected it: `FileNotFoundError` maps to `FILE_UPLOAD_ERROR`, not `"encoding"`, and `CSVLoader.load_csv` does not wrap it. Residual failure of (a) is stated in the commit body. |
+| **D-05-B** | **RULED (c) and LANDED** | `5e73e37` (as `PB-14b`) | Unlink after the commit, catching `BaseException` for cleanup only and re-raising, with the existing failure-path unlink retained. |
+| **D-05-C** | **RULED (a) and LANDED** | `d4acdbd` | `groupby` without `aggregations` collapses duplicate category rows by first occurrence after a deterministic sort. Cluster 12 reaffirmed it and rejected (b) and (c). |
+| **D-05-D** | **RULED (a) and LANDED** | `67e28fa` | `limit` applies **after** aggregation. Cluster 12; (b) and (c) rejected. Stored values change — which is cluster 13's `P4`'s concern, not a reason to re-open this. |
+| **D-05-E** | **RULED (a) and LANDED** | `d865f2c` | **`_canonicalize_dim_scalar` in the storage layer**, at all three write surfaces: `None` → `""`; `date`/`datetime` → ISO keeping the `T`; `int`/`float`/`bool` → `str(value)`; anything else → `str(value)`. `metrics` deliberately not canonicalised. **The storage layer is not a variation on the ruling — it is the only placement where the index key and the stored value are provably identical**, because `text("((dims)::text)")` is evaluated by PostgreSQL on the value about to be inserted. Already-split rows are **not** repaired; they are corrected by the next overwrite-mode upload. See the reconciliation note's §E.1a. |
+| **D-05-F** | **RULED (b) and LANDED** | `b63589c` | Warnings summarised into `processing_logs.message` (`String(1000)`) under a cap and truncation rule; no new status value and no migration. **The never-true `column_types` check was fixed so it can become true** — and the fix required adding the missing `elif col_type == "float"` cast, not only removing the guard term. Option (a) remains a **phase-14 hand-over**: `processing_status` is a native PG ENUM and `4479eb53fd4e` removed `success`. The Auditor task this row called discharged is indeed discharged. |
+| **D-05-G** | **RULED (a′) and LANDED** | `31397db` | **This row's second claim is itself history: the tripwire now exists.** Validation moved after the frame is cast and renamed; `ProcessingSettingsModel` was completed (twenty-two declared keys, `extra="forbid"` replacing `{"extra": "allow"}`, `settings` retyped on both config models, `ProcessingSettingsDict` deleted, the merge/extract helpers made `model_dump`-based). **`(a′)` was a fifth option**, forced by a real constraint — a `TypedDict` cannot emit `additionalProperties: false`, so the demanded OpenAPI tripwire was unwritable against one. Limits stated in the commit body: the boundary is at the request/response edge only, the worker and `ProcessingConfig` stay permissive, and config-time `metric_agg` validation was **not** added. |
+| **D-05-H** | **RULED (b) and LANDED** | `1e869f6` (inside `PB-2`'s commit) | The branch this row called "more urgent" is **gone**: `db_session` is now a required parameter, so the advisory-lock bypass and the split commit are removed by construction rather than by convention. The caller proof was produced by grep and is in the commit body: `_store_aggregates` has exactly one production caller and `DataService::trigger_processing` does not call it. |
+| **D-05-I** | **RULED (a) and LANDED** | `ee0f0f5` | The sweep moved into the lease-guarded periodic loop. **This row's "partially moot" finding was correct and was carried into the ruling**: the key question was moot because `907e052` already reused `Settings.stale_processing_timeout_minutes`. The commit body states the fail-open direction change. `85912d6` then corrected an over-promise this move created — a periodic sweep against a shared horizon cannot distinguish a stranded row from a merely backlogged one. |
+| **D-05-J** | **RULED (b) with an amendment, and LANDED** | `6a2c04a` (as `PB-14a`) | Both uncalled helpers deleted. **This row's under-scoping concern was real and was honoured**: `test_cleanup_task_files_called_during_processing` was **renamed, not deleted**, because its assertion is sound while its name and docstring are false. The test was updated *with* the ruling, not around it. |
+| **D-05-K** | **RULED (b) and LANDED** | `660b6d5` | Interim `ORDER BY id` on all three read methods, with the append-mode divergence documented and asserted. `aggregated_data.ordinal` remains **phase 14's** (`C05-5`, `MIGB-13`). Cluster 13's `P11-constraint` adds a *presentation* ordering requirement; it explicitly does not reopen this, and `ordinal` supplies position rather than type, so it does not satisfy it either. |
+| **D-05-L** | **RULED (b), split by file, and LANDED** | `af00a45` | Phase 05 owns the pipeline narrative; phase 14 owns `docs/09-database/**`; phase 10 owns `task-queue-migration.md`. The one merged `docs/SPEC.md` row is the phase's. |
+| **D-05-M** | **CLOSED by consequence** | — | Closed by `R-18-6`: phase 03's B1/B2/B3/B10 were already ancestors, so the interleave question is moot. Its surviving content — that `PB-4`, `PB-3` and `PB-11` must not touch the same symbols — held, and all three landed. |
+| **D-05-N** | **RULED (a) and LANDED** | `ed644e7` | A graph is "skipped" when `aggregate_for_dashboard` returns no records; the guard raises `PROCESSING_FAILED` with a detail naming **up to 20** graphs (bounded because `processing_logs.message` is `String(1000)`), and it sits **before both clears**. No new status value and no migration — `FAILED` already existed with a renderer. `StorageManager` no longer short-circuits an empty `clear_old=True` call before its own delete, so the latent "rows kept, filter values wiped" state is unreachable. Cluster 13's `P3` ratifies it and adds no link. |
+| **D-05-O** | **RULED, all three parts, and LANDED** | `916a021` | One ceiling owner — `UploadSettings.max_file_size_mb` through the derived `Settings.max_file_size`, no new key and no default change; the ceiling applies to the **decompressed** `.csv.gz` stream; **two** `LoaderConfig`s kept. `85912d6` caught two stale log strings the implementing commit had missed. |
+| **D-05-P** | **RULED (a) and LANDED** | `a6ad7d2` | The group-less `yoy` case was **fixed inside `PB-10`**, not filed. **This row's unreachability argument was correct and the ruling acted on it**: cluster 12's stated reason is that filing it would ship a known order-dependent defect onto a newly-reachable path. `X-15`'s module-collision warning held — the commit names the module it edited. |
+
+> **⚠ This whole table was stale until 2026-10-03, and it is the second-most-referenced status source in
+> this phase's corpus.** It was measured at `d454603` and described every record as Open or "Nothing
+> landed", while the reconciliation note's §E had already recorded rulings for all of them and the
+> commits had shipped. **Every row above is now reconciled against the landed commits.** Two facts a
+> reader should keep: **(1)** §7 of this file still describes what an Implementor "trusting the plan
+> blindly" would do wrong — that text is historical and describes pre-execution risk; **(2)** the
+> implementation record, including the per-block landing commit and the two things the plan got wrong,
+> is `.ai/plans/18-data-pipeline-implementation-execution.md` §1.2, **not** this file.
 
 ## 7. Discrepancies and risks (prioritised)
 

@@ -92,7 +92,7 @@ shape), who resolved it, and a one-line rationale.
 | `D-05-B` | Where the file unlink goes | **(c)** both halves in one change: unlink **after** the commit, catching `BaseException` **for cleanup only** and re-raising, with the **existing failure-path unlink retained**. | Coordinator | One unlink, one place, one rule, and it closes the re-typed process-kill residue at the same time. Retaining the failure-path unlink is mandatory: moving the unlink after a commit that can fail otherwise **leaks a file on every commit failure**. |
 | `D-05-C` | What `groupby` without `aggregations` means | **(a)** deterministic de-duplication with an explicitly named rule. | Domain owner | Previously-succeeding runs keep succeeding and become reproducible. Rejection (b) turns a run that stored a number into a visible failure, and depends on `PB-11` for the error to be reported as what it is. The rule must be stated precisely enough that a later reader can distinguish deliberate de-duplication from a new arbitrary pick. |
 | `D-05-D` | `limit` without a fully-determining `sort_by` | **(a)** move the limit to **after** aggregation. | Domain owner | It makes `limit` mean what every reader already takes it to mean — top N by this metric. Rejection (b) and "require `sort_by`" (c) each create a **new failure class** for configurations that work today. Under (a) the change alters stored **values**, not just row counts. |
-| `D-05-E` | The `dims` identity canonicalisation rule | **(a)** `str()` every scalar dimension value, as the single canonicalisation point. | Domain owner + phase 14 for the index implication | It makes write and read agree by construction: the read path already compares `dims[key].astext == str(value)`. `None` → `""` is unchanged. Python's `str()` keeps `True` → `"True"` distinct from `1` → `"1"`, so a boolean dimension does not collide with a 0/1 dimension. Reverses `_coerce_dim_value`'s deliberate native-type preservation — that cost is accepted and the rule statement is mandatory. Canonicalise at the **write** path only; canonicalising in the reader would hide the symptom and leave every stored row wrong. |
+| `D-05-E` | The `dims` identity canonicalisation rule | **(a)** `str()` every scalar dimension value, as the single canonicalisation point. **LANDED `d865f2c`; the placement is settled too — see the addendum.** | Domain owner + phase 14 for the index implication | It makes write and read agree by construction: the read path already compares `dims[key].astext == str(value)`. `None` → `""` is unchanged. Python's `str()` keeps `True` → `"True"` distinct from `1` → `"1"`, so a boolean dimension does not collide with a 0/1 dimension. Reverses `_coerce_dim_value`'s deliberate native-type preservation — that cost is accepted and the rule statement is mandatory. **Addendum, recorded 2026-10-03:** this row originally said *"Canonicalise at the **write** path only"* and left the placement open. **The tree settled it, and in the storage layer rather than in a writer** — see the addendum below the table. |
 | `D-05-F` | Where validation warnings land | **(b)** summarise warnings into `processing_logs.message` (`String(1000)`) with an explicit cap and truncation rule. | Domain owner | No enum, no migration, no frontend change. Option (a) — a new status value — is **not available**: `processing_logs.processing_status` is a **native PostgreSQL ENUM**, so a new value requires an Alembic migration, which this phase forbids. Record (a) as a **hand-over to phase 14**, not a rejection. Separately, fix the never-true `column_types` check so it can become true. |
 | `D-05-G` | Where the settings boundary lives | **RULED — (a′).** Complete `models/types.py::ProcessingSettingsModel` into the strict settings boundary. | Coordinator, resolved by the `PB-8` Auditor/Researcher chain | The twenty-two declared keys are now spelled out, `extra="forbid"` replaces `{"extra": "allow"}`, `settings` is retyped on `ProcessingConfigUpdate` and `ProcessingConfigBase`, `ProcessingSettingsDict` is deleted, `ProcessingConfigService._validate_settings` is retyped rather than extended, and `_merge_metric_agg_into_settings` / `_extract_metric_agg_into_settings` are `model_dump`-based. Committed in `31397db`. **"(a′)" was a fifth option, not one of the four in the upstream plan's `D-05-G` table**, forced by a real constraint: a `TypedDict` cannot emit `additionalProperties: false`, so the OpenAPI tripwire the plan demanded is unwritable against one. Its limits are stated in `31397db`'s body — the boundary is at the request/response edge only, the worker and `ProcessingConfig` stay permissive, and config-time `metric_agg` validation was **not** added. |
 | `D-05-H` | The `db_session is None` branch in `_store_aggregates` | **(b)** delete the `db_session is None` branch **after proving it has no caller**, and make `db_session` a required parameter. | Domain owner + Coordinator | Upgraded from a dead-code-policy question. That branch opens its **own session**, which **bypasses the phase-03 rebuild advisory lock** (`ab76989`) and **splits the aggregate write from the `COMPLETED` update**. Making the parameter required removes the hazard by construction rather than by convention. The caller proof is `DataService::trigger_processing` having no route caller — prove it, do not assume it. |
@@ -106,6 +106,61 @@ shape), who resolved it, and a one-line rationale.
 | `D-05-P` | Is the group-less `yoy` case fixed here or filed? | **(a)** fix the group-less `yoy` case inside `PB-10`. | Domain owner | `_calculate_yoy` with no `group_cols` sorts by the year column and applies an **ungrouped** `shift(1)`, so year-over-year is computed against the globally preceding row. Filing it instead would **ship a known order-dependent defect onto a newly-reachable path** — the same defect class `PB-6` and `PB-7` exist to remove, and the same grading error `VAL-05-001` criticises in the report. |
 | `D-05-Q` | Where does `PB-0`'s reconciliation note live? | The reconciliation note lives at `.ai/plans/_code-context/05-data-pipeline-reconciliation-note.md`. | Coordinator | `.ai/structure/**` and the older reconciliation set are deleted from the working tree, so the planned note path does not exist. It sits with the phase's code context, is not an audit file, not a plan, and not a task. |
 | `D-05-R` | Is the phase's final validation pass a block or a gate? | The final independent validation is the programme's **validation gate**, not an implementation block. | Coordinator | It produces no commit and no coverage-ledger entry; it runs after the documentation block. |
+
+### E.1a `D-05-E`'s placement — the rule was ruled open here and settled by the tree
+
+**Recorded 2026-10-03, after `d865f2c` landed.** The `D-05-E` row above ruled the rule and left the
+*layer* open, saying only "canonicalise at the write path only". **The landed implementation put it in
+the storage layer, and that is not a variation on the wording — it is the only placement where the
+guarantee the rule exists for is actually provable.**
+
+The shipped helper is `src/mkobi/data/storage/manager.py::_canonicalize_dim_scalar`, and the rule as
+implemented is:
+
+| Input | Stored form |
+| ----- | ----------- |
+| `None` | `""` |
+| `date` / `datetime` | ISO string, **keeping the `T` separator** |
+| `int` / `float` / `bool` | `str(value)` |
+| anything else | `str(value)` |
+
+**`metrics` are deliberately not canonicalised** — the defect is *dimension* identity, and
+canonicalising a measure would re-key the aggregate on a value no chart filters by.
+
+**Applied at all three write surfaces** (`manager.py:281`, `:407`, `:438`).
+
+**Why the storage layer, stated as the reason rather than as a preference.** The conflict target is
+`text("((dims)::text)")`, and that expression is evaluated by **PostgreSQL, on the value about to be
+inserted**. So the storage layer is the only placement where the index key and the stored value are
+**provably** identical — every other placement makes them equal only for as long as every writer agrees
+to apply the rule. It is also the only placement that covers **all three** write surfaces, *including a
+hand-built `StorageManager.save_aggregates` call that bypasses `DataService` entirely*, which no writer-
+level rule can reach.
+
+**Two residuals, stated so a later reader does not mistake the rule for a repair.**
+**One:** already-split rows are **not** fixed — they are corrected by the next overwrite-mode upload for
+that dashboard, and a one-off remediation query is out of scope. **Two:** the `aggregated_data.ordinal`
+DDL and the canonicalisation index line remain **phase 14's** (`C05-5`).
+
+**`P11-constraint` (cluster 13) does not reopen this.** It requires ordering to be derived from the
+source column's **semantic type** rather than from the stored text, and it says in terms that it
+**"does not reopen `D-05-E` or the index identity"**. Canonical text is the **identity and storage**
+representation; ordering is a **presentation** concern. Anyone reading `P11-constraint` as an argument
+for hashing or dropping the `text("((dims)::text)")` expression has misread it — the index decides which
+stored row *is* the same row, and that question is not a sorting question.
+
+**Addendum, recorded 2026-10-03 after cluster 14 — where the ordering type comes from.** Cluster 14 ruled
+that the **declared type is persisted alongside each stored aggregate**, rather than derived at display
+time from `ProcessingConfig.column_types`. **The rejected alternative is the one that makes this note's
+rule look sufficient:** deriving the type from the configuration would make the canonical text plus a
+config lookup enough to order, which is why the constraint seemed implementable without a schema change.
+**It is not, because a `column_types` edit would then reorder rows that were already uploaded** — with no
+upload, no run, and no history entry to explain the reshuffle. **So the type is now data, and that is a
+schema change: plan 14's hand-over at `MIGB-4`, fed from `PB-5`, and it is separate from the
+`aggregated_data.ordinal` DDL (`C05-5`) because `ordinal` supplies position rather than type.** The
+storage layer therefore gains one more obligation beyond canonicalisation: **when it writes a canonical
+value, it must be able to record what that value was declared as** — which is a different fact from what
+it is, and the two have to be stored together or the first is unrecoverable.
 
 ### E.1 Two facts the ruling set depends on
 

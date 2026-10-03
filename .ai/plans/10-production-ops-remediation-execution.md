@@ -966,16 +966,35 @@ Whether the artefact area is shared read-write, split onto its own volume, or ha
 the application process. It decides whether the disk budget has a stable denominator. **B8 provisions
 the read-only shape that survives every option**, which is why this record blocks nothing here.
 
-### DP-10-12 — Is the worker's liveness window the detection window an operator wants?
+### DP-10-12 — Is the worker's liveness window the detection window an operator wants? · **RULED (cluster 12, Tech Lead, 2026-10-03)**
 
-**Gating:** nothing in this plan. **Chooser: Tech Lead with phase 10**, because phase 10 owns the
-compose health-check block — **and if ruled before B8 starts, B8 implements it in the same commit**,
-because B8 is the next block to edit that block.
+**Gating:** nothing in this plan, and nothing now. **Chooser: Tech Lead with phase 10** — **discharged
+2026-10-03**; the co-signer role remains, because phase 10 owns the compose health-check block and the
+ruling is implemented there. **The sequencing note below is preserved and now states a fact rather than
+a hope:** if ruled before `B8` starts, `B8` implements it in the same commit, because `B8` is the next
+block to edit that block. **`B8` has not started, so the ruling still lands inside it — but the record
+no longer waits on anything.**
 
-The proof-based threshold the shipped wrapper judges against is roughly eight minutes, and the probe's
-interval and retry count multiply that. A wedged worker therefore stays healthy for minutes. Whether
-that is the desired window, and whether it needs a retune, a stop grace period, or a second faster
-probe, is an operator-facing trade-off between detection speed and false positives.
+**The problem, unchanged.** The proof-based threshold the shipped wrapper judges against is roughly
+eight minutes, and the probe's interval and retry count multiply that. A wedged worker therefore stays
+healthy for minutes.
+
+**The ruling.** **A faster second probe plus a stop grace period, keeping the existing slow
+proof-based check.** **Residual cost, stated because it is the cost the option was chosen to absorb:
+there are now two probes to reason about, and an operator reading only one of them will mis-predict
+detection.** **Retuning the single threshold alone is REJECTED** — it buys faster detection with more
+false restarts of healthy workers, which on an RQ queue means duplicated job pickup rather than a
+diagnostic. **This is the Tech Lead's authority and the Product Owner was not asked**, because a
+detection window is an operational trade-off with no product-visible consequence: no user sees a worker
+restart, and no stored value changes. **The three options are not re-opened.**
+
+**What the ruling does not settle, and it is not this record's job.** It does not name the numeric
+interval, the retry count or the grace-period length. **Those are `B8`'s to choose under the ruling's
+constraint** — faster second probe, grace period, slow check retained — and the commit body must state
+all three numbers and the ratio between the fast and slow thresholds, because "the fast probe" without a
+number is not a decision a later reader can verify. **Nothing else about the wrapper changes: the
+proof-based check stays, and this is not a request to replace it.**
+
 
 ### DP-10-13 — What are the RPO and the RTO? *(minted by the **adjudicated** 2026-10-03 owner ruling — **adjudicated-new**: neither input register carried this question)*
 

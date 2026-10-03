@@ -1,16 +1,19 @@
 # Phase 05 — Data pipeline remediation: implementation and execution plan
 
-- **Status:** ready for Coordinator ruling on PB-17
-- **Date:** 2026-10-02
+- **Status:** **EXECUTED.** Every block has landed. This plan is now the phase's record, not its queue.
+- **Date:** 2026-10-02 · **Corrected** 2026-10-03 (second session)
 - **Repository:** `C:\py_dev\mkobi`
 - **Branch:** `feat/react`
-- **Base HEAD:** `d454603`
+- **Base HEAD at writing:** `d454603` · **HEAD now:** `474fd76`
 - **Upstream plan:** `.ai/plans/05-data-pipeline-remediation-execution.md` (17 blocks `PB-0`…`PB-16`, 16 decision records `D-05-A`…`D-05-P`, 13 seams `C05-1`…`C05-13`)
-- **Current-state fact report:** `.ai/plans/_code-context/05-data-pipeline-current-state.md` (sections 1–8) — **authoritative on every question of what the code does**
+- **Ruling log of record:** `.ai/plans/_code-context/05-data-pipeline-reconciliation-note.md` §E and §E.2 — **authoritative on every `D-05-*` ruling and on the `PB-14` split.** It is not an audit file and it is not edited by any block.
+- **Current-state fact report:** `.ai/plans/_code-context/05-data-pipeline-current-state.md` (sections 1–8) — authoritative on every question of what the code does, **as of `d454603`. Its §6 decision-record status table is superseded by §1.3 below and by the note; read the note, not that table.**
 - **Audit inputs:** `.ai/audit/reports/05-data-pipeline.md` (19 findings `DP-001`…`DP-019`), `.ai/audit/validation/05-data-pipeline.md` (5 records `VAL-05-001`…`VAL-05-005`)
-- **Phases:** 19 → **19 blocks** (16 carried forward, 2 new, 1 replaced-in-part)
-- **Coordinator rulings applied:** `R-18-1` … `R-18-7` (binding, non-negotiable)
+- **Phases:** 19 blocks (16 carried forward, 2 new, 1 replaced-in-part) — **all landed**
+- **Coordinator rulings applied:** `R-18-1` … `R-18-7` (binding, non-negotiable) · `D-05-A` … `D-05-R` (ruled in the note's §E, most of them before the first commit landed)
+- **Adjudicated owner rulings applied:** `.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md`, clusters **10** (superseded in part), **11**, **12** and **13**.
 - **Scope:** backend only. No frontend change, no new runtime dependency, no Alembic migration, no `print()`, English only, `StrEnum` for every new constant.
+
 
 ---
 
@@ -49,7 +52,59 @@ Each was read, not inherited. The anchors are the citations the Implementor must
 | V-9 | `docs/SPEC.md` carries two current-tense `TaskQueue` claims (the "Background task queue" architecture bullet and the "Task Queue Migration" guide link) and version row `3.13`, which records the phase-02 process-architecture migration. | `docs/SPEC.md` | `R-18-3` confirmed. PB-16 **merges** its row into an existing row; it never overwrites `3.13`. |
 | V-10 | The retired-queue symbol literals `TaskQueue`, `default_queue`, `get_task_queue`, `process_next`, `ProcessingStatus.SUCCESS` occur in `docs/` in exactly five files: `docs/00-overview/data-flow.md`, `docs/03-processing/task-queue.md`, `docs/03-processing/processing-api.md`, `docs/11-guides/task-queue-migration.md`, `docs/SPEC.md`. | `docs/**/*.md` | PB-16's post-condition grep is `docs/`-scoped with an explicit exclusion set, not repository-wide. See §11 and `R-18-4`. |
 
-### 1.2 Working-tree note — not this plan's business
+### 1.2 The tree has moved past this plan — the landed state, and why it wins
+
+**This section is the reason §3, §5, §7, §13, §14 and §15 read as they do.** The plan was written at
+`d454603`. `HEAD` is `474fd76`, and **the whole of phase 05 has landed** — nineteen blocks, nineteen
+implementation commits, plus the ruling log and the independent validation pass. Every `D-05-*` record
+is ruled, most of them before the first implementation commit, and each commit body names the record it
+executed.
+
+**Production code is king, so the tree outranks this plan's queue.** The re-plan below is *not* deleted:
+its decomposition, its risk views, its corrected break tables and its ledger are the record of why the
+landed code is shaped as it is, and `PB-18`'s independent pass was written against them. **What changes
+is that no block is pending.**
+
+| Block | Landed as | Ruling executed | Note |
+| ----- | --------- | --------------- | ---- |
+| `PB-0` | `497dad7` | `D-05-Q` (the note's path) · `D-05-R` (the final pass is a gate) | The note **is** `PB-0`'s deliverable, at the path `D-05-Q` chose. Baseline: 1192 collected / 1183 passed / **9 failed**, measured at `297b1c9`. |
+| `PB-4` | `297b1c9` | — | The phase's one ungated implementation block; landed first, as §14 recommended. |
+| `PB-11` | `86d8219` | — | Code-first classification at both sites; the `FileNotFoundError` branch's target corrected to `FILE_UPLOAD_ERROR` per `X-8`. |
+| `PB-2` | `1e869f6` | **`D-05-H` (b)** | Also executed `D-05-H`: the `db_session is None` branch is deleted and the parameter is required. The caller proof was produced by grep and is in the commit body. |
+| `PB-3` | `ed644e7` | **`D-05-N` (a)** | Cluster 11. `DP-005` production code: none changed — `8953bf7` shipped it. |
+| `PB-15` | `660b6d5` | **`D-05-K` (b)** | Interim `ORDER BY id` on all three read methods; the append-mode divergence is written into the module and method docstrings and asserted by a test. |
+| `PB-8` | `31397db` | **`D-05-G` (a′)** | Validation moved after cast and rename; `ProcessingSettingsModel` completed with `extra="forbid"`; `ProcessingSettingsDict` deleted; the `test_openapi.py` tripwire **written** (`V-8`, `X-10` were both right). |
+| `PB-9` | `b63589c` | **`D-05-F` (b)** + the never-true `column_types` check | The float cast was added to the loop, not only the guard term removed — the complete fix, as the plan's definition of done demanded. |
+| `PB-5` | `d865f2c` | **`D-05-E` (a)** | Cluster 11. The plan's own question about *which* layer is answered by the tree: **the storage layer**, because `text("((dims)::text)")` is evaluated by PostgreSQL on the value about to be inserted. |
+| `PB-6` | `d4acdbd` | **`D-05-C` (a)** | Cluster 12. The `VAL-05-005` forward/reversed pair is the test. |
+| `PB-7` | `67e28fa` | **`D-05-D` (a)** | Cluster 12. |
+| `PB-10` | `a6ad7d2` | **`D-05-P` (a)** | Cluster 12. The group-less `yoy` case was fixed, not filed. |
+| `PB-12` | `916a021` | **`D-05-O`** (all three parts) | Cluster 12 does not rule this record; the note's §E does, and the commit executed it. |
+| `PB-1` | `ae6b66e` | **`D-05-A` (a)** · **`D-05-A.2`** (raise) | The commit body states the residual in the chosen option's own terms, as §16 required. |
+| `PB-14` | `6a2c04a` + `5e73e37` | **`D-05-B` (c)** · **`D-05-J` (b)** + amendment | **Split into `PB-14a` and `PB-14b`** on the plan's own split condition. The split is recorded in the note's §E.2, **not** in an amended commit body, because history is not rewritten. |
+| `PB-13` | `ee0f0f5` | **`D-05-I` (a)** | The commit body states the fail-open direction change. `85912d6` then corrected `file-cleanup.md`, which this move had made an **over-promise** — a defect introduced by this phase and recorded as such. |
+| `PB-16` | `af00a45` | `D-05-L` (split by file, confirmed) | Six docs files, no code. |
+| `PB-17` | **discharged into the note's §E** | `D-05-A` … `D-05-R` | The block's own definition of done said the ruling log must be **a file, not a chat transcript**. It is: the note's §E, twenty-one rows, each with option, resolver and rationale. |
+| `PB-18` | `85912d6` | — | The independent pass ran and found seven record and accuracy defects, **all fixed in that commit**, including two hand-overs that had never been raised. |
+
+**Three records the plan predicted and the tree confirms:** `D-05-I`'s key sub-question was moot
+(`V-1`), `D-05-M` was closed by `R-18-6`, and `tests/test_app_lifespan.py` really has **five**
+`mark_orphaned_uploaded_logs_failed` patch sites (`V-3`) — a sixth is a copied number.
+
+**Two things the plan got wrong and the tree corrected.** `PB-5`'s placement question is answered by
+the conflict target rather than by preference (§5, `D-05-E`). `PB-8`'s OpenAPI tripwire was unwritable
+against the `TypedDict` the plan named, and the landed ruling is an **option (a′)** the plan's four
+options did not contain — recorded as such, because inventing a letter is how a reader loses the fact
+that the plan's option set was incomplete.
+
+**What the tree did *not* settle.** `DP-005`'s residual annotation gap, the already-split `dims` rows,
+the phase-14 DDL hand-over (`C05-5`), and the hand-overs in §8.3 all survive by decision. **And three
+new surfaces are now open, none of which is a phase-05 block** — recorded here because a reader who
+only reads the residual-risk list would miss them, and in the plans that own them because they are not
+this phase's: cluster 13's `P2` (the warnings state the log message now feeds), `P5` (the remediation
+link on an unrecognised settings key) and `P11`/`P11-constraint` (the option list and its ordering).
+
+### 1.3 Working-tree note — not this plan's business
 
 The tree carries a large set of pre-existing unstaged deletions (` D`) under `.ai/audit/templates`,
 `.ai/builders`, `.ai/structure`, `.ai/models` and `frontend/coverage`, plus untracked `.ai/plans/17-*.md`
@@ -91,6 +146,10 @@ Every place the code context, a Coordinator ruling or a direct read contradicts
 Nineteen blocks. Sixteen carried forward on their upstream `PB-*` identifiers, two new, one replaced
 in part. **No `PB-*` identifier is renumbered and no new finding identifier is minted.**
 
+**Every row below is LANDED.** The commit each block landed as is in §1.2; this table is kept unchanged
+because it records *why* each block was shaped as it was, and `PB-18`'s independent pass was written
+against these verdicts. **A reader must not take "carried" here to mean "pending".**
+
 | ID | Upstream block | Verdict | Change |
 | - | -------------- | ------- | ------ |
 | `PB-0` | Baseline and reconciliation | **carried** | Unchanged. One clarification on where the note goes (`.ai/structure/` is deleted). |
@@ -126,6 +185,13 @@ One Implementor at a time. Every block lands as its own commit. Risk is stated i
 "Read-first" is a landed commit the Implementor must `git show` and read **before** editing the named
 symbol. "Re-read" is a file another phase also edits: read it immediately before the edit, never edit
 from a remembered copy.
+
+**Every block below has landed.** §1.2 names the commit each landed as. The blocks are kept in full
+because their decomposition, their corrected break tables and their risk views are the record of why
+the shipped code is shaped as it is, and because `PB-18`'s independent pass was written against them.
+**`blocked_by` and queue gates below are the gates as they stood before the block started — a
+historical record, not a live dependency. Any line reading "until ruled" was discharged by the note's
+§E; §1.2 and §5 say which ruling discharged it.**
 
 Severity is carried from the upstream plan and is not re-graded here (`VAL-05-001` is the only
 re-grade, and it is applied in PB-0).
@@ -320,7 +386,25 @@ must not use it**; `test_aggregation_service`, `test_filter_values_consistency`,
 ### PB-3 — A selection that matches no graph is not a success (DP-004, DP-005, TXN-004)
 
 **HIGH** · **Findings:** `DP-004`, `DP-005` (verification only), `TXN-004` · **Seam:** `C05-2`, `C05-11` ·
-**Blocked by** `D-05-N` (hard) · **Blocks** PB-16 · **Queue position** 6
+**Blocked by** `D-05-N` (hard) · **Blocks** PB-16 · **Queue position** 6 ·
+**LANDED — `ed644e7`**
+
+**Status, stated once.** `D-05-N` is **RULED (a) and LANDED** — adjudicated register **cluster 11**.
+The guard is at `workers/data_worker.py::_store_aggregates`, a graph is "skipped" when
+`aggregate_for_dashboard` returns no records for it, and it raises
+`AppException(code=ErrorCode.PROCESSING_FAILED)` with a detail from `_empty_selection_detail` naming
+**up to `_MAX_SKIPPED_GRAPH_NAMES = 20` graphs** — bounded because `processing_logs.message` is
+`String(1000)`. **It sits before both clears**, which is the whole correctness argument: guarding only
+one still loses data. **No new `ProcessingStatus` member and no migration** — `FAILED` already exists
+with a frontend renderer. `StorageManager.save_aggregates` no longer short-circuits an empty
+`clear_old=True` call before its own delete either, so the latent "rows kept, filter values wiped"
+state cannot be reached.
+
+**The residual work is cluster 13's `P3`, and it is not this block's.** `P3` **ratifes** the shipped
+message — the reason naming the skipped graphs — adds **no link** to the dashboard's graph or filter
+settings, confirms existing data is preserved, and rejects both a link to the settings screen and a
+generic reasonless message. **`P3` adds nothing to the code; the user-visible half of the product
+decision was already implemented here.** No finding is renumbered.
 
 **Two findings with different natures — do not conflate them.**
 
@@ -447,7 +531,37 @@ dashboards beginning to ingest, not dashboards changing.
 
 **CRITICAL** · **Findings:** `DP-003` · **Seam:** `C05-5` (hand-over), `C05-13` ·
 **Blocked by** `D-05-E` (hard) · **Blocks** PB-16 · **Queue position** 10 ·
-**Read-first:** `ab76989`, `863b81b` (phase-03 B2) on `db/repositories/aggregated_data_repo.py`
+**Read-first:** `ab76989`, `863b81b` (phase-03 B2) on `db/repositories/aggregated_data_repo.py` ·
+**LANDED — `d865f2c`**
+
+**Status, stated once so no reader treats the rule as undecided.** `D-05-E` is **RULED (a) and
+LANDED** — adjudicated register **cluster 11**. The rule is not a choice this block still owes: it is
+`StorageManager._canonicalize_dim_scalar`, applied at all three write surfaces, with `None` → `""`,
+`date`/`datetime` → ISO keeping the `T`, `int`/`float`/`bool` → `str(value)`, anything else →
+`str(value)`, and **`metrics` deliberately not canonicalised**. **The placement question this block
+called open is answered by the tree:** the conflict target `text("((dims)::text)")` is evaluated by
+PostgreSQL on the value about to be inserted, so the storage layer is the only placement where the
+index key and the stored value are provably identical, and the only one covering all three write
+surfaces including a hand-built `save_aggregates` call that bypasses the service. **What survives as
+open work is the phase-14 hand-over `C05-5`, and cluster 13's `P11` / `P11-constraint`, which change
+what a canonical value *looks like* and how it *orders* — both owned elsewhere and neither reopening
+this ruling.**
+
+**⚠ A SECOND hand-over now attaches to this block, and it is NOT `C05-5` — the two must not be merged.**
+Cluster 13's `P11-constraint` requires ordering to be derived from the **source column's semantic type**,
+and cluster 14 rules **that the declared type is persisted alongside each stored aggregate**. **This is
+the write-side of that obligation, so `PB-5` is its hand-over point:** the aggregate store must carry the
+per-dimension declared type at the moment it writes the canonical value, because the type is a property
+of the value as stored and a later reader cannot recover it. **`src/` is outside this block's landed
+scope and `R-05-12` forbids this phase authoring a migration, so `PB-5` names the obligation and hands it
+to plan 14 at `MIGB-4` — it authors nothing.** **Three things this hand-over must not become, and each
+has already been confused once:** **(1)** it is **not** satisfied by `aggregated_data.ordinal`, which
+supplies **position, not type**, and the two questions must stay separate (`D-05-K`, `PB-15`); **(2)** it
+does **not** reopen `D-05-E` or the index identity — canonical text is still what the row *is*, and the
+type is extra data about how to *present* it; **(3)** it must **not** collapse `P11-sub`'s boundary —
+`"1"` and `"1.0"` remain **distinct categories**, so a numeric type sorts them as two values and must
+**never** normalise `1.0` to `1`. **Point (3) is the most likely way to get this wrong**, because the
+implementation that satisfies "sort numerically" is the same one that merges them. The text below is kept as the record of why the rule is the rule.
 
 **Problem, unchanged.** `_coerce_dim_value` preserves a value's **native** type in stored `dims` for
 correct frontend sorting, while the read path compares `dims[key].astext == str(value)`. Two values that
@@ -643,7 +757,48 @@ aggregation and to `sort_by`**; `ruff`/`mypy` clean.
 **MEDIUM** (conditional HIGH under `D-05-G`(a)) · **Findings:** `DP-014` ·
 **Seam:** `C05-1` (interaction), `C05-10` (read-only) · **Blocked by** `D-05-G` (hard) ·
 **Blocks** PB-6, PB-7, PB-9, PB-15, PB-16 · **Queue position** 8 ·
-**Read-first:** none for `interfaces/service_interfaces.py` — the file is **clean** (`R-18-1`)
+**Read-first:** none for `interfaces/service_interfaces.py` — the file is **clean** (`R-18-1`) ·
+**LANDED — `31397db`, as option (a′)**
+
+**Status, stated once.** `D-05-G` is **RULED and LANDED** — adjudicated register **cluster 12**. **The
+boundary is the request/response edge; the worker and `ProcessingConfig` stay permissive, and existing
+stored payloads keep loading.** Option (a), API-side `extra="forbid"` applied to the runtime, is
+**rejected**: it applies a documented 422 retroactively to stored JSONB across every dashboard, which
+is a migration without a migration.
+
+**The fate of `ProcessingSettingsModel` is recorded explicitly, as this block's scope required.** It
+was **completed, not replaced and not adopted as-is**: the twenty-two declared keys, `extra="forbid"`
+replacing `{"extra": "allow"}`, `settings` retyped on `ProcessingConfigUpdate` and
+`ProcessingConfigBase`, `ProcessingSettingsDict` **deleted**, `ProcessingConfigService._validate_settings`
+retyped rather than extended, and `_merge_metric_agg_into_settings` /
+`_extract_metric_agg_from_settings` made `model_dump`-based. **Adopting it as-is would have made the
+finding worse** — `extra="allow"` — which is what `V-7` warned, and the third shape the re-plan demanded
+be weighed is the one that won.
+
+**Why the landed letter is `(a′)` and not one of this block's four options**, and it is recorded here
+because a reader comparing the note with this table will otherwise think the letter is a typo: **a
+`TypedDict` cannot emit `additionalProperties: false`**, so the `test_openapi.py` tripwire this block's
+definition of done demands is **unwritable** against the `TypedDict` shape. Only a `BaseModel` makes the
+boundary visible to a client. The re-plan was right that the tripwire did not exist (`V-8`, `X-10`) and
+wrong that it could be written against the boundary it had named.
+
+**What did not ship, stated rather than discovered:** config-time `metric_agg` validation was **not**
+added, and the boundary is at the request/response edge only. Both are in `31397db`'s commit body.
+
+**The residual is cluster 13 `P5`, and it is now SHAPED by cluster 14 — this is the emitting half.** An
+unrecognised setting key must fail with a message **naming the exact key** — which shipped — **and the run
+must offer a route to remove it**. **Cluster 14 rules the boundary explicitly: the backend supplies the
+fact, the client owns the affordance.** So this block's outstanding obligation is **structured data, not
+prose**: the **RFC 7807 body carries an `ErrorCode` plus the offending key as a named field**, so that
+**nothing link-shaped is embedded in a log message.** **The prose that names the key inside
+`processing_logs.message` stays — it is correct, it is readable, and it is what an operator sees in a
+log aggregator; what is forbidden is a link in that string.** Two consequences a later reader must not
+get wrong: **the two channels are additive, not alternatives** (the prose is not replaced by the field),
+and **the 1000-character bound is the reason the ruling exists** — a message long enough to be useful is
+long enough to be truncated, and a truncated link is worse than no link.
+**The rendering half is plan 13's `DP-13-P`, which renders the control from the structured field.**
+**No new `ErrorCode` is needed and no migration follows** — the field rides an existing RFC 7807 body and
+an existing status.
 
 **Problem, two halves, and both are live.**
 
@@ -733,7 +888,30 @@ records `git diff --stat` for that file alone immediately before the edit.
 ### PB-9 — Make the validation result's second half reach somebody (DP-013)
 
 **MEDIUM** · **Findings:** `DP-013` · **Blocked by** `D-05-F` (hard), PB-8 ·
-**Blocks** PB-16 · **Queue position** 9 · **Read-first:** PB-8's commit
+**Blocks** PB-16 · **Queue position** 9 · **Read-first:** PB-8's commit ·
+**LANDED — `b63589c`**
+
+**Status, stated once.** `D-05-F` is **RULED (b) and LANDED** — adjudicated register **cluster 12**.
+Warnings are summarised into `processing_logs.message` (`String(1000)`) under an explicit cap and
+truncation rule; **no new `ProcessingStatus` value and no migration**; and the never-true
+`column_types` check **was fixed so that it can become true**. Option (a) is **not rejected** — it
+remains a **hand-over to phase 14**, because `processing_logs.processing_status` is a native
+PostgreSQL ENUM (`V-2`), so any new status value *is* a migration.
+
+**One thing the plan under-specified and the tree got right.** The re-plan's scope said to fix the
+`float` cast "so the check can become true". **Removing the cast guard's `and col_type != "float"` term
+was not sufficient** and would have shipped a defect with a green suite: the loop's handled-type set was
+`{date (only when date_format), int, str, bool}`, so a plain `{"revenue": "float"}` column would have
+entered the `try` with no matching branch, stayed `Int64`, and warned on **every** run. The landed fix
+removes the term **and** adds `elif col_type == "float": pl.col(col).cast(pl.Float64)`, reusing the
+`Float64` target the decimal-separator branch already uses. **An absent column key now `continue`s
+before the `try`**, so `PB-8`'s new `else` cannot misfire for a column that does not exist.
+
+**The residual is cluster 13 `P2`, and it is not this block's.** "Completed with warnings" is a
+**distinct amber state**, separate from the green "Updated", which the user can open to see what the
+warnings were. **This block made the warnings reachable; it did not make them a state.** That is the
+client status renderer (`C05-11`), recorded in plan 13, and it is why this record must not be read as
+"nothing more to do": a capped summary nobody can open is a log line.
 
 **Problem, unchanged.** `DataValidator._validate_column_types` returns `(errors, warnings)` and only
 ever `warnings.append(...)`. `_validate_data_quality` and `_validate_duplicates` are warning-only by
@@ -1398,50 +1576,71 @@ a hand-over, with the hand-over ID** — upstream requirement, still in force.
 
 **Coordination** · **Findings** none · **Blocked by** PB-0 (the baseline must exist before a ruling
 changes a stated gate) · **Blocks** PB-1, PB-2, PB-3, PB-5, PB-6, PB-7, PB-8, PB-9, PB-10, PB-12, PB-13,
-PB-14, PB-15, PB-16 · **Queue position** 2
+PB-14, PB-15, PB-16 · **Queue position** 2 · **LANDED — discharged into
+`.ai/plans/_code-context/05-data-pipeline-reconciliation-note.md` §E and §E.2**
 
-**Why this block exists.** Sixteen `D-05-*` records are open, and **nine of the nineteen blocks cannot
-start without one**. That is the phase's critical path, and the upstream plan leaves it as prose in an
-"Open decisions" section with no owner, no order and no place for the two prerequisite investigations it
-defers mid-decision. This block makes that work schedulable.
+**Why this block existed.** Sixteen `D-05-*` records were open, and **nine of the nineteen blocks
+could not start without one**. That was the phase's critical path, and the upstream plan left it as
+prose in an "Open decisions" section with no owner, no order and no place for the two prerequisite
+investigations it deferred mid-decision. This block made that work schedulable.
 
-**Scope.**
+**How it discharged.** Exactly as its own definition of done required — **the ruling log is a file, not
+a chat transcript.** It is the note's §E: twenty-one rows, one per record, each with its option, its
+resolver and its rationale, plus §E.1's two load-bearing facts (`processing_status` is a native ENUM;
+`test_app_lifespan.py` has **five** patch sites) and §E.2's `PB-14` split table. Both inventories exist:
+the `PUT /processing-configs/{dashboard_id}` caller and frontend-form census for `D-05-G` (which turned
+out to be thirteen `ProcessingSettingsDict` references across three files, `V-7` — so the landed option
+was a **fifth** shape, `D-05-G`(a′)), and the git-history investigation of `cleanup_task_files` and
+`cleanup_old_processing_logs` for `D-05-J`. The note's path is `D-05-Q`'s ruling; the note's §F is the
+baseline every later block compared against.
+
+**The premise is now historical and must be read as such.** "Sixteen open records" and "nine of nineteen
+blocks cannot start" described `HEAD` at `d454603`. **Zero records are open and zero blocks are blocked**
+— see §5 and §1.2. **A new Implementor must not open this block to ask for a ruling; the rulings are in
+the note.**
+
+**Scope (as executed).**
 1. Rule `D-05-A`, `D-05-A.2`, `D-05-B`, `D-05-C`, `D-05-D`, `D-05-E`, `D-05-F`, `D-05-H`, `D-05-I`,
-   `D-05-J`, `D-05-K`, `D-05-L`, `D-05-N`, `D-05-O`, `D-05-P` — and **close** `D-05-G` on its caller's
-   inventory and `D-05-M` as settled by `R-18-6`.
-2. Produce the two prerequisite inventories: the `PUT /processing-configs/{dashboard_id}` caller and
-   frontend-form census for `D-05-G` (thirteen `ProcessingSettingsDict` references across three files,
-   `V-7`), and the git-history investigation of `cleanup_task_files` and `cleanup_old_processing_logs`
-   for `D-05-J` — **investigate before proposing removal**, per the project's dead-code rule, and
-   weighed against `tests/test_upload_api.py::test_cleanup_task_files_called_during_processing`.
+   `D-05-J`, `D-05-K`, `D-05-L`, `D-05-N`, `D-05-O`, `D-05-P` — **all done** — and **close** `D-05-G` on
+   its caller inventory (**done, as `(a′)`**), `D-05-M` as settled by `R-18-6` (**done**) and `D-05-I`'s
+   key sub-question as moot under `V-1` (**done**).
+2. Produce the two prerequisite inventories — **done**; both are in the note's §E and in the commits
+   that consumed them.
 3. Name the path PB-0's reconciliation note goes to, given that `.ai/structure/` and the reconciliation
-   set do not exist.
-4. Assign the `docs/SPEC.md` version-row number and confirm it merges into row `3.13`.
+   set do not exist — **done**: `D-05-Q`, and the note is that file.
+4. Assign the `docs/SPEC.md` version-row number and confirm it merges into row `3.13` — **done**
+   (`af00a45`).
 
-**Out of scope.** It does not touch production code, tests, or any audit file. It does not choose an
-implementation where technical uncertainty exists without the block's Researcher first — the ruling
-record must name **which agent's input the choice rests on**.
+**Out of scope, unchanged.** It touched no production code, no test and no audit file. It chose no
+implementation where technical uncertainty existed without naming **which agent's input the choice
+rests on** — which is why the note's rows name a resolver per record rather than a single voice.
 
 **Risk.** *Implementation* — None. *Rollout* — None. *Regression* — None.
 *Compatibility* — **Medium**: a ruling made without the prerequisite inventory is the single most
-likely way this phase ships a wrong answer with full confidence. That is the reason the block exists.
+likely way this phase ships a wrong answer with full confidence. That is the reason the block exists,
+and it is why the `D-05-G` inventory produced an option the plan's own table did not contain.
 
-**Required agents — Coordinator, plus the two named Implementor-side investigations.** The rulings
-themselves are the Coordinator's: cross-phase ownership and sequencing. `D-05-E`, `D-05-F`, `D-05-O`
-and `D-05-P` carry a **technical selection** component and are the block's **Researcher** deliverables —
-the Coordinator must not choose those alone. `D-05-C`, `D-05-D`, `D-05-N` carry **product-visible
-behaviour** and belong to the **domain owner**. `D-05-L` and the phase-14 hand-over sequencing are the
-Coordinator's alone. An **Auditor** produces the two inventories. A **Validator** is not required: this
-block produces decisions, and decisions are reviewed by their owners, not by an independent pass.
+**Required agents — as executed: Coordinator, plus the two named Implementor-side investigations.**
+The Coordinator took cross-phase ownership and sequencing, and the domain owner took the four
+product-visible records (`D-05-C`, `D-05-D`, `D-05-N` and — by the tree's own account — the
+presentation halves of `D-05-E` and `D-05-P`). **No Researcher and no Auditor rows survive as
+requirements**, and the reason is in the tree: the records whose technical-selection component needed
+one were settled against in-repo evidence (`AGG_FUNC_MAP` for `D-05-H`, the conflict target for
+`D-05-E`, the Polars `Float64` cast for `D-05-F`), and the two inventories were produced inside the
+blocks that consumed them. **A Validator was never required: a block that produces decisions is reviewed
+by its owners, not by an independent pass** — and the one independent pass in the phase (`PB-18`) is a
+*later* gate on the *implementation*, which is where a Validator belongs.
 
-**Verification.** Every `D-05-*` record in §5 has a ruling, a named owner, a date and — where the choice
-was technical — the named Researcher deliverable it rests on. Both inventories exist as written
-artefacts. Each ruling is recorded in the block it blocks, with its residual cost stated.
+**Verification (as executed).** Every `D-05-*` record has a ruling, a named resolver and — where the
+choice was technical — the named evidence it rests on. Both inventories exist as written artefacts.
+Each ruling is recorded in the block it blocks, with its residual cost stated. **`85912d6` caught the
+two rows the note had left open (`D-05-G`, `D-05-J`) and closed them** — which is the check working,
+not the check failing.
 
-**Definition of done.** Sixteen records ruled or closed; two inventories written; PB-0's note path named;
-`docs/SPEC.md` row confirmed; the ruling log is a file in `.ai/plans/`, not a chat transcript. **The
-commit body is a pointer to that log**, because a decision log that lives in a commit message cannot be
-read by the next Implementor cheaply.
+**Definition of done (as executed).** Sixteen records ruled or closed; two inventories written; PB-0's
+note path named; `docs/SPEC.md` row confirmed; the ruling log is a file in `.ai/plans/`. The commit
+body is a pointer to that log. **All six hold.**
+
 
 ---
 
@@ -1502,52 +1701,63 @@ Coordinator ruling invalidated an upstream premise.
 
 ## 5. Decision records
 
-**This plan chooses none of them.** `D-05-A` … `D-05-P` are carried forward with their option sets
-intact. What changed is (a) three of them are **re-costed against verified facts**, (b) two are
-**closed by `R-18-6` or `R-18-2`**, and (c) every one has a **named resolving agent** in PB-17.
+**Every record below is RULED, and every one of them has LANDED.** The plan chose none of them; the
+Coordinator and the domain owner chose them in the ruling session whose output is
+`.ai/plans/_code-context/05-data-pipeline-reconciliation-note.md` **§E — twenty-one rows, one per
+record, each with its option, its resolver and its rationale.** That note is the ruling log `PB-17`'s
+own definition of done demanded ("a file in `.ai/plans/`, not a chat transcript"), and it is cited here
+by section rather than restated: a second copy of a ruling is a second ruling the day one of them is
+edited.
 
-| ID | Subject | Resolved by | Status after re-plan |
-| - | ------- | ----------- | --------------------- |
-| `D-05-A` | Order of commit / move / enqueue | Coordinator (cross-container failure policy) | **Re-costed.** Option (b)'s trade-off text is wrong: a missing file is **not** wrapped and does **not** map to `"encoding"` (`V-4`, `R-18-7(a)`). Option (b)'s residual failure is a loud, correctly categorised `FILE_UPLOAD_ERROR` about a transient filesystem state. The *option* survives; its stated mechanism does not. |
-| `D-05-A.2` | What a zero-row status `UPDATE` means | Coordinator | **Re-costed as a possible hand-over** (`R-18-5`): if any option introduces a new `ProcessingStatus` value, `processing_status` being a native ENUM makes it a migration, therefore **phase 14's**. |
-| `D-05-B` | Where the file unlink goes | Coordinator, constrained by B3's landed boundary | Unchanged. B3 has landed, so the constraint is a read-first obligation, not a wait (`R-18-6`). |
-| `D-05-C` | What `groupby` without `aggregations` means | **Domain owner** — it decides which dashboards keep working | Unchanged. Option (b) depends on PB-11, which lands in the first wave. |
-| `D-05-D` | `limit` without a fully-determining `sort_by` | **Domain owner** | Unchanged. |
-| `D-05-E` | The `dims` identity canonicalisation rule | **Domain owner + phase 14** for the index implication | Unchanged. Any option implying an index change is an explicit hand-over to phase 14 (`C05-5`); PB-5 must not author a migration. |
-| `D-05-F` | Where validation warnings land | Domain owner + frontend consumer | **Re-costed** (`R-18-5`). Option (a) — a new status value — is a **migration hand-over to phase 14**, because `processing_status` is a native PostgreSQL ENUM (`V-2`). The live choice is (b) a capped summary into `processing_logs.message`, or (c) dropping the never-true `column_types` check. **The block's Researcher is dropped accordingly.** |
-| `D-05-G` | Where the settings boundary lives | Domain owner; **needs the `PUT /processing-configs/{dashboard_id}` caller and frontend-form inventory first** | Unchanged in substance, **widened in cost**: thirteen `ProcessingSettingsDict` references, not six (`V-7`); and `ProcessingSettingsModel` still has zero references, so adopting it as-is makes the finding worse. The third shape — **completing** that model — must be weighed explicitly. |
-| `D-05-H` | The `db_session is None` branch in `_store_aggregates` | **Domain owner + Coordinator** (it is no longer a style question) | **Materially re-scoped** (`R-18-7(b)`). The branch opens its own session, so it **bypasses phase-03 B2's advisory lock** and **splits the aggregate write from the `COMPLETED` update** into two transactions. Option (c) "leave it" is no longer merely inelegant; it leaves a lock bypass and a split commit one argument away from being live. Ruled **once** and obeyed by whichever of PB-2/PB-3 lands second (`R-05-10`). |
-| `D-05-I` | Orphan-sweep placement | Domain owner | **Reduced to one question** (`R-18-2`). The key sub-question is **moot** — `907e052` already reused `Settings.stale_processing_timeout_minutes` (`V-1`). The live choice is (a) into the lease-guarded periodic loop, with the fail-open behaviour change stated in the commit body, or (b) a separate periodic task, which preserves fail-open and adds a second place for the two sweeps to race. |
-| `D-05-J` | `cleanup_task_files` and `cleanup_old_processing_logs` | Domain owner, **on the Auditor's investigation** | **Widened** (`X-14`): `tests/test_upload_api.py::test_cleanup_task_files_called_during_processing` mocks the symbol and asserts it is called during processing, so the "wire it into the consumer" option is constrained by a live test contract. The investigation must run first, and `cleanup_task_files`'s `ASGITransport`-constructing tests are part of what it records. |
-| `D-05-K` | `aggregated_data.ordinal` migration, or an interim ordering | Domain owner + phase 14 sequencing | Unchanged. Both options produce a phase-14 hand-over (`C05-5`). |
-| `D-05-L` | Who owns the `success` documentation | **Coordinator** — routing only | **Narrowed** (`R-18-3`): the split by file is the plan's default and is now the instruction. The only open question is the `docs/SPEC.md` row, where PB-16 **merges** rather than overwrites row `3.13`. |
-| `D-05-M` | Sequencing against phase 03 | Coordinator | **Closed** by `R-18-6`: B1, B2, B3 and B10 are all ancestors of HEAD, so the interleave question is moot. The surviving content is the coordination discipline it encoded: PB-4, PB-3 and PB-11 must not touch `services/file_processing.py`, `_process_csv_file_async` or the cleanup task — which the re-plan's queue already guarantees. |
-| `D-05-N` | What an empty selection reports | **Domain owner + the frontend's `failed` renderer** | **Re-costed as a possible hand-over** (`R-18-5`), as `D-05-A.2`. Under (a) and (b) the guard must precede **both** `save_aggregates`' clear and `DataService.clear_dashboard_values`. |
-| `D-05-O` | Byte-ceiling ownership and the "lazy" branch | Domain owner + phase 11 for the cost side | **Reduced** (`V-6`, `X-16`): `Settings.max_file_size` is a derived property over `UploadSettings.max_file_size_mb`, so "which key owns the ceiling" is a **two-way** fork — reuse it, or add a worker key — not a three-way one. The other two sub-questions (one `LoaderConfig` or two; delete / make meaningful / rename the branch) are unchanged. |
-| `D-05-P` | Is the group-less `yoy` case fixed here or filed? | **Domain owner** | Unchanged in substance, **strengthened by `X-15`**: the block must qualify `_add_computed_fields` by module, because `services/filter_transforms.py` declares a same-named function. Under option (b) the new finding takes a **freshly minted** identifier; no existing `DP-*` or `VAL-05-*` is reused or renumbered. |
+**What changed from the re-plan's version of this table** is the *status column*, and that is the whole
+point of the correction. The re-plan carried sixteen open records; **zero are open now**. Two are
+**closed by consequence** rather than by ruling (`D-05-M` by `R-18-6`, `D-05-I`'s key sub-question by
+`V-1`), one is **re-costed as a migration hand-over** (`D-05-F`'s rejected option (a)), one is
+**closed by another phase's ruling** (`D-05-H`, executed inside `PB-2`'s commit), and **three cluster-11
+and cluster-13 rulings add work this phase did not do** — recorded in the rows that own them.
+
+| ID | Subject | Chooser of record | Status now — ruled, landed, and what changed |
+| - | ------- | ----------------- | ------------------------------------------------------- |
+| `D-05-A` | Order of commit / move / enqueue | Coordinator (cross-container failure policy) | **RULED (a) — LANDED `ae6b66e`.** The re-plan's re-cost stands and the tree confirms it: option (b)'s trade-off text was wrong (a missing file is **not** wrapped and maps to `FILE_UPLOAD_ERROR`, `V-4`, `R-18-7(a)`), and its residual failure is a loud, correctly categorised report. The commit body states that residual in the chosen option's own terms, as §16 required. |
+| `D-05-A.2` | What a zero-row status `UPDATE` means | Coordinator | **RULED — raise. LANDED with `D-05-A`.** No new status value was needed, so the `R-18-5` migration hand-over did not materialise. A zero-row `UPDATE` is loud, not a warning. |
+| `D-05-B` | Where the file unlink goes | Coordinator, constrained by B3's landed boundary | **RULED (c) — LANDED `5e73e37` as `PB-14b`.** Both halves moved together: delete after the commit, catch `BaseException` for cleanup only, re-raise. The `0717b65` compensation is asserted unchanged. |
+| `D-05-C` | What `groupby` without `aggregations` means | Domain owner | **RULED (a) — LANDED `d4acdbd`.** Adjudicated register **cluster 12**. Collapse duplicate category rows **by first occurrence, after a deterministic sort**; the stored number changes and becomes reproducible. Options (b) reject-the-configuration and (c) delete-the-branch are **rejected** and stay in `PB-6`'s table. **New residual under cluster 13 `P4`:** the change is not announced with a banner — each run's history entry keeps a note ("values recalculated: …") and the "Updated at &lt;time&gt;" stamp remains. That history-entry note is **not a phase-05 backend change**; it is the client status surface (`C05-11`) and is recorded in plan 13. |
+| `D-05-D` | `limit` without a fully-determining `sort_by` | Domain owner | **RULED (a) — LANDED `67e28fa`.** Adjudicated register **cluster 12**. `limit` applies **after** aggregation, so it means "top N by the aggregated metric". Options (b) and (c) are **rejected**: each creates a new failure class for configurations that work today, and (b) rejects on a key the settings type does not declare. Same `P4` residual as `D-05-C`, and the note's own wording is the note's example text. |
+| `D-05-E` | The `dims` identity canonicalisation rule | Domain owner + phase 14 for the index implication | **RULED (a) — LANDED `d865f2c`.** Adjudicated register **cluster 11**, which records the rule **as implemented** in `StorageManager._canonicalize_dim_scalar`: `None` → `""`; `date`/`datetime` → ISO keeping the `T`; `int`/`float`/`bool` → `str(value)`; anything else → `str(value)`. **`metrics` are deliberately not canonicalised.** Applied at all three write surfaces. **The placement question the re-plan called open is answered by the tree, not by preference:** the conflict target `text("((dims)::text)")` is evaluated by PostgreSQL on the value about to be inserted, so the storage layer is the only placement where the index key and the stored value are provably identical, and the only one covering a hand-built `save_aggregates` call that bypasses the service. **Phase-14 hand-over `C05-5` remains open** (the `ordinal` DDL and the canonicalisation index line). **Not reopened by cluster 13:** `P11-constraint` is explicit that canonical text is the identity and storage representation, and that ordering is derived from the source column's semantic type. |
+| `D-05-F` | Where validation warnings land | Domain owner | **RULED (b) — LANDED `b63589c`.** Adjudicated register **cluster 12**: warnings are summarised into `processing_logs.message` (`String(1000)`) under an explicit cap and truncation rule; **no new `ProcessingStatus` value and no migration**; and the never-true `column_types` check **is fixed so it can become true** — which in practice meant adding the missing `elif col_type == "float"` cast, not only removing the guard term. Option (a) is **not rejected**: it remains a **hand-over to phase 14**, because `processing_status` is a native PostgreSQL ENUM (`V-2`). **New residual under cluster 13 `P2`:** "Completed with warnings" is now a **distinct amber state** the user can open. The backend half shipped; the state is the client status surface (`C05-11`), recorded in plan 13. |
+| `D-05-G` | Where the settings boundary lives | Coordinator, resolved by the `PB-8` Auditor/Researcher chain | **RULED (a′) — LANDED `31397db`.** Adjudicated register **cluster 12**, plus the two corrections cluster 11 and the note record. **The boundary is the request/response edge; the worker and `ProcessingConfig` stay permissive, and existing stored payloads keep loading.** Option (a) — API-side `extra="forbid"` applied to the runtime — is **rejected**: it would apply a documented 422 retroactively to stored JSONB across every dashboard. **The fate of `ProcessingSettingsModel` is recorded explicitly, as the plan required:** it was **completed**, not replaced — the twenty-two declared keys, `extra="forbid"` replacing `{"extra": "allow"}`, `settings` retyped on `ProcessingConfigUpdate` and `ProcessingConfigBase`, and `ProcessingSettingsDict` **deleted**. **Why the letter is (a′) and not one of this plan's four:** a `TypedDict` cannot emit `additionalProperties: false`, so the `test_openapi.py` tripwire §4 required is **unwritable** against one. The tripwire was written anyway (`V-8`/`X-10` were right that it did not exist). **Limits, stated in the commit body and not softened here:** config-time `metric_agg` validation was **not** added, and the boundary is at the edge only. **Residual from cluster 12, superseded in part by cluster 13 `P5`:** the user must be able to act on the message — it **names the exact key and carries a link to the settings screen**. The naming shipped; **the link has not.** |
+| `D-05-H` | The `db_session is None` branch in `_store_aggregates` | Domain owner + Coordinator | **RULED (b) — LANDED inside `1e869f6`, i.e. with `PB-2` rather than with `PB-3`.** The branch is deleted and `db_session` is a **required** parameter, which removes the lock bypass by construction rather than by convention. The caller proof the plan demanded was produced by grep and is in the commit body: `_store_aggregates` has exactly one production caller, and `DataService::trigger_processing` does not call it at all. **`R-05-10` held** — ruled once, obeyed by whichever block landed second. |
+| `D-05-I` | Orphan-sweep placement | Domain owner | **RULED (a) — LANDED `ee0f0f5`.** Into the lease-guarded periodic loop. The key sub-question was **moot** (`907e052` had already reused `Settings.stale_processing_timeout_minutes`, `V-1`); the live question was one, and the commit body states the **fail-open direction change**. **`85912d6` then corrected the over-promise this move created:** a periodic sweep against a shared horizon cannot distinguish a stranded row from a merely backlogged one, so a long queue delay can produce a transient false failure the job later overwrites. That limit now ships in `docs/03-processing/file-cleanup.md`, which is where a maintainer will hit it. |
+| `D-05-J` | `cleanup_task_files` and `cleanup_old_processing_logs` | Domain owner, resolved on `PB-14`'s Auditor evidence | **RULED (b) with an amendment — LANDED `6a2c04a` as `PB-14a`.** Both uncalled helpers deleted; `test_cleanup_task_files_called_during_processing` **renamed, not deleted**, because its assertion is sound while its name and docstring are false. The plan's constraint from `X-14` is honoured — the test was **updated with** the ruling, not around it. The evidence (git history, the loose glob, the swallowed failures) is in the note's §E and in the commit body. |
+| `D-05-K` | `aggregated_data.ordinal` migration, or an interim ordering | Domain owner + phase 14 sequencing | **RULED (b) — LANDED `660b6d5`.** Interim `ORDER BY id` on all three read methods, with the **append-mode limitation documented** and asserted by a test that will report the behaviour change the day phase 14 adds the column. Phase-14 hand-over `C05-5` stays open. **Note for cluster 13's `P11-constraint`:** this is the read-path ordering fallback cluster 13 points at. It is **interim by decision** and is the same row cluster 13 says must not be decided twice — see plan 14 `MIGB-4`. |
+| `D-05-L` | Who owns the `success` documentation | Coordinator — routing only | **RULED (b), split by file — LANDED `af00a45`.** Phase 05 owns the pipeline narrative; phase 14 owns `docs/09-database/**`; phase 10 owns `task-queue-migration.md`. The one merged `docs/SPEC.md` row is the phase's. |
+| `D-05-M` | Sequencing against phase 03 | Coordinator | **CLOSED by `R-18-6`** — B1, B2, B3 and B10 are all ancestors of HEAD, so the interleave question is moot. **Its surviving content held:** PB-4, PB-3 and PB-11 touched disjoint symbols, and every phase-03 overlap was a **read-first obligation** rather than a wait. `85912d6` confirms the project's own gate is fully clean, which retires the one `mypy` artefact the note had recorded. |
+| `D-05-N` | What an empty selection reports | Domain owner + the frontend's `failed` renderer | **RULED (a) — LANDED `ed644e7`.** Adjudicated register **cluster 11**, which records the guard's placement (`before both clears`), the bounded detail (`_MAX_SKIPPED_GRAPH_NAMES = 20`, bounded because `processing_logs.message` is `String(1000)`) and the fact that **no new status and no migration** were needed. **Residual, and it is cluster 13's `P3`:** the run shows the reason naming the skipped graphs and **no link** to the dashboard's graph or filter settings; existing data is preserved; a separate link to the settings screen and a generic reasonless message are both **rejected**. **`P3` ratifies the shipped text and adds nothing to it. No finding is renumbered.** |
+| `D-05-O` | Byte-ceiling ownership and the "lazy" branch | Domain owner + phase 11 for the cost side | **RULED, all three parts — LANDED `916a021`.** One ceiling owner (`UploadSettings.max_file_size_mb` through the derived `Settings.max_file_size`, **no new key and no default change**, as `X-16` required); the ceiling applies to the **decompressed** `.csv.gz` stream; **two** `LoaderConfig`s kept so the loader's own checks do not double-cast. The memory ceiling, the expansion ratio and the replica count stay **phase 11's**. The `lazy` branch's name stopped claiming laziness — `85912d6` caught two stale log strings the implementing commit had missed. **Cluster 12 does not rule this record**, so its status is unchanged from the note. |
+| `D-05-P` | Is the group-less `yoy` case fixed here or filed? | Domain owner | **RULED (a) — LANDED `a6ad7d2`.** Adjudicated register **cluster 12**: fixed inside `PB-10`, **not filed**, because filing it would ship a known order-dependent defect onto a newly-reachable path. No new finding identifier was minted, which is what the plan required of the alternative. `X-15`'s module-collision warning held — the commit names the module it edited. |
 
 ### 5.1 New decision records this plan adds
 
 Two, for questions the upstream plan never raised. Both are **Coordinator** decisions, and both exist
-because the tree says something the upstream plan does not.
+because the tree says something the upstream plan does not. **Both are now closed.**
 
-**D-05-Q — where does PB-0's reconciliation note live?**
-The code context records that `.ai/audit/00-reconciliation/session-continuity.md`, `decision-log.md`,
-`evidence-index.md` and `validation-index.md` **do not exist**, and `.ai/structure/` is among the
-pre-existing unstaged deletions. The upstream plan names those four paths as the note's destinations.
-Options: **(a)** create `.ai/audit/00-reconciliation/` and the four files — restores a governance
-structure the tree does not have, which is scope the phase did not ask for; **(b)** one note file inside
-`.ai/plans/` alongside this plan, with the four governance topics as sections — minimal, and the next
-Implementor finds it; **(c)** PB-0's commit body only — cheapest, and the note becomes unreadable the
-moment anyone needs it. **Recommendation: (b)**, and the choice belongs to the Coordinator in PB-17.
+**D-05-Q — where does PB-0's reconciliation note live?** — **RULED: it lives at
+`.ai/plans/_code-context/05-data-pipeline-reconciliation-note.md`, with the four governance topics as
+sections.** `.ai/structure/**` and the older reconciliation set are deleted from the working tree, so
+the upstream plan's four destinations do not exist; the note sits with the phase's code context, is not
+an audit file, is not a plan and is not a task. **This is the file the whole of §5 above cites, so the
+ruling is self-executing.** Option (a) — recreate the governance structure — was rejected as scope the
+phase did not ask for; option (c), the commit body only, was rejected as unreadable the moment anyone
+needs it.
 
-**D-05-R — is the phase's final validation pass a block or a gate?**
-The original task context requires "a final independent validation pass"; the upstream plan has no block
-for it. Options: **(a)** PB-18 as specified — a Validator-owned block with a written report;
-**(b)** fold the checks into PB-16's definition of done — cheaper, but PB-16's Implementor grades their
-own work, which defeats the purpose; **(c)** run it as a phase-exit gate outside the block queue — no
-artefact, no record. **Recommendation: (a)**, and the Coordinator confirms in PB-17 that PB-18 is in
-scope for the phase.
+**D-05-R — is the phase's final validation pass a block or a gate?** — **RULED: it is the programme's
+validation gate, not an implementation block.** It produces no commit and no coverage-ledger entry, and
+it runs after the documentation block. **In practice it ran and found real defects:** `85912d6`
+corrects the `file-cleanup.md` over-promise, closes two ruling records the note had left open, records
+the `PB-14` split and raises two hand-overs that had never been raised, and corrects the 422 wording that
+named `detail` instead of `errors[].loc`. **A gate that found seven things was worth having, and the
+plan's own reason for insisting on it is the reason it worked.**
+
 
 ---
 
@@ -1622,6 +1832,12 @@ graph TD
 One Implementor at a time. **The queue is the plan**; the graph is the subset that must hold. Each
 row states the gate that must be satisfied *before* the block starts.
 
+**The queue below is EXECUTED.** Every gate was satisfied, every row landed, and §1.2 names the commit.
+The gates are kept because they are the record of what each block was waiting for, and because
+**several of them were satisfied by a ruling nobody expected at the time** — `D-05-G` was ruled as an
+option `(a′)` the table never contained, and `D-05-H` was executed inside `PB-2`'s commit rather than
+in `PB-3`'s. A reader checking "is this block still blocked?" must read §1.2, not this table.
+
 | # | Block | Gate before it starts | `blocked_by` |
 | - | ----- | ---------------------- | ----------- |
 | 1 | **PB-0** | none | — |
@@ -1648,9 +1864,12 @@ row states the gate that must be satisfied *before* the block starts.
 from blocked to executable, because every one of those blocks' hard gates is a `D-05-*` ruling that
 PB-17 produces.
 
-**What unblocks the most.** A single PB-17 session answering **`D-05-H`, `D-05-N`, `D-05-F`, `D-05-G`,
-`D-05-P`** converts positions 5, 6, 8, 9 and 13 — five blocks, including the two that unblock the whole
-`PB-8 → PB-6 → PB-7` chain.
+**What unblocks the most — as it turned out, everything did.** The re-plan identified a single PB-17
+session answering **`D-05-H`, `D-05-N`, `D-05-F`, `D-05-G`, `D-05-P`** as the highest-leverage action,
+converting queue positions 5, 6, 8, 9 and 13 and unblocking the whole `PB-8 → PB-6 → PB-7` chain. **That
+session happened, and it answered more than five records**: §5 records **sixteen rulings and three
+closures**, and **every one of the nineteen blocks landed**. The re-plan's estimate was right about the
+mechanism and conservative about the result.
 
 **Why positions 5, 6 and 7 are not simply 1, 2, 3.** PB-2 precedes PB-3 because PB-3's normalisation
 point depends on `D-05-H`'s ruling about the `db_session is None` branch (`R-05-10`: decided once,
@@ -1942,13 +2161,24 @@ revert at all without a dump.
 
 ## 13. Residual risk after the whole plan
 
-- **Fourteen rulings are open and nine blocks wait on them.** `R-18-5` pre-decides two of the sixteen —
-  `D-05-F` and `D-05-N` lose their status-value options to a migration hand-over — and `R-18-2` closes
-  `D-05-I`'s key sub-question outright, so the live set is fourteen. That still leaves `D-05-A`,
-  `D-05-A.2`, `D-05-B`, `D-05-C`, `D-05-D`, `D-05-E`, `D-05-G`, `D-05-H`, `D-05-I`(placement),
-  `D-05-J`, `D-05-K`, `D-05-L`, `D-05-N`(b/c), `D-05-O` and `D-05-P`. **PB-17 is the critical path**,
-  and a ruling made without its two prerequisite inventories is the single most likely way this phase
-  ships a confidently wrong answer.
+- **Zero rulings are open and zero blocks wait on one.** The re-plan's figure — "fourteen rulings are
+  open and nine blocks wait on them" — described `d454603`. **The PB-17 session happened and answered
+  everything**: sixteen `D-05-*` records ruled, `D-05-M` closed by `R-18-6`, `D-05-I`'s key sub-question
+  moot under `V-1`, `D-05-G` closed as `(a′)`, and `D-05-Q` / `D-05-R` closed. **All nineteen blocks
+  landed** (§1.2). The re-plan's own caution still stands as the reason this is worth stating: *a
+  ruling made without its two prerequisite inventories is the single most likely way this phase ships a
+  confidently wrong answer* — and `D-05-G`'s inventory is exactly what produced an option the plan's
+  table did not contain.
+- **What the landed rulings leave open is not a queue, it is other phases.** Three cluster-13 surfaces
+  now depend on this phase's shipped behaviour and none is a phase-05 block: **`P2`** (the warnings
+  state the capped log message feeds), **`P5`** (the remediation affordance `PB-8` has not yet
+  emitted and `DP-13-P` does not yet render - **cluster 14 rules its shape: a NAMED FIELD in the RFC
+  7807 body, and the interface renders the control; a link inside the message text is the rejected
+  option**) and **`P11` / `P11-constraint`** (the filter-option list and its ordering, with the ordering
+  type now a **PERSISTED schema hand-over to plan 14 at `MIGB-4`** rather than a read-time derivation).
+  Plan 13, plan 16 and plan 14 carry them.
+  A reader who closes this plan on "every block landed" and never reads those three will miss live work.
+
 - **Two findings are only half fixed and say so.** `DP-005`'s production fix is landed (`8953bf7`) but
   its residual guard is a `list[str]` annotation and a green gate that cannot see across a thread hop.
   Closing it inside the repository would create a second owner for the same contract. `DP-015`'s horizon
@@ -2001,14 +2231,22 @@ revert at all without a dump.
 
 ## 14. First-wave recommendation
 
-**The first wave is PB-0 → PB-17 → PB-4, PB-11.** Four blocks, then the queue is unblocked.
+**Historical. The first wave ran and the phase is complete.** It is kept because §1.2's landing table
+is only legible against it, and because the reasoning below is what made the wave safe: **the ungated
+block went first, and the Implementor calibrated on its tripwire proof before the blocks where `mypy`
+cannot help.**
+
+**The first wave was PB-0 → PB-17 → PB-4, PB-11.** Four blocks, then the queue was unblocked. **All four
+landed** (`497dad7`, the note's §E, `297b1c9`, `86d8219`), and the two ungated blocks went first
+exactly as recommended — which is why `PB-4`'s `DuplicateError` proof is the pattern the rest of the
+phase followed.
 
 ### 14.1 Why these four, in this order
 
 | Position | Block | Why it is here |
 | -------- | ----- | -------------- |
 | 1 | **PB-0** | Everything compares against its baseline. It touches no production code, and it is the only block that can run with no ruling and no context. |
-| 2 | **PB-17** | The critical path. Fourteen live rulings and two inventories sit here, and nine blocks cannot start without one. Running it second means the Implementor has the baseline in hand while the decisions are taken. |
+| 2 | **PB-17** | **Done — and it answered more than the five records named in §14.4.** Sixteen rulings and three closures, recorded in the note's §E and not restated here. Nine blocks could not start without it; **all nineteen started.** |
 | 3 | **PB-4** | The only **ungated implementation** block. No ruling, no phase-03 overlap, no shared file with any other block in flight, and the highest severity-to-effort ratio in the phase. It also produces a proven tripwire, which sets the pattern `VAL-05-005` demands. |
 | 4 | **PB-11** | The other **ungated implementation** block. It shares no symbol with PB-4, its problem statement is now factually correct, and it is the prerequisite for `D-05-C`(b)'s rejection path — so it unblocks a ruling as well as a block. |
 
@@ -2044,10 +2282,15 @@ revert at all without a dump.
 | **PB-4** | none | — | none |
 | **PB-11** | none | — | none. Its problem statement is corrected in §4; the Implementor does not need a ruling, only the corrected facts. |
 
-**The single highest-leverage action in the phase is PB-17's first session.** Answering
-**`D-05-H`, `D-05-N`, `D-05-F`, `D-05-G` and `D-05-P`** — five records, three of them re-costed by
-`R-18-5` so the option set is already narrower than the upstream plan wrote — converts queue positions
-5, 6, 8, 9 and 13 from blocked to executable, and unblocks the whole `PB-8 → PB-6 → PB-7` chain.
+**The single highest-leverage action in the phase was PB-17's first session, and it paid.** Naming
+**`D-05-H`, `D-05-N`, `D-05-F`, `D-05-G` and `D-05-P`** as the five to start with converted queue
+positions 5, 6, 8, 9 and 13 from blocked to executable and unblocked the whole `PB-8 → PB-6 → PB-7`
+chain — **and the session went on to rule all sixteen records**, so the estimate was right about the
+mechanism and conservative about the result. **The one place it did not hold was `D-05-G`:** three of
+those five were re-costed by `R-18-5` so their option sets were narrower than the upstream plan wrote,
+and `D-05-G`'s answer turned out to be a **fifth** option that no table contained. **A ruling session
+should be expected to widen an option set, not only narrow it.**
+
 
 ---
 
@@ -2056,14 +2299,24 @@ revert at all without a dump.
 The phase is complete when all of the following hold. PB-18 checks each one and records it as
 **accepted** or **rejected**.
 
+**Outcome: every item holds, and the independent pass rejected nothing — it corrected seven record and
+accuracy defects, all fixed in `85912d6`.** The items are kept because a reader checking the phase needs
+to know what "done" was measured against, and because item 4 has since been extended by three
+cluster-13 surfaces that belong to other phases.
+
 1. Every one of the nineteen blocks has landed as its own commit, or is recorded as **discharged by a
    landed commit** with that commit's identifier (`DP-005` by `8953bf7`; `DP-015`'s horizon by
-   `907e052`).
+   `907e052`; and, per §1.2, `PB-14` by `6a2c04a` + `5e73e37`). **Holds — all nineteen landed.**
 2. `.\Makefile.ps1 test` shows no regression against PB-0's recorded baseline, and every delta is
    stated in a commit body.
 3. Every tripwire in §11.2 is proven to fail against the unfixed code, and the proof is in the
    relevant commit body.
 4. Every `D-05-*` record is ruled, closed, or recorded as a hand-over with a real destination.
+   **Holds** — sixteen rulings, three closures, two hand-overs, all in the note's §E. **Since extended
+   by ruling, not by work:** cluster 11 confirms two of them as **landed**, cluster 12 rules seven more,
+   and cluster 13 adds three surfaces (`P2`, `P5`, `P11`/`P11-constraint`) whose residual work lives in
+   plan 13 and plan 16. **"Every record is ruled" and "the phase is finished" are different claims, and
+   only the first is what item 4 measures.**
 5. `ruff` and `mypy` are clean on every touched path.
 6. The four forbidden things are absent: no frontend change, no new runtime dependency, no Alembic
    migration, no `print()`. English only. `StrEnum` for every new constant.
@@ -2078,10 +2331,18 @@ The phase is complete when all of the following hold. PB-18 checks each one and 
     as a list of untested assumptions.
 
 **What "done" does not mean.** It does not mean the pipeline is defect-free: `DP-005`'s annotation gap,
-the dormant `db_session is None` lock bypass, the already-split `dims` rows and the documentation in
-phase-owned files all survive by decision, and §13 says which. It does not mean the phase is
+the already-split `dims` rows and the documentation in phase-owned files all survive by decision, and §13
+says which. **The `db_session is None` lock bypass is no longer among them** — it was closed by
+`D-05-H`(b) inside `1e869f6`, and this sentence is corrected rather than deleted so a reader comparing
+against an older copy of the plan can see which of the four went. It does not mean the phase is
 independent of phase 03 or phase 14: seven hand-overs leave this phase. And it does not mean the suite
 is green — the phase inherits a red baseline and its contract is **do not regress**.
+
+**And it does not mean the pipeline's user-facing surface is finished.** Three cluster-13 rulings —
+`P2`, `P5` and `P11`/`P11-constraint` — were issued against the behaviour this phase shipped, and each
+has work that is **not** in this phase. They are recorded here so closing this plan does not close them
+by accident: plan 13 §(h) and plan 16 §6 carry the rulings and the acceptance criteria.
+
 
 ---
 

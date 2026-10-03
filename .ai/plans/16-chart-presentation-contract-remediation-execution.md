@@ -32,7 +32,7 @@ ownership: >-
   leaves its own step and becomes a HARD co-requisite of CHT-006 — one commit, xaxis merged, never
   revertible by half.
 blocks: 10 (CHTB-0 … CHTB-9)
-decisions: 8 (D-16-1 … D-16-8) — SIX ruled by the Product Owner on 2026-10-03 (D-16-1, D-16-2, D-16-3, D-16-4, D-16-5, D-16-8) and adjudicated in .ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md (Clusters 4 and 5); D-16-6 and D-16-7 remain open with their original choosers. Option letters in that register are NOT this plan's option-table letters; the ruled content is recorded by description
+decisions: 8 (D-16-1 … D-16-8) — SEVEN ruled (D-16-1, D-16-2, D-16-3, D-16-4, D-16-5, D-16-8 by the Product Owner on 2026-10-03, adjudicated in .ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md Clusters 4 and 5; D-16-7 additionally ruled by the Tech Lead in Cluster 12 with product sign-off, option (b)). D-16-6 remains OPEN with its original chooser (Coordinator). Option letters in that register are NOT this plan's option-table letters; the ruled content is recorded by description. Cluster 13 adds four rulings on this phase's surfaces: P11, P11-sub, P11-constraint, P12 and P13 — recorded in the Decision records section, each against the block that owns the surface
 seams: 12 (C16-1 … C16-12)
 id-namespace: >-
   Blocks are CHTB-*, decisions D-16-*, seams C16-*. This plan TAKES no bare B*, D-1…D-7 or
@@ -49,7 +49,7 @@ gate_baseline: >-
   never reaches fe-test. No fe-typecheck target exists. frontend/coverage/ (15 tracked files) was
   already wiped before any gate ran, the red run wrote no replacement, and 0 files remain on disk —
   NOT restored, by instruction.
-status: decomposed — 10 blocks · 2 decision records open · 6 ruled · 12 cross-phase seams · no technical fork chosen
+status: decomposed — 10 blocks · 1 decision record open (D-16-6) · 7 ruled · 5 cluster-13 rulings applied · 12 cross-phase seams · no technical fork chosen
 ---
 
 # Phase 16 — Chart presentation contract: remediation execution plan
@@ -67,23 +67,27 @@ This plan fixes **order, isolation, risk containment and proof obligations**. It
 implementation choices where genuine uncertainty exists: `D-16-1` … `D-16-8` are carried open, each
 with its alternatives, its chooser, and **what stays blocked** until it is ruled.
 
-**Six of the eight have since been ruled and two remain open.** The rulings are in
+**Seven of the eight have been ruled and one remains open.** The rulings are in
 `.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md`, which is **the single authority**:
 it merges two parallel owner registers and adjudicates every disagreement, and neither input file may
-be cited as authority any more. See `Owner rulings applied` below. **`D-16-6` and `D-16-7` stay open
-with their original choosers, and no option was ruled for either.**
+be cited as authority any more. See `Owner rulings applied` below. **`D-16-7` is RULED** (cluster 12,
+option (b), product sign-off given) — this line read "open" until 2026-10-03 and the two halves of this
+plan disagreed about it, which is the contradiction the Decision records section now records. **`D-16-6`
+stays open with its original chooser (Coordinator), and no option was ruled for it.**
+
 
 ## Owner rulings applied
 
 **`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` — Product Owner, adjudicated by the
-Tech Lead, 2026-10-03 — rules six of this plan's eight decision records.** That file is **the single
-authority**: it merges two parallel owner registers and adjudicates every disagreement, and neither
-input file may be cited as authority any more. **The clusters this plan consumes are Cluster 4
-(`CT-3`'s two findings, `D-16-2` and `D-16-5`) and Cluster 5 (`D-16-1`, `D-16-3`, `D-16-4`,
-`D-16-8`).** Nothing below is this plan's choice, and **no option was ruled by default because a
-question went unanswered.** The record sections keep every option and every trade-off; the ruled
-content is marked **by description**, and the rejected options are marked rejected rather than
-deleted.
+Tech Lead, 2026-10-03 — rules seven of this plan's eight decision records, and cluster 13 adds five
+rulings on this phase's surfaces.** That file is **the single authority**: it merges two parallel owner
+registers and adjudicates every disagreement, and neither input file may be cited as authority any
+more. **The clusters this plan consumes are Cluster 4** (`CT-3`'s two findings, `D-16-2` and `D-16-5`),
+**Cluster 5** (`D-16-1`, `D-16-3`, `D-16-4`, `D-16-8`), **Cluster 12** (`D-16-7`, and `D-16-3`
+confirmed) **and Cluster 13** (`P11`, `P11-sub`, `P11-constraint`, `P12`, `P13`). Nothing below is this
+plan's choice, and **no option was ruled by default because a question went unanswered.** The record
+sections keep every option and every trade-off; the ruled content is marked **by description**, and the
+rejected options are marked rejected rather than deleted.
 
 **Option letters are not carried across.** The adjudicated register's letters denote which *input
 register* won each decision, not which option in *this plan's* tables was taken — **implement the
@@ -98,11 +102,22 @@ row's letter is *this plan's*, not the register's.
 | `D-16-4` | **This phase owns ALL FOUR empty/absent states, distinguishes ABSENT from ZERO ON THE WIRE, and adds an absent-graph card.** **Acceptance criteria: a `null` measure and a `0` measure are distinguishable ON THE WIRE; an empty `data` array still reaches the empty branch; an absent graph is distinguishable from an empty one.** **Release note: dashboards quietly drawing flat zeros will warn for the first time, and the number affected is UNKNOWN and must be stated as unknown, NOT estimated** | **`CHTB-5`** |
 | `D-16-5` | **DEFER ALL FOUR hand-overs (`H-1` … `H-4`), recorded as "held by phase 16, deferred by decision" — explicitly NOT "unowned".** **This RELEASES phase 13's `CT-5` and `CT-10`** | **`CHTB-9`**, and phase 13's `CT-5` / `CT-10` |
 | `D-16-8` | **Enforce the frontend coverage thresholds AFTER this phase's blocks land tests** — the only ordering in which enforcement is meaningful. **No block may restore `frontend/coverage/`** — that is phase 13's `CT-15` | **`CHTB-9`** |
+| `D-16-7` | **Invalidate on upload AND pin an explicit `staleTime: Infinity`, so refresh is event-driven and the contract is legible. Product sign-off given.** Cluster 12, option (b). **The residual is a dependency direction and it is the intended one:** `Infinity` makes the invalidation load-bearing, so a future second writer of `aggregated_data` becomes a **visible bug** rather than a silent one | **`CHTB-7`** in full, framing included |
 
-**What stays open.** `D-16-6` (`CHT-003` versus phase 12's `AZ-8`: serialise, co-commit, or defer) and
-`D-16-7` (the `filterValues` staleness framing) are **still open**, with their original choosers —
-**Coordinator**, and **Planner with product sign-off** respectively — and **no option was ruled for
-either.**
+**What stays open.** **`D-16-6`** (`CHT-003` versus phase 12's `AZ-8`: serialise, co-commit, or defer)
+remains **open** with its original chooser — **Coordinator** — and **no option was ruled for it.**
+`D-16-7` no longer belongs in that sentence: it was ruled on 2026-10-03 (cluster 12) and `CHTB-7` is
+released.
+
+**Cluster 13 adds five rulings to this phase's surfaces**, recorded in full in the Decision records
+section: **`P11`** (one canonical value everywhere — this plan owns the axis-label and tooltip half),
+**`P11-sub`** (`1` and `1.0` stay distinct), **`P11-constraint`** (canonical text is identity and
+storage, **not** ordering — a constraint on the presentation layer only, which does **not** reopen
+`D-05-E`), **`P12`** (nothing in the chart interface; the **graph settings screen** shows the axis type
+and allows editing it — this is what keeps `D-16-3` from closing the finding), and **`P13`** (the
+dashboard **keeps its last good data** with an "out of date" marker, and a transient failure **never
+leaves a chart empty** — `CHTB-5`'s second deliverable, distinct from the four empty states).
+
 
 **The correctness risks are the substance here, not the styling.** Six of the ten `CHT` findings are
 about a figure that is drawn as though it were complete when it is not:
@@ -486,19 +501,26 @@ code context states it**, because `VAL-16-003` has already settled half of it. C
 | Question | Status |
 | --- | --- |
 | Does the bar branch merge `xaxis` instead of replacing it? | **Settled by `VAL-16-003`: it merges.** Not an option. `{type: 'category', ...convertedLayout?.xaxis}` is the required shape. |
-| Does the constant `'category'` survive as the **default** when the converted layout supplies no `type`? | **`D-16-3` — open.** Three shapes: **(a)** keep the constant as the default (converted `type` wins where present, `'category'` otherwise); **(b)** drop the constant entirely and let the converted layout be the only source, so a graph with no `config.layout.xaxis` gets Plotly's own inference; **(c)** keep the constant only when the bar is ungrouped. |
+| Does the constant `'category'` survive as the **default** when the converted layout supplies no `type`? | **`D-16-3` — RULED (a): the constant survives as the default.** Converted `type` wins where present, `'category'` otherwise. **Product sign-off given** (register cluster 12, confirming cluster 5). Option (b) — drop the constant and let the converted layout be the only source, so a graph with no `config.layout.xaxis` gets Plotly's own inference — and (c) — keep the constant only for an ungrouped bar — are **rejected**, and stay here so a later reader can see what was given up: (b) changes every stored dashboard's rendering, and (c) makes the axis type a function of grouping rather than a value. |
+| **What replaces the constant for a user who wants a different axis type?** | **`P12` — RULED: nothing in the chart interface. The graph settings screen shows the axis type explicitly and allows editing it.** Cluster 13. **Rejected:** a one-off notice per graph on first render announcing a new axis type (it announces a change nobody asked for, once per graph, and disappears); nothing at all (which is what the finding looks like today). **This is why `D-16-3` does not close the finding:** the ambiguity is resolved in the renderer and **exposed in the editor**, and `CHTB-3` is the block that owns the editor half. |
 
 **The factual input the code context asked for, resolved.** `PlotlyChart.tsx` is a two-line
 re-export of `react-plotly.js`'s component; nothing in this repository asserts that a bar trace
 requires a categorical axis; and **no comment anywhere in the codebase claims the constant is
-load-bearing**. So the constant is removable on library grounds alone. What remains is a product
+load-bearing**. So the constant is removable on library grounds alone. What remained was a product
 question: today every bar chart is *guaranteed* a categorical x-axis, and a graph that stored
 `xaxis: {type: 'linear'}` was having that silently discarded — after this block it would be honoured,
 which is option (a). Under (b) a graph with no stored `layout` would start relying on Plotly's
-inference, which is a rendering change with no test anywhere behind it.
+inference, which is a rendering change with no test anywhere behind it — **and §(b) says no stored
+dashboard changes visually, which is the constraint that decided it.** The ruling took the library's
+freedom on the default and the product's answer on the stored value, and put the remaining freedom
+(`P12`) where a user can reach it.
 
 **`blocks`:** `CHTB-4` (hard — the converter being live is what makes a per-type layout meaningful),
-`CHTB-5` (soft), `CHTB-8` (soft).
+`CHTB-5` (soft), `CHTB-8` (soft), **`CHTB-3`** (hard for the `P12` half — the axis-type editor is a
+graph-settings surface, and `CHTB-3` is the block that already edits a graph's chart configuration).
+**`CHTB-4`'s hard edge on `D-16-3` is released**: the record is ruled, and what `CHTB-4` waits for is
+the converter being live, which is its own condition.
 
 ---
 
@@ -538,7 +560,7 @@ commit body says so.
 | --- | --- |
 | **Semantic target** | `ChartRenderer.tsx::convertToPlotlyData` — the two `Number(row[metricCol] ?? 0)` coercions, in the grouped-colour branch and in the single-series branch. **This is the line where "absent" becomes "zero."** · `ChartRenderer.tsx::ChartRenderer`'s empty-data branch — the `h-64` div with the grey text "No data available for this chart" · `DashboardView.tsx`'s dashboard-scope error alert and its `graphs.length > 0` gate with the "No data available for this dashboard" message, and its per-graph `<Paper>` + `Typography variant="h6"` heading — the **only** place a graph can be shown as absent, which today it never is, because an absent graph is simply not in the array · `TableChart.tsx::getDisplayValue` — the client's **entire** transform/format layer: null/undefined → `''`, object → `JSON.stringify`, date-shaped strings → `formatDate`, else `String(value)`; **no number formatting, no locale, no unit, no percent, no currency, no null-versus-zero distinction anywhere** · `models/data.py::GraphDataResponse` — the absence of any count field, which is what makes a future server `LIMIT` undetectable. |
 | **Discharges** | The `?? 0` collapse itself, which is **not a numbered finding** and is the common terminus of three that are: `CHT-001`'s consequence (a measure column that is absent because it cannot be named), `CHT-009`'s terminus (a filter that matched nothing, so every row is returned with the measure untouched — or, in the whole-dashboard failure mode, a 422) and `CHT-010`'s terminus (a stale option list hands the user a value the current data lacks, and selecting it produces exactly this state). Also the **truncation presentation** that plan 11's `DP-11-B` OUT row hands to this phase and **no `CHT` finding names**. |
-| **blocked_by** | **`D-16-4` (hard — who owns empty-state rendering; three phases have a claim and none names it).** Soft: `CHTB-2`, `CHTB-3`, `CHTB-6`, `CHTB-7`. `CHTB-0` (soft). |
+| **blocked_by** | **`D-16-4` is RULED (cluster 5) — this gate is released. `P13` is RULED (cluster 13) and lands on this block as a SECOND, separate deliverable.** Soft: `CHTB-2`, `CHTB-3`, `CHTB-6`, `CHTB-7`. `CHTB-0` (soft). **Why `P13` blocks nothing and is still this block's:** `P13` needs the same four states and the same absent-versus-zero wire distinction `D-16-4` produced — a stale marker rendered through the empty-state branch would assert "no data" where the truth is "old data", so **`P13` cannot be built correctly until `CHTB-5`'s states exist, and it must not be built *as* an empty state.** |
 | **Execution order** | **6** — after the naming and layout blocks, because a correct zero/absent split is unobservable while the measure is unnameable. |
 | **Risk — implementation** | **MEDIUM-HIGH, and the trap is picking a default that lies in a new direction.** Three states must be distinguishable: **a genuine zero**, **an absent measure**, and **no rows at all**. Today `?? 0` renders the second as the first, and the two are not separable without a source of truth — either the served row must carry an explicit null (it does: a JSONB `null` arrives as `null`, and `?? 0` discards it) or the response must declare which measure columns are expected (which is `CHTB-2`'s `metrics`). **Choosing "treat absent as zero and say nothing" is a legitimate option and it is a decision, not a default** — but choosing it silently is what produced the finding. **Second trap:** an empty-state string is a product string. Changing "No data available for this chart" to "The measure X is missing from this dataset" changes what users read on every dashboard that hits it, and there is no test anywhere asserting the current wording. **Third trap — the one with a blast radius:** a future server `LIMIT` truncates with **no client detection** available: `GraphDataResponse` declares six fields and none is a total, so nothing in the client could tell N-of-M from all-of-them. Building the capability before phase 11's `LIMIT` lands means it renders nothing today, and building it after means `PRF-4` can ship first and create a silent window. **Today's behaviour at that call site is already that truncation** — the line branch's `[0]` drops N−1 series without a word. |
 | **Risk — rollout** | **MEDIUM.** Purely presentational; nothing is refused and nothing is fetched differently. The risk is **volume**: if the absent-measure state becomes visible for the first time, dashboards that have been quietly drawing flat zeros will start showing warnings, and the number of affected dashboards is unknown to this plan. **No stored row is read differently.** |
@@ -574,7 +596,7 @@ names it. The three states, and the three claimants:
 | --- | --- |
 | **Semantic target** | `db/repositories/aggregated_data_repo.py::AggregatedDataRepository.get_by_graph_id` — the `filters` loop, whose condition is `AggregatedData.dims[key].astext == str(value)`: a **stringified Python repr compared for equality** against a JSONB dimension · `api/routes/data.py::get_aggregated_data_endpoint`'s `filters` parameter and its `json.loads` parse (which raises `VALIDATION_ERROR` → 422 only on malformed JSON) · `frontend/src/features/dashboards/ui/DashboardFilters.tsx::handleFilterChange` — the 300 ms debounce that feeds the chain · its four producer branches: the `select` control (scalar), the `multiselect` control (`onChange(e.target.value)` → **array**), the `range` control (`onChange((_, newValue) => …)` → `[number, number]`), the `date` control (scalar) · `models/types.py::FilterConfigDict`'s `type` field, whose declared vocabulary is `"select" \| "multiselect" \| "range" \| "date"`. |
 | **Discharges** | **`CHT-009`** — `str(['North'])` is `"['North']"`, which matches no `dims` value; `str([0,100])` is `"[0, 100]"`. The full binding path is live: the debounce → `DashboardView`'s `filters` state → `useAggregatedData` → the query key → `JSON.stringify` → the route's parse → the repository's comparison. **Two of four** filter types bind (`select`, `date`); `multiselect` and `range` do not. |
-| **blocked_by** | **`D-16-2` (hard for the `range` half only).** The **`multiselect` list case needs no decision and must not wait for one.** Soft: `CHTB-0`. |
+| **blocked_by** | **`CHTB-0` (soft) only — the `D-16-2` gate is RELEASED**, because the record is ruled (cluster 5, product sign-off given) and no part of this block waits on it. **The `multiselect` list case needed no decision and never did**; that split is kept because a ruling on one half must not be able to hold the other. Soft: `CHTB-0`. |
 | **Execution order** | **7.** |
 | **Risk — implementation** | **MEDIUM-HIGH, and the trap is solving the wrong half.** The obvious fix — shape-branch the comparison so a list value produces `.in_([])` and a range produces `BETWEEN` — is **wrong for `range`**, because the repository only ever reads **`dims`**, and `BETWEEN` on a JSONB dimension is not a numeric range test. The report is explicit: option (b), "range targets a measure", is **a new capability, not a fix**, because the repository would then have to read `metrics` too. **Three traps beyond that:** (a) an unevaluable filter must be **rejected**, not silently ignored — a filter the user believes is applied and the query ignores is the exact CRITICAL clause the audit tested `CHT-009` against and correctly found absent, but only because the result happens to be visibly empty; a silently-ignored filter on a filter that *does* match nothing visible is a different failure; (b) `str(value)` is also wrong for **scalars** whose JSONB form is a number rather than a string — `astext` on a JSONB number yields its text form, so `1` and `"1"` compare differently, and a `date` filter sending a string against a stored number never matches; (c) **the shape branch belongs in the repository, not the route** — putting it in the route would duplicate it for every future caller and put a query decision in the transport layer, against the project's API → Service → Repository rule. |
 | **Risk — rollout** | **MEDIUM, and the blast radius is the real finding here.** A 422 from `/data/aggregated` renders at **dashboard** scope — `DashboardView`'s single `Alert severity="error"` covering **every** chart — so one bad filter blanks the whole dashboard, not one graph. The report's prescription is the right one and this block adopts it: **the rejection must be raised at filter-change time, not as a 422 on the combined data request.** That means either the client validates the shape before it ever reaches the request (a client change in `DashboardFilters`) or the server validates it in a place that can answer per-filter. Both are in this block's scope; neither is a styling change. |
@@ -585,15 +607,27 @@ names it. The three states, and the three claimants:
 | **Verification** | **Quantitative and behavioural.** **New:** a `multiselect` filter selecting two values returns the row set equal to the union of the two `select` filters — asserted as set equality, not a count · **New:** a `select` filter's result is **byte-identical** before and after this block (the backward-compatibility floor) · **New:** a numeric dimension filtered by a scalar matches · **New:** an unevaluable filter is refused with a message naming the filter, at the surface the report prescribes, and **the rest of the dashboard is not blanked** — which is the assertion that proves the dashboard-scope blast radius is closed · **New:** an array-valued filter with a single element matches that element · `.\Makefile.ps1 test-select -k TestFilterStatePersistence -v` · `.\Makefile.ps1 test-select -k TestFilterValuesConsistency -v` · `.\Makefile.ps1 test-select -k TestDataServiceIntegration -v` (**both** classes) · `uv run ruff check src/mkobi/db/repositories/aggregated_data_repo.py src/mkobi/api/routes/data.py` · `uv run mypy src/mkobi/db/repositories/aggregated_data_repo.py` · `.\Makefile.ps1 test` for the backend half · frontend: `npm --prefix frontend exec -- vitest run src/features/dashboards` for the filter-change-time half. |
 | **Definition of done** | `D-16-2` is ruled **for the `range` half**, and the ruling is named in the commit body — **or the `range` half is explicitly deferred with the reason and the `multiselect` half landed anyway**, which is the permitted shape · a `multiselect` filter's result equals the union of its single-value results, asserted as set equality · `select` and `date` behaviour is **byte-identical** to before, asserted · a numeric dimension filters correctly · an unevaluable filter is **refused with a named reason at filter-change time**, and **the dashboard-scope blast radius is closed** — proven by a test showing other charts still render · the shape branch lives in the repository, not the route, and the commit body says why · both `TestDataServiceIntegration` classes are green, with any fixture change explained rather than relaxed · **no `docs/` file is edited by this block** · `frontend/coverage/` is untouched. |
 
-**Options — `D-16-2` (does a `range` filter target a dimension or a measure?).** Carried open.
-**This plan picks none of them.** Chooser: **Tech Lead + product**. This is recorded nowhere in the
-repository, which is precisely why it is a decision and not a bug fix.
+**Options — `D-16-2` (does a `range` filter target a dimension or a measure?).** **`D-16-2` is RULED:
+(c), the `range` half is removed and any stored `range` filter is rejected by name with the reason**
+(register cluster 5). Chooser: **Tech Lead + product** — product sign-off was given, and the record is
+closed. **This block picks none of them; it executes (c).** The reason the record had to exist at all
+is recorded nowhere in the repository, which is precisely why it was a decision and not a bug fix.
+
+**The contradiction this block's table contained, resolved in favour of the ruling.** `D-16-2`'s option
+rows below read **"Carried open"** while §6 of this same plan records it as **RULED (remove the range
+filter)**. The ruling wins; the rows are marked now so the two halves of one plan cannot disagree
+again. **`CHTB-6`'s `blocked_by` on `D-16-2` is released**, and the rest of that set permits it — the
+only other entry is `CHTB-0`, a soft coherence edge satisfied once the other three charts land.
+**`CHTB-6` is runnable.** What changes is not whether it runs but **what it delivers**: a range control
+is not built, and instead a stored `range` filter is **rejected by name with the reason, at the write
+surface**, before it can reach the read path. The block's `range` half becomes a *removal with a
+rejection message*, and its definition of done says so in its first clause.
 
 | Option | Shape | Trade-off |
 | --- | --- | --- |
-| **(a) `range` targets a **dimension** | Needs a documented string-range encoding, or the filter is rejected as unevaluable | Cheapest if the answer is "reject it". A lexicographic range over dimension strings is a semantic that **nothing in this system has ever agreed to**, so honouring it without a product definition invents one. |
-| **(b) `range` targets a **measure** | The repository must read `metrics` as well as `dims` | **A new capability, not a fix.** The repository has never read `metrics` in a filter; the aggregate read's column projection would widen; and the answer interacts with phase 05's naming question, because the measure's *stored* column name and the measure's *configured* name differ by the `_{agg}` suffix. |
-| **(c) `range` is removed** from the client switch | `DashboardFilters`'s range branch and `FilterConfigDict.type`'s vocabulary lose the case | **The only option that removes an unimplementable control rather than implementing it.** Cost: a control that exists today stops existing — a visible product change — and any stored `FilterConfigDict` carrying `type: "range"` needs a migration or a documented fallback, which makes **phase 14** a participant. |
+| **(a) `range` targets a **dimension** | Needs a documented string-range encoding, or the filter is rejected as unevaluable | Cheapest if the answer is "reject it". A lexicographic range over dimension strings is a semantic that **nothing in this system has ever agreed to**, so honouring it without a product definition invents one. **REJECTED — the semantics do not exist, and inventing them is the failure.** |
+| **(b) `range` targets a **measure** | The repository must read `metrics` as well as `dims` | **A new capability, not a fix.** The repository has never read `metrics` in a filter; the aggregate read's column projection would widen; and the answer interacts with phase 05's naming question, because the measure's *stored* column name and the measure's *configured* name differ by the `_{agg}` suffix. **REJECTED — a widening capability in a correctness block.** |
+| **(c) `range` is removed** from the client switch | `DashboardFilters`'s range branch and `FilterConfigDict.type`'s vocabulary lose the case | **The only option that removes an unimplementable control rather than implementing it.** Cost: a control that exists today stops existing — a visible product change — and any stored `FilterConfigDict` carrying `type: "range"` needs a migration or a documented fallback, which makes **phase 14** a participant. **RULED — cluster 5, product sign-off given.** The stored-predicate half is not optional under this option: the rejection is the ruling, and a stored range filter left unread would be a filter the user believes is applied. |
 
 **Independently unblocked, and it must not wait.** The `multiselect` list case needs `.in_([])` and no
 decision. Shipping it alone closes the majority of `CHT-009`'s user-visible harm — the type a
@@ -609,7 +643,7 @@ finding.
 | --- | --- |
 | **Semantic target** | `frontend/src/features/dashboards/api/dashboardApi.ts::useInvalidateDashboard` — the hook that today exposes `invalidateDashboard` and `invalidateAggregatedData` and **no third method** · `dashboardApi.ts::useFilterValues`'s query key `['filterValues', dashboardId, filterName]`, which declares **no `staleTime`** · `frontend/src/features/dashboards/ui/DashboardFilters.tsx`'s per-filter call to `useFilterValues`, which is **unconditional** and, for `source === 'data'`, uses the response as the **entire** option list · `DashboardView.tsx`'s `onUploadComplete` handler, which calls `invalidateAggregatedData` and nothing else · the **complete** `invalidateQueries` census over `frontend/src` — **ten** sites (`['admin','users']`×3, `['admin','registration-requests']`×2, `['admin','dashboards']`×3, `['dashboards', id]`, `['aggregatedData', dashboardId]`), **none of which names the `filterValues` key** · `frontend/src/app/providers.tsx::queryClient`'s `defaultOptions.queries.staleTime`. |
 | **Discharges** | **`CHT-010`** — no invalidation site names the key that backs every `source: 'data'` filter's option list, so a re-upload refreshes the frames and leaves the options stale, handing the user a value the current data does not contain. **And it records `VAL-16-002`'s ruling**: `CHT-010` is the finding of record; the phase-13 roadmap entry that prescribes a second call site is **filed as `C16-8`, not performed**. |
-| **blocked_by** | **`D-16-7` (hard for the finding's *framing*; soft for the one-line invalidation itself, which is correct under every option).** `CHTB-0` (soft). |
+| **blocked_by** | **`CHTB-0` (soft).** The `D-16-7` gate is **released** — cluster 12 ruled it at option (b). |
 | **Execution order** | **8.** |
 | **Risk — implementation** | **LOW, and the trap is only about what gets claimed.** The remedy is a prefix-keyed `invalidateQueries({ queryKey: ['filterValues', dashboardId] })` exposed as a third method on the existing hook and called from the existing `onUploadComplete` handler — a few lines, no new dependency, no new abstraction. **The real implementation question is scope**: adding it to the *hook* (this finding's prescription) and adding it inline at the call site (`VAL-13-003`'s prescription) are two places, and doing both leaves one cache key invalidated twice with no recorded reason — the double-filing's practical failure, which is what `VAL-16-002` describes. |
 | **Risk — rollout** | **LOW.** No request shape changes, no status changes. A refetch of the option lists after an upload is one extra small request per filter on a dashboard. **The user-visible change is that a previously-persistent stale option disappears** — which is the fix, and which a user who had learned to trust the stale list will notice. |
@@ -620,9 +654,10 @@ finding.
 | **Verification** | **Quantitative and state-based.** **New:** a test that calls the upload-completion handler and asserts the `['filterValues', dashboardId, …]` entries are **invalidated** on the query client · **New:** a dashboard with no `source: 'data'` filters issues no `filter-values` request after an upload · **New:** the invalidation census over `frontend/src` re-counts to **eleven** sites after this change, with **exactly one** naming `filterValues` · **New:** if `D-16-7` rules for an explicit `staleTime`, a test asserts the query's declared freshness · `npm --prefix frontend exec -- vitest run src/features/dashboards` (**coverage-free** targeted form) · `.\Makefile.ps1 fe-test` — baseline comparison against **1 failed / 169 passed**, which form recorded · `.\Makefile.ps1 fe-lint` — delta against the 9-error baseline, and specifically whether the new lines in `filter-persistence.test.tsx` added any of the three pre-existing errors' cousins. **Coverage caveat as in `CHTB-4`.** |
 | **Definition of done** | `D-16-7` is ruled and the ruling — **including the narrowed consequence** — is quoted in the commit body · the `filterValues` key is invalidated after an upload, asserted on the query client · **exactly one** invalidation site names that key, and the commit body states why the second prescription was not also applied · the census is re-counted and the number recorded · a dashboard with no data-source filters issues no extra request · no `docs/` file is edited unless `D-16-7` made the freshness contract documentable, in which case the sentence is filed for `CHTB-8` · `C16-8` is named in the commit body as filed-not-performed · `frontend/coverage/` is untouched. |
 
-**Options — `D-16-7` (the staleness window).** Carried open. Chooser: **Planner, with product
-sign-off.** The code context assigned the *factual* half to the Planner; **it is now read, and the
-answer is stated here rather than left to the implementor**:
+**Options — `D-16-7` (the staleness window).** **RULED: option (b) — invalidate *and* pin an explicit
+`staleTime: Infinity` on the key. Product sign-off given** (register cluster 12). Chooser: **Planner,
+with product sign-off** — both halves are discharged. The code context assigned the *factual* half to
+the Planner; **it is read, and the answer is stated here rather than left to the implementor**:
 
 > `frontend/src/app/providers.tsx` constructs the `QueryClient` with
 > `defaultOptions: { queries: { retry: 1, staleTime: 5 * 60 * 1000 } }`. **The global default is
@@ -644,9 +679,9 @@ a reader should assume:
 
 | Option | Shape | Trade-off |
 | --- | --- | --- |
-| **(a) Invalidate only; inherit the global `staleTime`** | `invalidateFilterValues` on the existing hook, called from `onUploadComplete`; nothing else changes | **The minimum that closes the finding's mechanism.** Correct for every writer that goes through the upload path. Cost: any *other* writer of `aggregated_data` — a dev seeder, a script, a future API — still leaves the list stale, and nothing declares that the list's freshness is event-driven rather than time-driven. |
-| **(b) Invalidate *and* pin an explicit `staleTime` on this key** | The freshness of the option list becomes a **declared property of the query** rather than an inherited accident | Makes the contract legible: a reader sees that this list is refreshed by invalidation, not by a timer. Cost: an explicit `staleTime: Infinity` would make the invalidation **load-bearing** — the right dependency direction, and one that converts any future second writer into a visible bug rather than a silent one. An explicit finite value would be redundant with the global default and adds a number to maintain. |
-| **(c) Invalidate, and add a `refetchInterval`** | The list polls | A self-healing list with no dependency on any writer being remembered. Cost: polling a small endpoint on every open dashboard forever, to solve a problem an event already solves; and it makes the invalidation partly redundant, which weakens the signal that a re-upload changed the data. |
+| **(a) Invalidate only; inherit the global `staleTime`** | `invalidateFilterValues` on the existing hook, called from `onUploadComplete`; nothing else changes | **The minimum that closes the finding's mechanism.** Correct for every writer that goes through the upload path. Cost: any *other* writer of `aggregated_data` — a dev seeder, a script, a future API — still leaves the list stale, and nothing declares that the list's freshness is event-driven rather than time-driven. **REJECTED — correct, and silent about why.** |
+| **(b) Invalidate *and* pin an explicit `staleTime` on this key** | The freshness of the option list becomes a **declared property of the query** rather than an inherited accident | Makes the contract legible: a reader sees that this list is refreshed by invalidation, not by a timer. Cost: an explicit `staleTime: Infinity` makes the invalidation **load-bearing** — the right dependency direction, and one that converts any future second writer into a **visible bug rather than a silent one**. An explicit finite value would be redundant with the global default and would add a number to maintain. **RULED — cluster 12, product sign-off given. The `Infinity` form is chosen for exactly the reason the cost column names:** the list's freshness depends on every writer being remembered, and that dependency should be legible in the query rather than inferred. |
+| **(c) Invalidate, and add a `refetchInterval`** | The list polls | A self-healing list with no dependency on any writer being remembered. Cost: polling a small endpoint on every open dashboard forever, to solve a problem an event already solves; and it makes the invalidation partly redundant, which weakens the signal that a re-upload changed the data. **REJECTED — an always-on cost to solve an event problem.** |
 
 ---
 
@@ -731,14 +766,25 @@ Recorded once, here; **`C16-3` is the register entry.**
 
 ---
 
-## Open decisions — owner rulings required
+## Decision records — owner rulings applied
 
-**Six records are ruled; two are not picked anywhere in this plan.** Each is stated once with its
+**Seven records are ruled; one is not picked anywhere in this plan.** Each is stated once with its
 alternatives, its chooser, and **what stays blocked** until it is ruled. The options tables live in
 their blocks; this section is the index and the ruling sheet. **The rulings are in
 `.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` and are recorded below by
-description, not by letter** — see `Owner rulings applied`. **`D-16-6` and `D-16-7` stay open with
-their original choosers.**
+description, not by letter** — see `Owner rulings applied`. **`D-16-6` stays open with its original
+chooser (Coordinator). `D-16-7` is RULED — cluster 12, option (b), product sign-off given — and
+`CHTB-7` is released.** Cluster 13 adds four more rulings to this phase's surfaces, recorded at the
+end of this section.
+
+**One contradiction between this plan and itself was found and resolved on 2026-10-03, and it is
+recorded here because the shape recurs:** `CHTB-6`'s options table and `CHTB-7`'s described `D-16-2`
+and `D-16-7` as **"Carried open"** while this section recorded `D-16-2` as **RULED**. **The ruling wins
+in both cases**, both option rows are now marked, and both `blocked_by` gates are released. **A block's
+option table is not the register; the register is** — and when they disagree the register is the record
+and the table is corrected, because a table that says "carried open" is read by an Implementor as a
+reason to wait.
+
 
 ### D-16-1 — Which `GraphConfigDict` keys survive? · **RULED — `chooser: Tech Lead + product`, with phase 15's `D-15-I` as co-signer**
 
@@ -767,6 +813,17 @@ Options: **(a)** a dimension, needing a documented string-range encoding or an o
 **The `multiselect` half of `CHTB-6` is INDEPENDENTLY UNBLOCKED AND MUST NOT WAIT** — it is the type dashboards actually use, and holding it for a product definition leaves the finding open for no gain.
 
 **Blocks released:** the `range` half of `CHTB-6`. **Does not block:** anything else.
+
+**Cross-reference added 2026-10-03 — this record is phase 15's `D-15-I`, from the other tier.** Plan 15's
+`D-15-I` is the server-side half of one product decision about graph configuration keys; **`D-16-2` is
+that record's *other half* — the half about a value a user attaches to a dimension.** A server that
+widens `GraphConfigDict`'s key set and a client that drops a control that has no semantics are **the
+same ruling seen from two sides**, and only one of them appears under each identifier. **Nothing is
+merged and nothing is renumbered**: `D-15-I` stays phase 15's record, `D-16-2` stays this phase's, and
+each is cited from the other so a reader who lands on either one can find the pair. **The same pair is
+recorded from plan 15's side** — `D-16-1 ≡ D-15-I` was already stated there, and `D-16-2` is the
+addition.
+
 
 ### D-16-3 — Does the forced `category` survive as the default? · **RULED — `chooser: Planner`, with product sign-off**
 
@@ -798,17 +855,27 @@ Four states, three claimants, none naming it. Options: **(a)** phase 16 owns all
 
 **Blocks released:** **`CHTB-9`, and therefore the release of phase 13's `CT-5` and `CT-10`** — see `C16-1`, which records that phase 13 was blocked on a **ruling, not on work**.
 
-### D-16-6 — `CHT-003` versus phase 12's `AZ-8`: serialise, co-commit, or defer? · **chooser: Coordinator**
+### D-16-6 — `CHT-003` versus phase 12's `AZ-8`: serialise, co-commit, or defer? · **OPEN — `chooser: Coordinator`**
 
 Options: **(a)** serialise, phase 12 first · **(b)** one joint commit · **(c)** phase 16 defers `CHT-003` into phase 12's block. Full table in `CHTB-2`.
 
 **Blocks:** `CHTB-2` only. **`CHTB-1` — the phase's headline finding's minimal path — is independent**, so this decision cannot hold the phase.
 
-### D-16-7 — What is the `filterValues` staleness framing? · **chooser: Planner, with product sign-off**
+### D-16-7 — What is the `filterValues` staleness framing? · **RULED: (b) — invalidate on upload AND pin an explicit `staleTime: Infinity`. `chooser: Planner, with product sign-off`, both halves discharged**
 
 **The Planner-owed factual half is read and recorded:** `app/providers.tsx` sets `defaultOptions.queries.staleTime = 5 * 60 * 1000` — finite, five minutes — and `useFilterValues` declares none of its own. **`CHT-010`'s "session-scoped" consequence framing is therefore narrowed to a bounded-and-user-dependent window**, while its mechanism (no invalidation site names the key) is untouched and its remedy unchanged. Options: **(a)** invalidate only · **(b)** invalidate and pin an explicit `staleTime` on the key · **(c)** invalidate and add a `refetchInterval`. Full table in `CHTB-7`.
 
-**Blocks:** `CHTB-7`'s framing. **The one-line invalidation is correct under every option** and does not wait.
+**RULED 2026-10-03 (Tech Lead, adjudicated; Cluster 12): INVALIDATE ON UPLOAD *AND* PIN AN EXPLICIT `staleTime: Infinity`, SO REFRESH IS EVENT-DRIVEN AND THE CONTRACT IS LEGIBLE. PRODUCT SIGN-OFF GIVEN.** Option (a) is rejected because it is correct **and silent about why** — nothing declares that the list's freshness depends on every writer being remembered. Option (c) is rejected as an always-on polling cost to solve a problem an event already solves, and because it weakens the signal that a re-upload changed the data.
+
+**The residual is a dependency direction, and it is the intended one:** `Infinity` makes the
+invalidation **load-bearing**. A future second writer of `aggregated_data` — a seeder, a script, an API
+— becomes a **visible bug rather than a silent one**, because the list will simply stop updating until
+that writer is remembered. **A finite explicit value would have been redundant with the global default
+and would have added a number to maintain**, which is the outcome (b)'s cost column names and the
+reason `Infinity` is the chosen form rather than any explicit number.
+
+**Blocks released:** **`CHTB-7` in full**, framing included.
+
 
 ### D-16-8 — Do the never-gating coverage thresholds get enforced? · **RULED — `chooser: Tech Lead`, jointly with `D-16-5`'s `H-4`**
 
@@ -820,9 +887,118 @@ Options: **(a)** enforce as written — **they fail**: `ChartRenderer.tsx` has z
 
 **Blocks released:** **`CHTB-9`.**
 
+### Cluster 13 — four rulings that add to this phase's surfaces
+
+`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` **cluster 13** answers four questions
+this phase raised without owning. **Each is recorded in the plan that owns the surface, and this plan
+owns three of the four surfaces plus the ordering constraint.** They are written here as records with
+their own identifiers so no block has to re-invent them; **the acceptance criterion is what the user
+sees.**
+
+---
+
+**`P11` · Dimension value presentation — one canonical value everywhere · RULED (Product Owner,
+2026-10-03). Chooser: Product Owner. Blocks: `CHTB-0` (soft), `CHTB-2` (soft), plan 13's `CT-13`.**
+
+**The ruling, stated as the user sees it.** **Dropdown options, chart axis labels and tooltips all
+show the same canonical text form**, so a category supplied two different ways appears **once**, and
+**the value a user picks is exactly the value that is stored**. **Rejected:** preserve the native type
+for display (the same category appears twice and the picked value is not the stored one); preserve the
+native type and de-duplicate silently (the user cannot tell which form they are seeing); defer
+entirely (which is what ships today).
+
+**`P11-sub` — `1` and `1.0` stay distinct.** **Numerically-equal values are NOT merged.** `1` remains
+`"1"` and `1.0` remains `"1.0"`, because `1.0` **can legitimately be a different category.**
+**Rejected:** collapse a float `1.0` to `1`. **The reason this sub-ruling exists at all** is that
+`P11`'s "one canonical value everywhere" is a request for *one form*, not for *one value* — and a plan
+that read `P11` as a numeric-collapse instruction would ship a silent data merge on the strength of a
+ruling about display.
+
+**What this phase owns, stated as work and not as assumption.** The **axis-label and tooltip** half is
+this phase's; the **dropdown-option** and **read-path ordering** halves are plan 18's, and plan 13's.
+The storage layer beneath all of it is already `D-05-E`, landed as `d865f2c`.
+
+**`P11-constraint` — canonical text is identity and storage, NOT ordering or presentation type ·
+RULED. Chooser: Product Owner. This is a constraint on the presentation layer only.**
+
+**The ruling.** After canonicalisation, `"1"`, `"2"`, `"10"`, `"20"` must present and order as
+**1, 2, 10, 20** — **never** in text order as 1, 10, 2, 20. **Ordering is derived from the semantic type
+of the source column, not from the stored text.** **Read this as a constraint on the presentation layer
+only: it does not reopen `D-05-E` or the index identity.** That sentence is load-bearing, and the reason
+is that the two halves would otherwise contradict each other — `D-05-E` makes the canonical text the
+*stored identity*, and a ruling that then ordered by that same text would make the *index key* the sort
+key and give back, as a presentation bug, the defect the migration was for.
+
+**The surfaces, and which are verified and which are work.** Three of the four are named by the ruling
+as **work to verify**, not as findings, and this plan does not convert them into findings:
+
+| Surface | Status | Who owns it |
+| ------- | ------ | ------------ |
+| `services/aggregation_service.py::extract_filter_values` sorts with `key=lambda v: (isinstance(v, str), v)` — all non-strings before all strings | **The primary work item for `P11`.** Once option values are derived from the canonical form, this becomes **text ordering** — exactly what `P11-constraint` forbids. | **Plan 18** (backend, this is its `P11` half) |
+| The option list is built **in memory from native-typed records** (`workers/data_worker.py:1246`) and saved to `dashboard_filter_values` | **Must be derived from the canonical form instead.** That is the work. | **Plan 18** |
+| Chart axis order, set by `AggregationService._apply_chart_sorting` on the Polars frame **before** coercion (`aggregation_service.py:61-62`) | **Should already be native-ordered. VERIFY THIS AND RECORD THE FINDING — do not assert it.** | **Plan 16** (`CHTB-2`'s half, soft) |
+| Read-path ordering falls back to `ORDER BY id` (`db/repositories/aggregated_data_repo.py`) | **Do not decide this twice.** It is plan 18's `PB-15` / `D-05-K` (interim ordering) and plan 14's `MIGB-4` (the `ordinal` DDL). Both are cited from here; this plan states the constraint and owns no part of the answer. | **Plans 18 and 14** |
+
+**Three edge cases the constraint implies, which the owning block's Researcher must pin rather than
+assume** — because each of them is a case where the obvious implementation is wrong:
+
+1. **Leading zeros** (`"007"`) must **not** be reordered as the number `7`.
+2. **Scientific notation** (`"1e-07"` — which the shipped `D-05-E` rule produces **deliberately**) must
+   **not** be reordered as a float.
+3. **The empty string** must sort in a **defined** position.
+
+**Each of the three fails in the same direction, and that is the point:** a "just sort it numerically
+when it looks numeric" heuristic reorders `007` as `7`, reorders `1e-07` as `0.0000001`, and moves the
+empty string to the top of a numeric range. **The ordering has to come from the source column's declared
+type, not from a guess about the text** — and since cluster 14, that type **is carried by the data**:
+**the declared type is persisted alongside each stored aggregate**, so already-uploaded rows keep their
+order permanently and a later edit to the upload configuration cannot retroactively reorder them.
+**That persistence is a schema change and therefore plan 14's hand-over at `MIGB-4`**, kept **separate**
+from the `ordinal` DDL, which supplies position rather than type. **`P11-sub` travels with it: `"1"` and
+`"1.0"` are distinct categories, so a numeric type must present them as two values and must never
+normalise one to the other** — the implementation that satisfies "sort numerically" is the one that
+merges them, which is why this is stated here rather than left to the implementer.
+
+---
+
+**`P12` · Chart axis type · RULED (Product Owner, 2026-10-03). Chooser: Product Owner. Blocks:
+`CHTB-3` (hard), and the graph-settings half of `CHTB-1`.**
+
+**The ruling, stated as the user sees it.** **Nothing in the chart interface. The graph settings screen
+shows the axis type explicitly and allows editing it.** **Rejected:** a one-off notice per graph on first
+render with a new axis type (it announces a change nobody asked for, once per graph, and then
+disappears — a notice with no lasting state is not information); nothing at all (which is the finding as
+it stands).
+
+**How this closes `D-16-3` without closing the finding.** `D-16-3` removed the *conflict* — stored values
+are honoured, `'category'` is the default, **no existing dashboard changes visually**. What it did not
+do is make the value **reachable**. `P12` is that half, and it lands in the **editor**, not the viewer:
+a graph whose `xaxis.type` is now honoured is a graph whose `xaxis.type` a user can change. **A stored
+value nobody can set is a constant with extra steps.**
+
+---
+
+**`P13` · Failure and recovery on the dashboard · RULED (Product Owner, 2026-10-03). Chooser: Product
+Owner. Blocks: `CHTB-5` (hard — it owns empty states and the absent-graph card).**
+
+**The ruling, stated as the user sees it.** The dashboard **keeps its last good data** with a marker
+**"data may be out of date — last updated &lt;time&gt;"**, and **a transient failure never leaves a chart
+empty**. **Rejected:** clearing the charts and showing an error (it converts a transient fault into data
+loss the user cannot distinguish from deletion); leaving the data with no marker (a user cannot tell
+stale from current, which is the failure mode `D-16-4`'s absent-versus-zero distinction already exists
+to prevent).
+
+**How it meets `D-16-4`, and where the two would collide if applied separately.** `D-16-4` made four
+states mutually distinguishable on the wire and gave this phase the absent-graph card. `P13` adds a
+**fifth** piece of state that is not about the data's *content* but its *age*, and **it must not be
+drawn as an empty state**: an empty state and a stale marker are different assertions, and rendering a
+transient failure through the empty-state branch would show "no data" where the truth is "old data".
+**`CHTB-5` therefore has two distinct things to build, and the commit body must say which is which.**
+
 ---
 
 ## Cross-phase coordination register `C16-*`
+
 
 **Nothing below this line is a deliverable of any block.** Each item is a hand-off with a named
 owner, a blocking direction, and — where the direction matters — what phase 16 says plainly.

@@ -28,6 +28,19 @@ note: >-
 
 # Product Owner decision register — 2026-10-03
 
+> **⚠ SUPERSEDED AS AUTHORITY — corrected twice, 2026-10-03.**
+> This file is an **input**. `.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` is the
+> single register of record, and **neither input file may be cited as authority.** Two things in *this*
+> file were ruled against by later clusters, and both are left in place as history with the correction
+> named here rather than silently edited:
+> - **`D-04-F`'s fail-open ruling is STRUCK.** Cluster 14 (2026-10-03) rules **fail CLOSED with a
+>   dedicated 503**, which is what shipped, and struck that entry in the adjudicated register in place.
+>   **The entry at "revocation-read failure fails OPEN" below is history.**
+> - `D-04-L`'s direction was confirmed, and the shipped production refusal is **reversed by scheduled
+>   work** (cluster 14).
+> A reader who finds a contradiction between this file and the adjudicated register should follow the
+> adjudicated register, which records both the ruling and the reasoning that changed it.
+
 ## How to read this register
 
 - Each entry names the **ruled option**, the **verbatim product intent**, and the **blocks it unblocks**.
@@ -202,7 +215,7 @@ logout that reads as a mass credential compromise.
 | Plan | Decision ID | Effect |
 | ---- | ----------- | ------ |
 | 17 | `D-04-I` | Ruled option A on both halves. Unblocks `AB-4`. The rule is enforced at the shared dependency, and the chosen code is **`AUTHENTICATION_FAILED`** — no new `ErrorCode` member is created. |
-| 17 | `D-04-F` | Ruled option A: **fail open with a logged degraded mode.** Unblocks `AB-5`. The degraded mode **must be logged at WARNING or above on every revocation-read failure** — a silent fail-open is not the ruling, it is the defect the ruling forbids. |
+| 17 | ~~`D-04-F`~~ | **⚠ STRUCK - SUPERSEDED BY CLUSTER 14 (2026-10-03).** ~~Ruled option A: fail open with a logged degraded mode.~~ The Product Owner re-ruled this on the second session: **fail CLOSED with a dedicated 503**, which is what shipped as `5b6cceb`. The reason is one sentence - **the session store is the session boundary, and a refusal is visible while a bypass is silent.** The WARNING-or-above logging requirement from the struck ruling SURVIVES. Authority: the adjudicated register, cluster 14 |
 
 **Accepted, stated as a commitment:** a user deactivated mid-session retains access for the
 duration of a Redis outage. Record this in the release note.

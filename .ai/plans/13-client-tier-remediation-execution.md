@@ -89,11 +89,13 @@ sibling_plans:
 ## Owner rulings applied
 
 **`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` — Product Owner, adjudicated by the
-Tech Lead, 2026-10-03 — rules five of this plan's fifteen decision records.** That file is **the single
+Tech Lead, 2026-10-03 — rules five of this plan's fifteen decision records, and its cluster 13 adds nine
+rulings on this phase's surfaces.** That file is **the single
 authority**: it merges two parallel owner registers and adjudicates every disagreement, and neither input
 file may be cited as authority any more. **The clusters this plan consumes are Cluster 4 (cross-tier
-ordering — phase 11's `DP-11-A` and phase 16's `D-16-5` — and `CT-3`'s two findings) and Cluster 5
-(`DP-13-H` and `DP-13-I`).** **Option letters are not carried across:** the register's letters denote
+ordering — phase 11's `DP-11-A` and phase 16's `D-16-5` — and `CT-3`'s two findings), Cluster 5
+(`DP-13-H` and `DP-13-I`) and Cluster 13 (`P1`, `P2`, `P5`, `P6`, `P7`, `P8`, `P9`, `P10`, `P11`).**
+**Option letters are not carried across:** the register's letters denote
 which *input register* won each decision, not which option in *this plan's* tables was taken — **implement
 the words**. Nothing below is this plan's choice, and no option was ruled by default.
 **The other ten — `DP-13-A`, `DP-13-E`, `DP-13-F`, `DP-13-G`, `DP-13-J`, `DP-13-K`, `DP-13-L`,
@@ -119,6 +121,12 @@ the words**. Nothing below is this plan's choice, and no option was ruled by def
 2. **One cross-plan consistency requirement.** `DP-13-B`(a) and phase 11's `DP-11-A` (ruled: atomic — one change spanning both tiers) are **one
    commit spanning two tiers**. This plan states it; plan 11 must state the same, and the ruling file
    already binds it (*"hard requirement on phase 13's `CT-1` + `CT-3` as **one commit**"*).
+3. **One dependency that had no owner on this side, now recorded.** Plan 18 points at **`C05-11`** —
+   "the frontend's status renderer" — for the user-visible half of four of its own rulings. **Plan 13 had
+   no `C05-*` identifier and no block for it**, so a dependency resolved to nothing. It is registered here
+   as **`DP-13-P`**, with its own subsection, and cluster 13's `P1` and `P2` are what make the renderer
+   mandatory rather than merely expected. **Nothing blocks on this**: the statuses it renders already
+   exist in the shipped backend.
 
 ---
 
@@ -2447,15 +2455,19 @@ close-out.
 
 ---
 
-## Decision records — five ruled, ten unpicked
+## Decision records — five ruled, ten unpicked, plus cluster 13
 
 Fifteen records. `DP-13-A` … `DP-13-N` are carried **verbatim** from the Phase-1 code context's §6
 and keep their identity so a reader can move between the two documents without translating. Each
 one's options and trade-offs are stated in full inside the block that is gated by it; this section
-is the index, the chooser, and the statement of what stays blocked. **`DP-13-O` is this Planner's**
-and is the only new record. **Five records are ruled by the Product Owner on 2026-10-03 —
+is the index, the chooser, and the statement of what stays blocked. **`DP-13-O` is this Planner's
+and is the only new record of the fifteen. `DP-13-P` is a sixteenth, raised 2026-10-03** to give the
+`C05-11` status-renderer dependency an owner on this side — it has its own subsection below because a
+cross-plan dependency that resolves to nothing is a defect in the plans, not in the code.
+**Five records are ruled by the Product Owner on 2026-10-03 —
 `DP-13-B`, `DP-13-C`, `DP-13-D`, `DP-13-H`, `DP-13-I` — and the remaining ten are picked by nobody.
-This plan chooses none of the ten, and re-decides none of the five.**
+This plan chooses none of the ten, and re-decides none of the five.** **Cluster 13 of the same register
+adds nine further rulings on this phase's surfaces and changes none of the fifteen.**
 
 > **A note on `DP-13-M`'s identity.** The code context's `DP-13-M` is the question "does
 > `VAL-13-005` get a phase-13 block?". That question has an answer — no, by the report's own ruling
@@ -2490,6 +2502,119 @@ sixteen blocks need no decision to start** — the five owner rulings of 2026-10
 `C13-1` are what moved that number from six to ten — **and what remains gated is now concentrated:
 `CT-6` on CT-5 only, and CT-7, CT-8, CT-9, CT-11, CT-13 and CT-14 on the ten records the owner did not
 rule.**
+
+---
+
+## Cluster 13 — nine product-experience rulings on this phase's surfaces
+
+`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` **cluster 13**, Product Owner,
+2026-10-03, rules nine questions this plan raised without owning. **Each is recorded here because this
+phase owns the screen**, with the backend counterpart cited where one exists. **The acceptance criterion
+in every row is what the user sees** — a plan that records a ruling as "the backend must return X" has
+recorded the wrong thing.
+
+**These are rulings, not blocks.** None of them creates work in a block that has no natural home, and
+where one does, the owning block is named. **What they change is almost entirely the renderer**, which
+is why they cluster in `CT-5`, `CT-6` and `CT-12` rather than in the blocks that fix transport.
+
+| Ruling | Owning block | The acceptance criterion, as the user sees it | What was rejected, and why |
+| ------ | ------------ | ------------------------------------------- | --------------------------- |
+| **`P1`** — upload completion | `CT-12` (dashboard status surface) + `DP-13-P` below | **The user STAYS on the dashboard.** A **confirmation toast** appears, and the dashboard itself carries a **persistent status line** progressing **"Processing…" → "Updated at &lt;time&gt;"** | redirect to a separate processing-history page (it breaks the user's place and makes a completed upload look like a navigation); toast-only with no persistent indicator (a toast is gone in four seconds, and the answer to "did my upload land?" must outlive it) |
+| **`P2`** — a distinct warnings state exists | `CT-12` + `CT-5` (the amber state is an extracted message) | **"Completed with warnings" is a DISTINCT AMBER STATE, separate from the green "Updated".** The user can **open it to see what the warnings were** | no separate state with an expandable warning link (then warnings are invisible by default, which is the same as log-only); log-only with nothing in the interface (**the current behaviour, and the one `D-05-F`'s capped `processing_logs.message` now feeds with nothing to render it**) |
+| **`P5`** - an unrecognised setting key - **THIS PLAN IS THE RENDERING HALF** | `CT-5` (the failure surface) + **`DP-13-P`** (the control) | The run fails with a message **naming the exact key**, and the run **offers a route to remove it**. **Cluster 14 rules the shape, and the boundary is the ruling's substance: the backend supplies the fact, the client owns the affordance.** The key arrives as **structured data** in the RFC 7807 body (plan 18's `PB-8` emits it) and **this plan renders the control from it** - see `DP-13-P`. **The message text stays readable prose and carries no link-shaped string** | a message naming the key with no route to fix it (the user knows what is wrong and cannot do anything) - a generic validation message - **(cluster 14) an instruction in the message text with manual navigation**: works exactly once, then the user is guessing the path - **(cluster 14) literal link syntax in the message**: **rejected outright, and the option that must not reappear**. A link-shaped string inside a 1000-character `processing_logs.message` is prose another surface has to parse, and it must survive escaping, truncation, and log aggregation that strips markup. **A truncated link is worse than no link** |
+| **`P6`** — session ended by a password change | `CT-10` (the login screen the user lands on) | The user sees the **normal login screen with no explanation** | "Your session was ended because your password was changed" (it is accurate and it is the wrong accuracy — it narrates a deliberate user-initiated action as a system event, and `D-04-J` revoked sessions precisely because the *user* did it); a generic "session expired" notice (same defect: it misreports why) |
+| **`P7`** — rate limiting | `CT-5` + `CT-10` | The throttled user sees **"Too many attempts. Try again later"** — **no countdown, no remaining-attempts display**. **The bound is unchanged**: per-identifier primary with a per-IP ceiling (plan 17's `D-04-D`) | a countdown (it teaches an attacker the window and creates a second contract to keep correct); a remaining-attempts display (it turns a rate limit into an oracle) |
+| **`P8`** — forced password change | `CT-2` (the redirect) + `CT-12` (the screen) | After login the user lands on a **single reachable screen, "Set a new password", which states the reason. The rest of the application is inaccessible** | a dashboard banner with the app still usable (it leaves a flagged user's other sessions and every screen reachable — the exposure the finding exists to close); login blocked with an error until an administrator resets the password (the user is stuck behind an operator who may not exist) |
+| **`P9`** — temporary password unavailable | `CT-5` + `CT-11` (the admin surface) | The administrator sees **"Temporarily unavailable — try again in a minute. Your request was not applied"** with a **Retry** control. **503 is unchanged** (plan 17's `D-04-C`) | the same message with no Retry (the administrator cannot act on it); a message implying the reset may have succeeded — `D-04-C`'s residual says a 503 is indistinguishable from any other outage by status alone, so **the reassurance has to be in the text** |
+| **`P10`** - non-admin on the admin address | **`CT-11`** (the administration area). **Its only blocker is plan 17's `AB-10`, and that blocker is now ruled out of the way - cluster 14, 2026-10-03** | A **startup log entry AND a persistent warning in the administration area**, until it is resolved. **The ruling that makes this buildable: startup NEVER blocks, in any environment** - so the surface this warning lives in is reachable. **Plan 17's `AB-10` must reverse the production branch of `34c9459` from a raise to a warning; until that lands, `P10` is unbuildable, and this is the one dependency `CT-11` picks up from it** | startup log only (an operator who is not watching logs at boot never learns the deployment is misconfigured) - nothing surfaced (the current behaviour) - **(cluster 14) refuse in production only** - it makes a misconfiguration an outage in the environment that matters most - **(cluster 14) refuse in every environment** - same objection, uniformly, and it also removes the operator's chance to fix the misconfiguration from inside the running system. **Both were available to the owner and both were rejected, which is why `P10``s administration-area surface exists at all** |
+| **`P11`** — one canonical value everywhere | `CT-4` (the dropdown option list) | Dropdown options show the **same canonical text form** as chart axis labels and tooltips, so a category supplied two ways appears **once**, and **the value a user picks is exactly the value that is stored** | preserve the native type for display (same category twice, picked value ≠ stored value); preserve the native type and de-duplicate silently (the user cannot tell which form they are seeing); defer entirely (**what ships today**) |
+
+**`P11-sub` and `P11-constraint`, and why this plan must not implement either of them.**
+
+- **`P11-sub`: `1` and `1.0` stay distinct.** Numerically-equal values are **not** merged — `1` remains
+  `"1"`, `1.0` remains `"1.0"`, because `1.0` **can legitimately be a different category.** **This is a
+  ruling about display, and a plan that read `P11` as a numeric-collapse instruction would ship a silent
+  data merge on the strength of it.** The dropdown half is therefore "show what is stored, once", never
+  "show the canonical number".
+- **`P11-constraint`: canonical text is identity and storage, NOT ordering.** `"1"`, `"2"`, `"10"`,
+  `"20"` must present and order as **1, 2, 10, 20** — **never** as 1, 10, 2, 20 — and ordering is derived
+  from the **semantic type of the source column**, not from the stored text. **Read this as a constraint
+  on the presentation layer only: it does not reopen plan 18's `D-05-E` or the index identity.**
+  **Where the type comes from is settled by cluster 14: the declared type is PERSISTED alongside each
+  stored aggregate**, which is a schema change and therefore **plan 14's hand-over at `MIGB-4`** — it is
+  **not** satisfied by `aggregated_data.ordinal`, which supplies position rather than type. **This plan's
+  half is unchanged and narrow: render an order it is given, and compute none.** The backend work is
+  plan 18's and it is the primary item: `extract_filter_values` sorts with
+  `key=lambda v: (isinstance(v, str), v)`, which puts all non-strings before all strings and — once
+  option values are derived from the canonical form — becomes text ordering, the exact defect the
+  constraint forbids. Three edge cases are pinned by the owning block's Researcher, not assumed: leading
+  zeros (`"007"` must not reorder as `7`), scientific notation (`"1e-07"`, which the shipped `D-05-E` rule
+  produces deliberately, must not reorder as a float), and the empty string's position. **`P11-sub` is
+  carried into any implementation of that ordering, and it is the trap: `"1"` and `"1.0"` remain distinct
+  categories, so a numeric sort must present them as two values and must never normalise one to the
+  other — the code that satisfies "sort numerically" is the same code that merges them.**
+
+**`P13` is recorded in plan 16, not here**, because `D-16-4` gave the four empty/absent states and the
+absent-graph card to phase 16 and `CHTB-5` owns them; the client half is the **dashboard-level** marker
+and it is stated there so the two plans build one thing rather than two.
+
+---
+
+### `DP-13-P` — the status renderer, and the `C05-11` dependency that had no owner here
+
+**Raised by this Planner on 2026-10-03. Chooser: Product Owner (already answered, in cluster 13).**
+
+**The defect this record fixes is a plan-level one, not a code one.** Plan 18 names **`C05-11`** as
+"the frontend's status renderer" and points at it for the user-visible half of `D-05-E`, `D-05-N`,
+`D-05-F` and `P4`/`P5` — **and plan 13 had no `C05-*` identifier, no block, and no record for it.** A
+cross-plan dependency that resolves to nothing is worse than one that is refused, because the reader who
+follows it concludes the work is owned. **Plan 13 takes no `C05-*` identifier** (its namespace rule
+excludes them), so the renderer is registered here instead, **and `C05-11` is cited from both sides.**
+
+**What the renderer is.** One place that turns a dashboard's processing state into what the user sees:
+`Processing…" → "Updated at &lt;time&gt;", plus the distinct amber "Completed with warnings" state, plus
+the persistent line that must survive the toast's lifetime. **Three rulings land on it** — `P1`, `P2`
+and `P4`'s history note — and **two of them are impossible without it.**
+
+**Where it belongs.** A named seam on `CT-12` (the unnamed controls and the focus that never moves) is
+the wrong home, because `CT-12` is about focus. **`CT-5` is the wrong home too**, because `CT-5` is the
+error-extraction chain and the status line is not an error. **Recommendation, stated as a
+recommendation because it is this Planner's to make and not the owner's: a new `CT-15`-adjacent block, or
+an explicit extension of `CT-12`'s scope, decided by the Coordinator when the phase is scheduled.**
+**What is not this Planner's decision is whether the renderer exists at all** — cluster 13's `P1` and `P2`
+require it, so **that question is closed: a persistent status line with an amber warnings state is
+mandatory.** Only its placement is open.
+
+**Blocking.** Nothing — the backend behaviour it renders has already landed (`d865f2c`, `ed644e7`,
+`b63589c`). **The renderer is buildable today against the shipped statuses.** **What it must not do** is
+compute an ordering (`P11-constraint`) or invent an unrecognised settings key — the key arrives as
+structured data (cluster 14) and the renderer draws a control from it.
+
+**`P5`'s affordance, added to this record rather than to a new one — cluster 14, 2026-10-03.** `P5`
+requires the run to offer a route to remove the offending setting, and cluster 14 rules the shape: **the
+backend supplies the fact, the client owns the affordance.** Concretely, this record now carries two
+obligations beyond the status line:
+
+1. **Render the control from structured data.** Plan 18's `PB-8` emits the offending key as a **named
+   field in the RFC 7807 body** — an `ErrorCode` plus the key. This renderer reads that field and draws
+   the control that navigates to the settings screen and names the key. **The message text is not
+   re-parsed and no link is extracted from prose.** That is the ruling's whole content: **the backend
+   supplies the fact, the client owns the affordance**, and neither is asked to do the other's job.
+2. **Keep the prose.** The message text naming the key stays exactly as it is, because it is what an
+   operator reads in a log aggregator and it is what the `1000`-character column was sized for. **The two
+   channels are additive.** A reader who "simplifies" by deleting the prose because the field exists has
+   removed the only copy a human will see in a log.
+
+**Why no second record.** The status line and this control are **the same component** rendering **the same
+failure response**; splitting them across two records would give one surface two owners and two
+definitions of done. **`DP-13-P` is extended, and that is the reason this record exists rather than a new
+one** — the dependency had no owner at all until cluster 13, and giving it a second record would have
+reproduced the defect at a smaller scale.
+
+**A link-shaped string in the message is the rejected option and must not reappear.** Not because it is
+untidy: because `processing_logs.message` is `String(1000)`, so a message long enough to be useful is
+long enough to be truncated, and a truncated link is worse than no link — the user is told to go and fix
+something and given a destination that no longer exists.
 
 ---
 
