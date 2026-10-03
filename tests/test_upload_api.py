@@ -1021,7 +1021,7 @@ class TestTempFileCleanup:
             csv_path.unlink(missing_ok=True)
 
     @pytest.mark.asyncio
-    async def test_cleanup_task_files_called_during_processing(
+    async def test_task_file_removed_from_upload_dir_after_successful_processing(
         self,
         authenticated_client: AsyncClient,
         async_db_session,
@@ -1029,10 +1029,13 @@ class TestTempFileCleanup:
         test_dashboard_for_cleanup: Dashboard,
         simple_csv_content: bytes,
     ) -> None:
-        """Verify cleanup_task_files actually deletes task files from upload directory.
+        """Verify the task file is removed from the upload temp dir after processing.
 
-        This test verifies that task files are removed from the upload temp directory
-        after processing completes, rather than just asserting the cleanup function was mocked.
+        Drives a successful background processing run and asserts the uploaded
+        file is gone from the upload temp directory afterwards. The removal is
+        performed by the worker's own inline unlink on the exact file path; this
+        test guards that success-path behaviour and does not reference any
+        cleanup helper by name.
         """
         from mkobi.config import get_config
         from mkobi.workers.data_worker import process_csv_background
