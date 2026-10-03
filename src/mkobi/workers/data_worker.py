@@ -1364,15 +1364,24 @@ async def start_stale_processing_cleanup_task(
 ) -> None:
     """Start background task for cleaning up stale processing logs.
 
-    This function runs indefinitely, periodically checking for and marking
-    stale PROCESSING entries as FAILED.
+    This function runs indefinitely on each tick, marking stale PROCESSING
+    entries as FAILED and reclaiming orphaned UPLOADED entries whose job never
+    materialised. Both sweeps run here, on the same tick, under one horizon and
+    one cancellation path; they are disjoint by status, so they never contend
+    for the same row.
+
+    The orphan reclamation used to run only once per process, from
+    ``app.py::lifespan`` at boot. Moving it onto this loop is what makes a
+    stranded ``uploaded`` row recover on a tick rather than wait for a restart.
 
     When a ``lease`` is supplied the loop is guarded so that, among several
     replicas, only the single lease holder sweeps. The guard fails **open**: an
     unreachable Redis still sweeps (Redis is a load-and-observability
     optimisation, never a correctness gate), while a reachable Redis holding
     another replica's lease is the only case that skips - it is proof a live
-    sweeper exists.
+    sweeper exists. Both sweeps inherit this guard, so under a lease exactly one
+    replica reclaims orphans; when Redis is unreachable every replica does, which
+    is the fail-open direction.
 
     Args:
         interval_seconds: Interval between cleanup runs in seconds.
@@ -1445,8 +1454,19 @@ async def start_stale_processing_cleanup_task(
                             status.lease_state = ReconcilerLeaseState.HOLDER
 
             count = await cleanup_stale_processing_logs(timeout_minutes=timeout_minutes)
+            # Reclaim orphaned UPLOADED rows on the same tick and under the same
+            # guard. This ran only at boot before; a row stranded by a process
+            # that died an hour after boot waited for the next restart. It shares
+            # the sweep's horizon so "too old" cannot diverge between the two
+            # disjoint-by-status sweeps. Run second: a row a consumer is still
+            # about to pick up stays UPLOADED, while a genuinely stuck consumer's
+            # row is now failed on a clock, which the system never did for this
+            # class before.
+            orphaned = await mark_orphaned_uploaded_logs_failed(
+                timeout_minutes=timeout_minutes
+            )
             if status is not None:
-                status.record_success(count)
+                status.record_success(count + orphaned)
         except Exception as e:
             logger.exception("Error during stale processing cleanup: %s", e)
         if lease is not None and holding:

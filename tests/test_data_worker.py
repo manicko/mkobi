@@ -121,6 +121,35 @@ class TestReconcilerLoop:
         ):
             yield calls
 
+    @pytest.fixture
+    def reconciler_recorder(self):
+        """Both reconciler sweeps patched together, with per-sweep call recorders.
+
+        ``PB-13`` moves the orphan reclamation onto the periodic loop, so the two
+        sweeps must be observed as a pair: an assertion that one ran is not an
+        assertion that the other did. Both are patched for the whole fixture
+        lifetime so the loop never opens a real database session.
+        """
+        sweeps: list[int] = []
+        orphans: list[int] = []
+
+        async def sweep(timeout_minutes=5, session=None):
+            sweeps.append(len(sweeps))
+            return 0
+
+        async def orphan_sweep(timeout_minutes=None, session=None):
+            orphans.append(len(orphans))
+            return 0
+
+        with patch(
+            "mkobi.workers.data_worker.cleanup_stale_processing_logs", new=sweep
+        ):
+            with patch(
+                "mkobi.workers.data_worker.mark_orphaned_uploaded_logs_failed",
+                new=orphan_sweep,
+            ):
+                yield sweeps, orphans
+
     async def _run_for(self, ticks: int) -> None:
         """Drive the zero-interval loop forward by yielding the event loop.
 
@@ -335,6 +364,85 @@ class TestReconcilerLoop:
             assert status.sweep_count >= 1
         finally:
             await self._stop(task)
+
+    async def test_orphan_sweep_runs_on_the_periodic_tick_not_only_at_boot(
+        self, status, reconciler_recorder
+    ):
+        """PB-13: the orphan reclamation runs on the loop, repeatedly.
+
+        The old pin asserted the marker ran once at boot. This replaces it: with
+        the marker patched at loop scope and nothing at boot, the loop must call
+        it on a tick - and more than once, which is what "not only at boot"
+        actually means.
+        """
+        sweeps, orphans = reconciler_recorder
+        lease = ReconcilerLease(FakeAsyncRedis())
+
+        task = asyncio.create_task(
+            start_stale_processing_cleanup_task(
+                interval_seconds=0, lease=lease, status=status
+            )
+        )
+        try:
+            assert await self._run_until(lambda: len(orphans) >= 2), (
+                "the orphan sweep must run on the periodic loop, not only at boot"
+            )
+            assert len(orphans) >= 2
+            # The two sweeps ride the same tick: both ran, the orphan sweep not
+            # fewer times than the PROCESSING sweep.
+            assert sweeps, "the PROCESSING sweep must still run on the loop"
+            assert len(orphans) >= len(sweeps)
+        finally:
+            await self._stop(task)
+
+    async def test_orphan_sweep_is_skipped_for_a_non_holder(self):
+        """PB-13 / D-05-I(a): a non-holder performs NEITHER sweep.
+
+        This is the half of the old behaviour that changes: when Redis is
+        reachable and another replica holds the lease, the orphan reclamation
+        must not run here. The boot path did not sweep either (the loop is the
+        only sweeper now), so a contender that loses the lease must leave both
+        recorders empty.
+        """
+        holder_client = FakeAsyncRedis()
+        assert (
+            await ReconcilerLease(holder_client).acquire()
+            == LeaseAcquisitionResult.ACQUIRED
+        )
+
+        sweeps: list[int] = []
+        orphans: list[int] = []
+
+        async def sweep(timeout_minutes=5, session=None):
+            sweeps.append(len(sweeps))
+            return 0
+
+        async def orphan_sweep(timeout_minutes=None, session=None):
+            orphans.append(len(orphans))
+            return 0
+
+        contender_status = ReconcilerStatus()
+        with patch(
+            "mkobi.workers.data_worker.cleanup_stale_processing_logs", new=sweep
+        ):
+            with patch(
+                "mkobi.workers.data_worker.mark_orphaned_uploaded_logs_failed",
+                new=orphan_sweep,
+            ):
+                task = asyncio.create_task(
+                    start_stale_processing_cleanup_task(
+                        interval_seconds=0,
+                        lease=ReconcilerLease(holder_client),
+                        status=contender_status,
+                    )
+                )
+                try:
+                    await self._run_for(60)
+                    assert sweeps == [], "a non-holder must not run the PROCESSING sweep"
+                    assert orphans == [], "a non-holder must not run the orphan sweep"
+                    assert contender_status.lease_state == ReconcilerLeaseState.NOT_HOLDER
+                finally:
+                    await self._stop(task)
 
 
 @pytest.mark.asyncio

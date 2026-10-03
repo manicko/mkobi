@@ -33,10 +33,7 @@ from mkobi.db.starter import (
     DatabaseNotFoundError,
     SchemaNotFoundError,
 )
-from mkobi.workers.data_worker import (
-    start_stale_processing_cleanup_task,
-    mark_orphaned_uploaded_logs_failed,
-)
+from mkobi.workers.data_worker import start_stale_processing_cleanup_task
 from mkobi.db.session import dispose_engine
 
 # Get configuration and setup logging
@@ -133,27 +130,26 @@ async def lifespan(app: FastAPI) -> Any:
             lease_client, ttl_seconds=min(DEFAULT_LEASE_TTL_SECONDS, config.stale_processing_cleanup_interval_seconds // 3)
         )
 
-        # Guard the boot-time orphan repair with the lease too: with several
-        # workers the repair must run once, not four times. The boot path never
-        # raises on lease trouble - an unreachable Redis still boots and still
-        # repairs (fail open), a reachable holder is the only case that skips.
+        # Elect the reconciler holder at boot. The boot path never raises on
+        # lease trouble - an unreachable Redis still boots (fail open). The
+        # orphan reclamation is NOT run here: it rides the lease-guarded periodic
+        # loop below, so a stranded row recovers on a tick rather than waiting
+        # for a restart. Acquiring here still seeds ``holding`` so the loop does
+        # not have to re-elect on its first tick.
         boot_outcome = await lease.acquire()
         if boot_outcome == LeaseAcquisitionResult.ACQUIRED:
             reconciler_status.lease_state = ReconcilerLeaseState.HOLDER
-            await mark_orphaned_uploaded_logs_failed()
-            logger.info("Checked for orphaned UPLOADED entries")
+            logger.info("This replica holds the reconciler lease")
         elif boot_outcome == LeaseAcquisitionResult.NOT_ACQUIRED:
             reconciler_status.lease_state = ReconcilerLeaseState.NOT_HOLDER
             logger.info(
-                "Another replica holds the reconciler lease; skipping startup orphan repair"
+                "Another replica holds the reconciler lease; this replica will not sweep"
             )
         else:
             reconciler_status.lease_state = ReconcilerLeaseState.UNPROTECTED
             logger.critical(
-                "Reconciler lease unreachable at startup; running orphan repair unprotected"
+                "Reconciler lease unreachable at startup; will sweep unprotected"
             )
-            await mark_orphaned_uploaded_logs_failed()
-            logger.info("Checked for orphaned UPLOADED entries")
 
         # Start background cleanup task for stale processing logs
         cleanup_task = asyncio.create_task(
