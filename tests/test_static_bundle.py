@@ -24,6 +24,12 @@ from mkobi.app import create_app, resolve_frontend_bundle
 
 from mkobi.config import clear_config_cache
 
+# The pre-FAB-7 health predicate checked the CWD-relative literal string
+# ``frontend/dist``. Pinning the configured directory here (and asserting below
+# that it genuinely exists) means the literal cannot coincide with it, so a
+# "present but wrong" bundle cannot pass for the wrong reason.
+_CWD_RELATIVE_BUNDLE_LITERAL = Path("frontend/dist")
+
 
 def _set_test_credentials() -> None:
     """Populate the environment so create_app() has a usable configuration."""
@@ -174,17 +180,43 @@ class TestPresenceStatesServed:
 class TestStaticFilesHealthComponent:
     """The health component reports the one predicate and the resolved path."""
 
-    async def test_absent_reports_unavailable(self, client_for_state) -> None:
-        """No bundle: health reports unavailable from the shared predicate."""
-        _application, client = await client_for_state("absent")
-        data = (await client.get("/health/detailed")).json()
-        assert data["components"]["static_files"]["status"] == "unavailable"
+    async def test_absent_reports_unavailable(
+        self, client_for_state, bundle_root
+    ) -> None:
+        """No bundle: health reports unavailable from the shared predicate.
 
-    async def test_present_but_wrong_reports_unavailable(self, client_for_state) -> None:
-        """A dist without index.html reports unavailable, matching the mount."""
-        _application, client = await client_for_state("present_but_wrong")
+        The configured directory is pinned to a tmp path and is asserted absent,
+        so the pre-fix CWD-relative literal cannot supply the verdict instead.
+        """
+        configured = bundle_root("absent")
+        assert not configured.exists()
+        assert not _CWD_RELATIVE_BUNDLE_LITERAL.exists()
+        _app, client = await client_for_state("absent")
         data = (await client.get("/health/detailed")).json()
         assert data["components"]["static_files"]["status"] == "unavailable"
+        assert data["components"]["static_files"]["path"] == str(configured.resolve())
+
+    async def test_present_but_wrong_reports_unavailable(
+        self, client_for_state, bundle_root
+    ) -> None:
+        """A dist without index.html reports unavailable, matching the mount.
+
+        The configured directory is pinned to a tmp path and asserted to
+        genuinely exist on disk **without** ``index.html``. The verdict is
+        therefore unavailable because the predicate requires ``index.html``, not
+        because nothing is there -- which is the ART-007 defect.
+        """
+        configured = bundle_root("present_but_wrong")
+        assert configured.is_dir()
+        assert not (configured / "index.html").exists()
+        # The pre-fix CWD-relative literal must not coincide with the pinned
+        # directory, or "present but wrong" could still pass for the wrong
+        # reason (the old predicate would find this literal and say available).
+        assert _CWD_RELATIVE_BUNDLE_LITERAL.resolve() != configured.resolve()
+        _app, client = await client_for_state("present_but_wrong")
+        data = (await client.get("/health/detailed")).json()
+        assert data["components"]["static_files"]["status"] == "unavailable"
+        assert data["components"]["static_files"]["path"] == str(configured.resolve())
 
     async def test_correct_reports_available(self, client_for_state) -> None:
         """A dist with index.html reports available."""

@@ -895,9 +895,10 @@ async def _process_csv_file_async(
                 session=db_session,
             )
             result = await _run_with_transaction(db_session)
-            # Deletion site 1 of 3 (success). Terminal state reached: remove the
-            # scratch artefact. Runs after the caller's transaction work, so a
-            # rollback cannot reach it; the ``except BaseException`` handler below
+            # Deletion site 1 of 4 (success, test path). Terminal state reached:
+            # remove the scratch artefact. Runs after the caller's transaction
+            # work, so a rollback cannot reach it; the ``except BaseException``
+            # handler below
             # reclaims the file on any failure instead (D-06-A = (b)).
             if file_path.exists():
                 await asyncio.to_thread(file_path.unlink)
@@ -914,7 +915,7 @@ async def _process_csv_file_async(
             error_code = _map_processing_error_to_code(e)
             logger.exception("Processing failed: task_id=%s, error=%s, code=%s", task_id, error_msg, error_code)
 
-            # Deletion site 2 of 3 (failure/rollback, test path). The run did not
+            # Deletion site 2 of 4 (failure/rollback, test path). The run did not
             # produce durable aggregates, so the scratch artefact is removed.
             # Retained deliberately: the success-path unlink sits after the
             # transaction commit, so a commit failure -- which never reaches the
@@ -984,7 +985,7 @@ async def _process_csv_file_async(
                     # COMPLETED commits with the aggregate write, so a dashboard
                     # never reports completed with aggregates that did not commit.
                     result = await _run_with_transaction(session)
-            # Deletion site 1 of 3 (success, production path). Reached only after
+            # Deletion site 3 of 4 (success, production path). Reached only after
             # the main transaction committed: terminal COMPLETED. Because the
             # success path no longer unlinks inside the transaction body, the file
             # is still present here; unlink it now, so a process killed before the
@@ -1006,7 +1007,7 @@ async def _process_csv_file_async(
             error_code = _map_processing_error_to_code(e)
             logger.exception("Processing failed: task_id=%s, error=%s, code=%s", task_id, error_msg, error_code)
 
-            # Deletion site 2 of 3 (failure/rollback, production path). The run
+            # Deletion site 4 of 4 (failure/rollback, production path). The run
             # produced no durable aggregates, so the scratch artefact is removed.
             # Retained deliberately: the success-path unlink is now after the
             # commit, so a commit failure reaches only this branch; removing this

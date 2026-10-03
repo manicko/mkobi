@@ -150,7 +150,7 @@ It is **observability only**. It is not a readiness or correctness signal, and i
 | `status` | `not_started` before the lifespan has published any state; otherwise `starting` until the first sweep completes, then `ok` |
 | `lease_state` | `unknown`, `holder`, `not_holder` or `unprotected` |
 | `last_success_at` | ISO-8601 UTC timestamp of the last **completed** sweep, or `null`. It advances even on a tick that marked zero rows, so a frozen value means the loop has died rather than that it had nothing to do |
-| `last_swept_count` | Rows the last completed tick moved to a terminal state (may be `0`) |
+| `last_swept_count` | Work items the last completed tick disposed of (may be `0`): processing rows moved to a terminal state **plus** stale temp files removed on the same tick. It is **not** a count of failed rows alone -- a value of `137` may mean 0 rows and 137 files |
 | `sweep_count` | Completed ticks since the process started |
 | `unprotected_ticks` | Completed ticks that ran without holding the lease because Redis was unreachable |
 

@@ -185,18 +185,31 @@ class TestConcurrentSweepCountContract:
     def test_concurrent_sweepers_delete_each_file_once_and_do_not_log_errors(
         self, setup_temp_dir_fixture
     ):
-        """N sweepers over M old files: each deleted once, no ERROR, counts sum.
+        """N sweepers over M old files: a genuinely lost race, no ERROR, sum M.
 
-        The last assertion is what turns ``deleted`` from a log line into a
-        contract: the sum over all concurrent sweepers of ``deleted`` equals
-        ``M``, and ``deleted + already_gone`` also sums to ``M`` -- so every
-        candidate is accounted for exactly once across the fleet.
+        Running the sweepers in a plain list comprehension does **not** create a
+        race: each sweeper re-globs, so sweeper 1 deletes every file and sweepers
+        2-5 find an empty directory -- ``already_gone`` is always ``0`` and the
+        ``FileNotFoundError`` branch is never entered. To exercise the lost race
+        the very first sweeper's ``Path.unlink`` is patched to raise
+        ``FileNotFoundError`` for one designated target: the file is left on
+        disk, the loser records it in ``already_gone``, and the following
+        (unpatched) sweepers remove it. ``already_gone`` is therefore asserted
+        **non-zero**, ``sum(deleted) == M`` holds (the file is still removed
+        exactly once, by a later sweeper), and every file is physically removed
+        exactly once with no file deleted by two sweepers.
+
+        Note the file the loser could not remove is reported by the loser in
+        ``already_gone`` *and* later removed by another sweeper, so across the
+        fleet ``deleted + already_gone`` is ``M + 1`` here -- a lost race is a
+        duplicate *report*, never a duplicate *removal*.
         """
         import logging
 
         temp_dir = Path(setup_temp_dir_fixture)
         m_files = 20
         paths = [self._make_old_csv(temp_dir, i) for i in range(m_files)]
+        lost_race_target = paths[0]
 
         records: list[logging.LogRecord] = []
 
@@ -211,28 +224,52 @@ class TestConcurrentSweepCountContract:
         cleanup_logger.addHandler(collector)
         cleanup_logger.setLevel(logging.DEBUG)
         cleanup_logger.disabled = False
+
+        real_unlink = Path.unlink
+        # The first sweeper is designated the loser for exactly one file. Its
+        # unlink raises FileNotFoundError *before* the real unlink, so the file
+        # remains on disk for the sweepers that follow.
+        raised_missing = {"done": False}
+
+        def _raise_missing_for_one(self, *args, **kwargs):
+            if self == lost_race_target and not raised_missing["done"]:
+                raised_missing["done"] = True
+                raise FileNotFoundError(2, "No such file or directory", str(self))
+            return real_unlink(self, *args, **kwargs)
+
         try:
-            # Simulate N concurrent sweepers by interleaving the same glob list:
-            # each sweeper independently lists the directory, so the losers reach
-            # files the winner already removed.
-            results = [cleanup_stale_temp_files(max_age_hours=0) for _ in range(5)]
+            # Sweeper 1 loses the race for one target; sweepers 2-5 then remove
+            # every file still on disk, including the target sweeper 1 skipped.
+            with patch.object(Path, "unlink", _raise_missing_for_one):
+                results = [cleanup_stale_temp_files(max_age_hours=0) for _ in range(5)]
         finally:
             cleanup_logger.removeHandler(collector)
             cleanup_logger.setLevel(original_level)
             cleanup_logger.disabled = was_disabled
 
-        # (i) Every file is deleted exactly once: physically gone...
+        # (i) Every candidate was physically removed exactly once: nothing is
+        # left on disk, and `sum(deleted)` is still M because the later sweepers
+        # (not the loser) removed the target -- the lost race changed the report,
+        # never the removal.
+        assert raised_missing["done"] is True
         assert all(not path.exists() for path in paths)
+        assert sum(r.deleted for r in results) == m_files
 
-        # (ii) No ERROR-level record is produced for a file another sweeper won.
+        # (ii) The lost race was genuinely exercised: exactly one sweeper reports
+        # the designated target as already gone, and it is the first sweeper.
+        assert results[0].already_gone == 1
+        assert sum(r.already_gone for r in results) == 1
+
+        # (iii) No ERROR-level record is produced for the lost race.
         error_records = [r for r in records if r.levelno >= logging.ERROR]
         assert error_records == [], [r.getMessage() for r in error_records]
 
-        # (iii) The sweepers' deleted counts sum to M; deleted + already_gone
-        # also sum to M, so no candidate is counted twice or lost.
+        # (iv) No file was removed by two sweepers: M files, M wins total, so the
+        # only duplicate is the loser's `already_gone` report of the file a later
+        # sweeper then won.
         assert sum(r.deleted for r in results) == m_files
-        assert sum(r.deleted + r.already_gone for r in results) == m_files
         assert sum(r.failed for r in results) == 0
+        assert sum(r.deleted + r.already_gone for r in results) == m_files + 1
 
     def test_deleted_is_the_count_contract_not_an_error_line(
         self, setup_temp_dir_fixture

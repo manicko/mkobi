@@ -67,13 +67,12 @@ async def load_csv(filepath: Path, config: dict[str, Any] | None = None) -> pl.D
 
 
 def detect_file_type(filename: str) -> FileExtensionEnum:
-    """Filename-only extension utility; not used to name the stored artefact.
-
-    The stored artefact's extension is content-derived (D-06-P = (a)), so this
-    helper no longer decides the stored name. It is retained as a tested public
-    utility over filename semantics.
-    """
     """Detect file type from filename extension.
+
+    Filename-only extension utility; it is **not** used to name the stored
+    artefact. The stored artefact's extension is content-derived (D-06-P = (a)),
+    so this helper no longer decides the stored name. It is retained as a tested
+    public utility over filename semantics.
 
     Args:
         filename: Name of the file.

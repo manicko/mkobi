@@ -79,14 +79,20 @@ class ReconcilerStatus:
     unprotected_ticks: int = 0
     _last_warning_at: datetime | None = field(default=None, repr=False)
 
-    def record_success(self, marked_count: int) -> None:
+    def record_success(self, swept_count: int) -> None:
         """Record a completed sweep tick.
 
         Args:
-            marked_count: Rows the sweep moved to a terminal state, possibly 0.
+            swept_count: Work items the tick disposed of, possibly 0. This is
+                the **sum** of two distinct kinds of item: processing rows the
+                sweep moved to a terminal state (``FAILED``), plus stale temp
+                files removed on the same tick. It is published verbatim as the
+                client-visible ``last_swept_count`` on ``/health/detailed``, so
+                the published integer does **not** mean "rows failed": a tick
+                reporting ``137`` may have failed 0 rows and removed 137 files.
         """
         self.last_success_at = datetime.now(UTC)
-        self.last_swept_count = marked_count
+        self.last_swept_count = swept_count
         self.sweep_count += 1
         if self.lease_state == ReconcilerLeaseState.UNPROTECTED:
             self.unprotected_ticks += 1
