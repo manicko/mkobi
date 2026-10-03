@@ -12,6 +12,8 @@ from mkobi.models.enums import (
     ProcessingStatus as ProcessingStatusEnum,
     UploadMode,
 )
+from mkobi.models.enums import ErrorCode
+from mkobi.utils.exceptions import AppException
 from mkobi.services.data_service import DataService
 from mkobi.services.graph_service import GraphService
 from mkobi.db.repositories.processing_log_repo import ProcessingLogRepository
@@ -225,6 +227,74 @@ class TestDataServiceIntegration:
             assert log.status == ProcessingStatusEnum.UPLOADED
         finally:
             tmp_path.unlink(missing_ok=True)
+
+    async def test_stored_name_derives_from_bytes_not_filename(
+        self, data_service, async_db_session, test_dashboard, valid_csv_content
+    ):
+        """The producer names the artefact after its bytes (D-06-P = (a)).
+
+        Both directions: a real gzip submitted as ``.csv`` is stored as
+        ``.csv.gz``, and plain CSV bytes submitted as ``.csv.gz`` are stored as
+        ``.csv``. The stored extension comes from the detector's verdict, never
+        from the client-supplied filename.
+        """
+        from mkobi.config import get_config
+
+        upload_dir = Path(get_config().upload_temp_dir)
+
+        # Direction 1: genuine gzip bytes, misleading .csv filename.
+        gz_bytes = gzip.compress(valid_csv_content)
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+            tmp.write(gz_bytes)
+            gz_path = Path(tmp.name)
+
+        # Direction 2: plain CSV bytes, misleading .csv.gz filename.
+        with tempfile.NamedTemporaryFile(suffix=".csv.gz", delete=False) as tmp:
+            tmp.write(valid_csv_content)
+            csv_path = Path(tmp.name)
+
+        stored_paths: list[Path] = []
+        try:
+            with patch("mkobi.services.data_service.check_dashboard_access", return_value=True):
+                with patch(
+                    "mkobi.services.file_processing.enqueue_job",
+                    return_value="rq-job-name",
+                ):
+                    gz_result = await data_service.process_upload(
+                        file_path=gz_path,
+                        dashboard_id=test_dashboard.id,
+                        user_id=uuid4(),
+                        filename="misleading.csv",
+                        content_type="text/csv",
+                        db=async_db_session,
+                    )
+                    csv_result = await data_service.process_upload(
+                        file_path=csv_path,
+                        dashboard_id=test_dashboard.id,
+                        user_id=uuid4(),
+                        filename="misleading.csv.gz",
+                        content_type="application/gzip",
+                        db=async_db_session,
+                    )
+
+            stored_paths = [
+                upload_dir / f"{gz_result.task_id}.csv.gz",
+                upload_dir / f"{csv_result.task_id}.csv",
+            ]
+            assert stored_paths[0].exists(), (
+                "gzip bytes submitted as .csv must be stored as .csv.gz"
+            )
+            assert stored_paths[1].exists(), (
+                "plain CSV bytes submitted as .csv.gz must be stored as .csv"
+            )
+            # And the misleading names must NOT exist in either direction.
+            assert not (upload_dir / f"{gz_result.task_id}.csv").exists()
+            assert not (upload_dir / f"{csv_result.task_id}.csv.gz").exists()
+        finally:
+            gz_path.unlink(missing_ok=True)
+            csv_path.unlink(missing_ok=True)
+            for stored in stored_paths:
+                stored.unlink(missing_ok=True)
 
     # --- get_aggregated_data tests ---
 
@@ -582,20 +652,21 @@ class TestFileValidation:
 
         # Create a file with .txt extension and plain text content (no CSV structure)
         # libmagic detects this as text/plain (not in allowed types), so MIME-first
-        # validation raises before the extension check. Without libmagic, fallback returns
-        # application/octet-stream which is also not allowed.
+        # validation raises before the extension check. The escape is the module's
+        # declared error type: AppException(INVALID_FILE_TYPE), not a bare ValueError.
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
             tmp.write(b"plain text data without csv structure")
             tmp_path = Path(tmp.name)
 
         try:
-            with pytest.raises(ValueError, match="Detected MIME type.*not allowed"):
+            with pytest.raises(AppException) as exc_info:
                 validate_file(
                     file_path=tmp_path,
                     filename="test.txt",
                     content_type="text/csv",
                     max_file_size=data_service._max_file_size,
                 )
+            assert exc_info.value.code == ErrorCode.INVALID_FILE_TYPE
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -603,7 +674,8 @@ class TestFileValidation:
         """Test validation rejects disallowed MIME type detected from content.
 
         MIME type is now detected from file content using python-magic,
-        not from the client-provided Content-Type header.
+        not from the client-provided Content-Type header. The rejection is the
+        project's declared ``AppException(ErrorCode.INVALID_FILE_TYPE)``.
         """
         from mkobi.services.file_processing import validate_file
 
@@ -614,13 +686,14 @@ class TestFileValidation:
             tmp_path = Path(tmp.name)
 
         try:
-            with pytest.raises(ValueError, match="Detected MIME type"):
+            with pytest.raises(AppException) as exc_info:
                 validate_file(
                     file_path=tmp_path,
                     filename="test.csv",
                     content_type="text/csv",  # This header is now ignored
                     max_file_size=data_service._max_file_size,
                 )
+            assert exc_info.value.code == ErrorCode.INVALID_FILE_TYPE
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -629,7 +702,8 @@ class TestFileValidation:
 
         Security test: An attacker uploads an executable with CSV extension
         and text/csv Content-Type header. The actual content detection should
-        reject the malicious file.
+        reject the malicious file. The escape is the declared
+        ``AppException(ErrorCode.INVALID_FILE_TYPE)``.
         """
         from mkobi.services.file_processing import validate_file
 
@@ -641,18 +715,31 @@ class TestFileValidation:
 
         try:
             # Even with spoofed CSV Content-Type header, actual MIME detection should reject
-            with pytest.raises(ValueError, match="Detected MIME type"):
+            with pytest.raises(AppException) as exc_info:
                 validate_file(
                     file_path=tmp_path,
                     filename="malicious.csv",
                     content_type="text/csv",  # Spoofed header
                     max_file_size=data_service._max_file_size,
                 )
+            assert exc_info.value.code == ErrorCode.INVALID_FILE_TYPE
         finally:
             tmp_path.unlink(missing_ok=True)
 
     async def test_validate_file_spoofed_gzip_rejected(self, data_service):
-        """Test that spoofed gzip header is rejected when content is not actually gzip."""
+        """Test that spoofed gzip header is rejected when content is not actually gzip.
+
+        PREMISE (stated, not implied): this test passes only because its sample
+        body detects as ``text/plain`` under the container's libmagic, which is
+        not in the allowed set. libmagic is a hard startup dependency
+        (main.check_dependencies) with no heuristic fallback since FAB-8, so the
+        verdict is the test image's and not the host's -- but that is the reason
+        it passes, not the ``.csv.gz`` name it is stored under. Before
+        D-06-P = (a) the admission rule never compared the verdict to the name;
+        now the name itself is derived from the verdict, so the mislabelling is
+        caught at the naming rule as well. The rejection escape is the declared
+        ``AppException(ErrorCode.INVALID_FILE_TYPE)``.
+        """
         from mkobi.services.file_processing import validate_file
 
         # Create a file with fake gzip header but not actual gzip content
@@ -665,13 +752,14 @@ class TestFileValidation:
 
         try:
             # This should fail because content is not actual gzip
-            with pytest.raises(ValueError, match="Detected MIME type"):
+            with pytest.raises(AppException) as exc_info:
                 validate_file(
                     file_path=tmp_path,
                     filename="fake.csv.gz",
                     content_type="application/gzip",  # Spoofed header
                     max_file_size=data_service._max_file_size,
                 )
+            assert exc_info.value.code == ErrorCode.INVALID_FILE_TYPE
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -716,14 +804,15 @@ class TestFileValidation:
             f"Expected 'text/plain', got '{detected_txt}'"
         )
 
-        # Plain text should be rejected with MIME error
-        with pytest.raises(ValueError, match="Detected MIME type.*not allowed"):
+        # Plain text should be rejected with the declared typed error
+        with pytest.raises(AppException) as exc_info:
             validate_file(
                 file_path=txt_file,
                 filename="test_mime.txt",
                 content_type="text/plain",
                 max_file_size=data_service._max_file_size,
             )
+        assert exc_info.value.code == ErrorCode.INVALID_FILE_TYPE
 
         # Test 3: Gzip file should be detected as application/gzip
         gz_file = tmp_path / "test_mime.csv.gz"

@@ -322,34 +322,47 @@ class TestMimeTypeDetectionFunction:
 
 
 class TestValidateMimeType:
-    """Unit tests for validate_mime_type function."""
+    """Unit tests for validate_mime_type function.
+
+    ``validate_mime_type`` returns the detector's admitted verdict (D-06-P = (a)):
+    the caller derives the stored extension from it. A disallowed verdict escapes
+    as ``AppException(ErrorCode.INVALID_FILE_TYPE)``, the project's own error type.
+    """
 
     def test_validate_csv_mime_passes(self, tmp_path: Path, valid_csv_content: bytes) -> None:
-        """validate_mime_type should pass for valid CSV MIME type."""
+        """validate_mime_type should pass and return the detected CSV MIME type."""
+        from mkobi.models.enums import MimeTypeEnum
         from mkobi.services.file_processing import validate_mime_type
 
         csv_file = tmp_path / "test.csv"
         csv_file.write_bytes(valid_csv_content)
 
-        # Should not raise
-        validate_mime_type(csv_file)
+        # Should not raise; the return is the verdict the naming rule consumes.
+        detected = validate_mime_type(csv_file)
+        assert detected == MimeTypeEnum.TEXT_CSV
 
     def test_validate_gzip_mime_passes(self, tmp_path: Path) -> None:
-        """validate_mime_type should pass for valid gzip MIME type."""
+        """validate_mime_type should pass and return a gzip MIME type."""
+        from mkobi.models.enums import MimeTypeEnum
         from mkobi.services.file_processing import validate_mime_type
 
         gz_file = tmp_path / "test.csv.gz"
         gz_file.write_bytes(b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff")
 
-        # Should not raise
-        validate_mime_type(gz_file)
+        # Should not raise; both gzip members map to .csv.gz.
+        detected = validate_mime_type(gz_file)
+        assert detected in (MimeTypeEnum.APPLICATION_GZIP, MimeTypeEnum.APPLICATION_X_GZIP)
 
     def test_validate_invalid_mime_raises(self, tmp_path: Path) -> None:
-        """validate_mime_type should raise ValueError for invalid MIME type."""
+        """validate_mime_type should raise AppException(INVALID_FILE_TYPE)."""
+        from mkobi.models.enums import ErrorCode
         from mkobi.services.file_processing import validate_mime_type
+        from mkobi.utils.exceptions import AppException
 
         elf_file = tmp_path / "malicious.csv"
         elf_file.write_bytes(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00")
 
-        with pytest.raises(ValueError, match="Detected MIME type"):
+        with pytest.raises(AppException) as exc_info:
             validate_mime_type(elf_file)
+        assert exc_info.value.code == ErrorCode.INVALID_FILE_TYPE
+        assert "Detected MIME type" in exc_info.value.detail

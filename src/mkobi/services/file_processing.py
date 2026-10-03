@@ -14,13 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mkobi.config import get_config
 from mkobi.core.logging_config import get_logger
 from mkobi.core.task_queue import enqueue_job
-from mkobi.data.loaders.loader import detect_file_type
 from mkobi.models.enums import (
-    FileExtensionEnum,
+    ErrorCode,
     MimeTypeEnum,
     ProcessingStatus,
     UploadMode,
 )
+from mkobi.utils.exceptions import AppException
 
 logger = get_logger(__name__)
 
@@ -45,17 +45,26 @@ def detect_mime_type_from_content(file_path: Path) -> str:
     return detected_mime or "application/octet-stream"
 
 
-def validate_mime_type(file_path: Path) -> None:
+def validate_mime_type(file_path: Path) -> MimeTypeEnum:
     """Validate MIME-type of uploaded file by detecting from content.
 
     Uses python-magic to detect the actual MIME type from file bytes,
     preventing MIME type spoofing attacks.
 
+    Returns the detector's verdict rather than ``None`` so the caller can
+    derive the stored artefact's extension from it: under D-06-P = (a) the
+    stored name is derived from the bytes at admission, never from the
+    client-supplied filename.
+
     Args:
         file_path: Path to the uploaded file to validate.
 
+    Returns:
+        MimeTypeEnum: The detected and admitted MIME type.
+
     Raises:
-        ValueError: If detected MIME type is not in the allowed list.
+        AppException: With ``ErrorCode.INVALID_FILE_TYPE`` if the detected
+            MIME type is not in the allowed list.
     """
     detected_mime = detect_mime_type_from_content(file_path)
 
@@ -66,7 +75,11 @@ def validate_mime_type(file_path: Path) -> None:
             detected_mime,
             allowed_mime_types,
         )
-        raise ValueError(f"Detected MIME type {detected_mime} not allowed")
+        raise AppException(
+            code=ErrorCode.INVALID_FILE_TYPE,
+            detail=f"Detected MIME type {detected_mime} not allowed",
+        )
+    return MimeTypeEnum(detected_mime)
 
 
 def validate_file(
@@ -74,7 +87,7 @@ def validate_file(
     filename: str | None,
     content_type: str | None,
     max_file_size: int,
-) -> int:
+) -> tuple[int, MimeTypeEnum]:
     """Validate uploaded file.
 
     Checks file content, MIME type, format, and size limits.
@@ -87,10 +100,13 @@ def validate_file(
         max_file_size: Maximum allowed file size in bytes.
 
     Returns:
-        int: The file size in bytes.
+        tuple[int, MimeTypeEnum]: The file size in bytes and the detected,
+            admitted MIME type. The caller derives the stored extension from
+            the MIME type, not from ``filename``.
 
     Raises:
-        ValueError: If any validation check fails.
+        AppException: If the detected MIME type is not allowed.
+        ValueError: If any other validation check fails.
     """
     # 1. Check file exists and get size
     if not file_path.exists():
@@ -103,7 +119,7 @@ def validate_file(
         raise ValueError("File content is empty")
 
     # 2. Check MIME-type from file content (prevents spoofing)
-    validate_mime_type(file_path)
+    detected_mime = validate_mime_type(file_path)
 
     # 3. Check file format
     config = get_config()
@@ -135,7 +151,7 @@ def validate_file(
         )
 
     logger.info("File validated successfully: %s (%d bytes)", filename, file_size)
-    return file_size
+    return file_size, detected_mime
 
 
 async def process_upload_with_session(
@@ -169,22 +185,25 @@ async def process_upload_with_session(
         UUID: The processing log ID (task ID).
 
     Raises:
+        AppException: If the detected MIME type is not allowed.
         ValueError: If file validation fails.
         OSError: If file cannot be moved to final location.
     """
-    # Validate file at temp path
-    file_size = validate_file(file_path, filename, content_type, max_file_size)
+    # Validate file at temp path. The detector's verdict is returned so the
+    # stored extension below is derived from the bytes, not the caller's name.
+    file_size, detected_mime = validate_file(
+        file_path, filename, content_type, max_file_size
+    )
 
     config = get_config()
     upload_dir = Path(config.upload_temp_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    # Detect file type using enum-based function
-    file_ext = (
-        ".csv.gz"
-        if filename and detect_file_type(filename) == FileExtensionEnum.CSV_GZ
-        else ".csv"
-    )
+    # NAMING INVARIANT: the stored artefact is named after its bytes. The
+    # extension below comes from the detected MIME type, so a stored name can
+    # never claim a compression the bytes do not have. The client-supplied
+    # filename no longer determines the stored extension.
+    file_ext = f".{detected_mime.extension.value}"
 
     # Create processing log entry with STARTED status first
     log = await log_repo.create_log(

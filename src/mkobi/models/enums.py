@@ -118,7 +118,13 @@ class EnvironmentEnum(StrEnum):
 
 
 class MimeTypeEnum(StrEnum):
-    """Allowed MIME types for uploaded files."""
+    """Allowed MIME types for uploaded files.
+
+    Carries the single admissible MIME-to-extension mapping. This is the one
+    place a detected MIME type becomes the extension of a stored artefact, so
+    the mapping lives on the enum (project rule: all fixed values are enums,
+    not module-level dicts) and ``FileExtensionEnum`` stays consistent with it.
+    """
 
     TEXT_CSV = "text/csv"
     APPLICATION_GZIP = "application/gzip"
@@ -128,6 +134,19 @@ class MimeTypeEnum(StrEnum):
     def allowed_values(cls) -> list[str]:
         """Returns list of allowed MIME types."""
         return [member.value for member in cls]
+
+    @property
+    def extension(self) -> "FileExtensionEnum":
+        """Return the stored-file extension a detected MIME type maps to.
+
+        Both gzip verdicts map to ``.csv.gz``; ``text/csv`` maps to ``.csv``.
+        The stored extension is derived from the detector's verdict at
+        admission, so a stored name can never claim a compression the bytes do
+        not have.
+        """
+        if self in (MimeTypeEnum.APPLICATION_GZIP, MimeTypeEnum.APPLICATION_X_GZIP):
+            return FileExtensionEnum.CSV_GZ
+        return FileExtensionEnum.CSV
 
 
 class FileExtensionEnum(StrEnum):

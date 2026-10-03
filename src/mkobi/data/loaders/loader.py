@@ -7,10 +7,12 @@ including support for compressed .csv.gz files.
 import asyncio
 import gzip
 import logging
+import zlib
 from pathlib import Path
 from typing import Any
 
 import polars as pl
+from polars.exceptions import PanicException as _PolarsPanicException
 
 from mkobi.config import get_config
 from mkobi.models.data import LoaderConfig
@@ -23,6 +25,24 @@ logger = logging.getLogger(__name__)
 # read through gzip.open in chunks of this size, so peak memory is one chunk
 # rather than the whole decompressed stream.
 _SIZE_PROBE_CHUNK_BYTES = 1 << 20
+
+# Polars is a Rust extension (pyo3) and raises ``polars.exceptions.PanicException``
+# (runtime class ``pyo3_runtime.PanicException``) from inside a read. Its MRO is
+# ``PanicException -> BaseException -> object``, so ``isinstance(e, Exception)``
+# is False and no ``except Exception`` can see it. The reader boundary below
+# converts exactly this class into the module's own ``AppException``; the handler
+# must stay narrow enough not to swallow a genuine I/O fault.
+#
+# A mislabelled artefact (non-gzip bytes under a ``.csv.gz`` name) is now caught
+# earlier, by ``_validate_file_size`` reading the gzip stream in pure Python
+# (PB-12): that raises one of the ordinary ``_MALFORMED_ARCHIVE_ERRORS`` below
+# before any Polars read runs. The boundary converts those too, so the
+# mislabelled case escapes as a typed error rather than an untyped ``OSError``.
+_MALFORMED_ARCHIVE_ERRORS: tuple[type[Exception], ...] = (
+    gzip.BadGzipFile,
+    EOFError,
+    zlib.error,
+)
 
 
 async def load_csv(filepath: Path, config: dict[str, Any] | None = None) -> pl.DataFrame:
@@ -47,6 +67,12 @@ async def load_csv(filepath: Path, config: dict[str, Any] | None = None) -> pl.D
 
 
 def detect_file_type(filename: str) -> FileExtensionEnum:
+    """Filename-only extension utility; not used to name the stored artefact.
+
+    The stored artefact's extension is content-derived (D-06-P = (a)), so this
+    helper no longer decides the stored name. It is retained as a tested public
+    utility over filename semantics.
+    """
     """Detect file type from filename extension.
 
     Args:
@@ -122,7 +148,8 @@ class CSVLoader:
 
         Raises:
             FileNotFoundError: If file does not exist.
-            AppException: If the file (decompressed, for .csv.gz) is too large.
+            AppException: If the file (decompressed, for .csv.gz) is too large,
+                or if a mislabelled file makes the reader panic.
             ValueError: If the file cannot be read.
         """
         logger.info("Loading CSV file: %s", file_path)
@@ -131,18 +158,20 @@ class CSVLoader:
             logger.error("File not found: %s", file_path)
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        # Validate file size
-        self._validate_file_size(file_path)
-
         # Determine threshold for lazy loading
         if lazy_threshold_mb is None:
             app_config = get_config()
             lazy_threshold_mb = app_config.lazy_threshold_mb
 
-        file_size_mb = self._get_file_size_mb(file_path)
-
-        # Read file
+        # Read file. The size validation is inside the boundary: for a
+        # ``.csv.gz`` it reads the gzip stream in pure Python and a mislabelled
+        # artefact fails there, so the conversion below must cover it.
         try:
+            # Validate file size
+            self._validate_file_size(file_path)
+
+            file_size_mb = self._get_file_size_mb(file_path)
+
             if file_size_mb > lazy_threshold_mb:
                 logger.info(
                     "Building frame via the lazy query engine for file %.2f MB (threshold: %.2f MB)",
@@ -174,6 +203,38 @@ class CSVLoader:
 
             return df
 
+        except (AppException, FileNotFoundError):
+            # The byte ceiling (FILE_TOO_LARGE) and the existence contract keep
+            # their own meaning; the boundary must not relabel them "bad file".
+            raise
+        except _PolarsPanicException as e:
+            # A mislabelled file (non-gzip bytes under a .gz name) makes the
+            # gzip reader in _read_csv raise a pyo3 panic. It is not an
+            # ``Exception``, so it would otherwise escape every handler in the
+            # loader and the worker. Convert it to the module's own declared
+            # error type. The handler is narrow: only this class is caught.
+            logger.error(
+                "Reader panicked on %s, treating as an invalid file: %s", file_path, e
+            )
+            raise AppException(
+                code=ErrorCode.INVALID_FILE_TYPE,
+                detail=f"Failed to load file {file_path}: {e}",
+            ) from e
+        except _MALFORMED_ARCHIVE_ERRORS as e:
+            # The mislabelled artefact path: the gzip stream probe in
+            # ``_validate_file_size`` raises one of these ordinary exceptions
+            # (non-gzip bytes, a truncated archive, a corrupt deflate stream)
+            # before any reader runs. It is a bad file, not an I/O fault, so it
+            # is converted to the declared error type. Other OSErrors (a
+            # permission fault, a genuine read failure) fall through to the
+            # generic branch and are not relabelled "bad file".
+            logger.error(
+                "Malformed archive at %s, treating as an invalid file: %s", file_path, e
+            )
+            raise AppException(
+                code=ErrorCode.INVALID_FILE_TYPE,
+                detail=f"Failed to load file {file_path}: {e}",
+            ) from e
         except Exception as e:
             logger.error("Error loading file %s: %s", file_path, e)
             raise ValueError(f"Failed to load file {file_path}: {e}") from e

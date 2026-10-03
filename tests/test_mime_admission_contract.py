@@ -93,8 +93,12 @@ class TestInertEnvironmentVariable:
         candidate = tmp_path / "plain.csv"
         candidate.write_bytes(b"just some plain text")
 
-        with pytest.raises(ValueError, match="Detected MIME type"):
+        from mkobi.models.enums import ErrorCode
+        from mkobi.utils.exceptions import AppException
+
+        with pytest.raises(AppException) as exc_info:
             file_processing.validate_mime_type(candidate)
+        assert exc_info.value.code == ErrorCode.INVALID_FILE_TYPE
 
 
 class TestCheckDependencies:
@@ -212,5 +216,9 @@ class TestEnforcementSiteMembership:
         candidate = tmp_path / "candidate.csv"
         candidate.write_bytes(b"x")
 
-        with pytest.raises(ValueError, match="Detected MIME type"):
+        from mkobi.models.enums import ErrorCode
+        from mkobi.utils.exceptions import AppException
+
+        with pytest.raises(AppException) as exc_info:
             file_processing.validate_mime_type(candidate)
+        assert exc_info.value.code == ErrorCode.INVALID_FILE_TYPE

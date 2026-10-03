@@ -617,18 +617,22 @@ class TestGzipDecompressedCeiling:
 
 
 class TestMalformedGzipFailures:
-    """Test 7: malformed archives fail as ordinary exceptions and are classified.
+    """Test 7: malformed archives fail as the loader's own declared error type.
 
-    On the unfixed tree these raise ``pyo3_runtime.PanicException`` from inside
-    the Polars read -- a ``BaseException`` that escapes every ``except
-    Exception`` in the loader and the worker. Reading the stream in pure Python
-    before the size decision turns each into an ordinary exception subclass.
+    On the unfixed tree these raised ``pyo3_runtime.PanicException`` from inside
+    the Polars read -- a ``BaseException`` that escaped every ``except
+    Exception`` in the loader and the worker. PB-12 turned the size probe into a
+    pure-Python gzip read, so the malformed-archive case now surfaces as one of
+    the ordinary gzip classes (``gzip.BadGzipFile``, ``EOFError``,
+    ``zlib.error``) before any reader runs. This block converts exactly those
+    into ``AppException(ErrorCode.INVALID_FILE_TYPE)``, so the boundary is total
+    and typed.
     """
 
-    def _assert_ordinary_and_classified(self, csv_path: Path) -> None:
+    def _assert_typed_and_classified(self, csv_path: Path) -> None:
         from mkobi.workers.data_worker import _map_processing_error_to_code
 
-        with pytest.raises(BaseException) as exc_info:
+        with pytest.raises(AppException) as exc_info:
             CSVLoader().load_csv(csv_path)
 
         error = exc_info.value
@@ -636,23 +640,124 @@ class TestMalformedGzipFailures:
             f"{type(error).__name__} is not an Exception; "
             "malformed archives must not surface as a BaseException panic"
         )
+        assert error.code == ErrorCode.INVALID_FILE_TYPE
         emitted = _map_processing_error_to_code(error)
-        assert emitted in {m.value for m in ErrorCode}
+        assert emitted == ErrorCode.INVALID_FILE_TYPE.value
 
     def test_truncated_archive(self, tmp_path: Path) -> None:
         csv_path = tmp_path / "truncated.csv.gz"
         full = gzip.compress(b"a,b\n" * 100_000)
         csv_path.write_bytes(full[: len(full) // 2])
-        self._assert_ordinary_and_classified(csv_path)
+        self._assert_typed_and_classified(csv_path)
 
     def test_non_gzip_bytes_named_csv_gz(self, tmp_path: Path) -> None:
         csv_path = tmp_path / "fake.csv.gz"
         csv_path.write_bytes(b"this is not a gzip stream\n")
-        self._assert_ordinary_and_classified(csv_path)
+        self._assert_typed_and_classified(csv_path)
 
     def test_corrupt_deflate(self, tmp_path: Path) -> None:
         csv_path = tmp_path / "corrupt.csv.gz"
         payload = bytearray(gzip.compress(b"a,b\n" * 100_000))
         payload[14] ^= 0xFF  # corrupt bytes inside the deflate stream
         csv_path.write_bytes(payload)
-        self._assert_ordinary_and_classified(csv_path)
+        self._assert_typed_and_classified(csv_path)
+
+
+class TestMislabelledArtefactBoundary:
+    """The mislabelled artefact is a typed error at both reader sizes (ART-001).
+
+    The original probe: plain-CSV bytes stored under a ``.csv.gz`` name. On the
+    unfixed tree, a small one reached ``_read_csv``'s ``gzip.open`` and escaped
+    as ``pyo3_runtime.PanicException`` (a ``BaseException`` no handler could
+    see); a large one was read by ``_read_csv_via_scan``, whose ``pl.scan_csv``
+    sniffs compression from the bytes.
+
+    At this tree PB-12's pure-Python gzip probe in ``_validate_file_size`` runs
+    before either reader, so BOTH sizes are rejected as
+    ``AppException(INVALID_FILE_TYPE)`` and the panic is pre-empted. The
+    boundary conversion in ``load_csv`` is what makes that escape a typed error
+    rather than an untyped ``gzip.BadGzipFile``.
+
+    The lazy branch is genuinely exercised by the large VALID gzip below: it
+    must still load, proving this block did not "fix" the branch that was never
+    broken.
+    """
+
+    #: The configured threshold these tests straddle (settings/app.yaml: 10.0 MB).
+    THRESHOLD_MB = 10.0
+
+    def _mislabelled(self, tmp_path: Path, rows: int) -> tuple[Path, float]:
+        """Write plain-CSV bytes under a .csv.gz name; return (path, size_mb)."""
+        csv_path = tmp_path / "mislabelled.csv.gz"
+        csv_path.write_bytes(b"category,region,sales\n" + b"A,B,1\n" * rows)
+        return csv_path, csv_path.stat().st_size / (1024 * 1024)
+
+    def test_small_mislabelled_is_typed_error_eager(self, tmp_path: Path) -> None:
+        """Small (eager-branch size): a typed AppException, never a panic."""
+        csv_path, size_mb = self._mislabelled(tmp_path, rows=1)
+        assert size_mb <= self.THRESHOLD_MB
+
+        with pytest.raises(AppException) as exc_info:
+            CSVLoader().load_csv(csv_path, lazy_threshold_mb=self.THRESHOLD_MB)
+
+        assert exc_info.value.code == ErrorCode.INVALID_FILE_TYPE
+        # The escaping class must be an Exception (a handler can see it).
+        assert isinstance(exc_info.value, Exception)
+
+    def test_large_mislabelled_is_typed_error(self, tmp_path: Path) -> None:
+        """Large (above the threshold): rejected at the size probe, still typed.
+
+        This is the honest tree behaviour: PB-12's probe rejects the mislabelled
+        file before the lazy branch is selected, so the large case does not
+        "load correctly" as the pre-PB-12 probe observed.
+        """
+        csv_path, size_mb = self._mislabelled(tmp_path, rows=1_800_000)
+        assert size_mb > self.THRESHOLD_MB, "fixture must exceed the threshold"
+
+        with pytest.raises(AppException) as exc_info:
+            CSVLoader().load_csv(csv_path, lazy_threshold_mb=self.THRESHOLD_MB)
+
+        assert exc_info.value.code == ErrorCode.INVALID_FILE_TYPE
+        assert isinstance(exc_info.value, Exception)
+
+    def test_large_valid_gzip_still_loads_via_scan(self, tmp_path: Path) -> None:
+        """Regression guard: a large VALID gzip loads via the lazy branch.
+
+        The lazy branch (``pl.scan_csv``) is untouched by this block; a genuine
+        gzip above the threshold must still load. The fixture is generated in
+        the test, not committed.
+        """
+        csv_path = tmp_path / "valid.csv.gz"
+        decompressed_rows = 1_800_000
+        csv_path.write_bytes(
+            gzip.compress(
+                b"category,region,sales\n" + b"A,B,1\n" * decompressed_rows,
+                compresslevel=1,
+            )
+        )
+
+        loader = CSVLoader()
+        df = loader.load_csv(csv_path, lazy_threshold_mb=0.001)
+        assert df.shape == (decompressed_rows, 3)
+
+
+class TestStoredNameMatchesBytes:
+    """MimeTypeEnum.extension maps a verdict to the stored extension (D-06-P(a))."""
+
+    def test_text_csv_maps_to_csv(self) -> None:
+        from mkobi.models.enums import MimeTypeEnum
+
+        assert MimeTypeEnum.TEXT_CSV.extension == FileExtensionEnum.CSV
+
+    def test_both_gzip_members_map_to_csv_gz(self) -> None:
+        from mkobi.models.enums import MimeTypeEnum
+
+        assert MimeTypeEnum.APPLICATION_GZIP.extension == FileExtensionEnum.CSV_GZ
+        assert MimeTypeEnum.APPLICATION_X_GZIP.extension == FileExtensionEnum.CSV_GZ
+
+    def test_mapping_is_consistent_with_extension_enum(self) -> None:
+        """Every mapping target is a real FileExtensionEnum member."""
+        from mkobi.models.enums import MimeTypeEnum
+
+        for member in MimeTypeEnum:
+            assert member.extension in set(FileExtensionEnum)

@@ -200,6 +200,11 @@ N,South,Product12,999999.99,249999.99,2023-01-14,999
                 )
             # Should fail because actual content is text/plain, not text/csv or gzip
             assert response.status_code == status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+            # The typed AppException(INVALID_FILE_TYPE) must surface as the
+            # project's RFC 7807 problem response, not a raw 500.
+            body = response.json()
+            assert body["code"] == "INVALID_FILE_TYPE"
+            assert body["status"] == status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
         finally:
             fake_csv_path.unlink(missing_ok=True)
 
