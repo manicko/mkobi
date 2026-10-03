@@ -109,3 +109,63 @@ class TestProcessingStatusResponseWireShape:
         filename_schema = component["properties"]["filename"]
         assert filename_schema.get("type") == "string"
         assert "filename" in component["required"]
+
+
+class TestDocumentUrlsAreGatedTogether:
+    """The three FastAPI document URLs share one production gate.
+
+    ``create_app`` used to set ``docs_url`` and ``redoc_url`` to ``None`` in
+    the production tier but left ``openapi_url`` unset, so FastAPI's default
+    ``/openapi.json`` was served everywhere. This class asserts all three
+    attributes together in both tiers: a test that checked only the two
+    human-facing URLs would let the machine-readable one regress silently.
+
+    In the shipped topology this gate has no effect — nginx proxies ``/api``
+    and the health paths and serves the SPA for everything else, so the
+    application is never asked for these paths (hand-over HO-4). It is defence
+    in depth, not the production control.
+    """
+
+    def test_production_disables_all_three_document_urls(self, monkeypatch) -> None:
+        """Production tier sets docs, redoc and openapi URLs to None.
+
+        The production tier is selected by handing ``create_app`` a config whose
+        environment is ``PRODUCTION``, rather than by building a full production
+        settings object: the unrelated production credential/CORS guards would
+        otherwise dominate this test's failure surface, which is the document
+        URLs and nothing else.
+        """
+        monkeypatch.setenv("ENV", "development")
+        monkeypatch.setenv("JWT__SECRET_KEY", "test_secret_key_change_in_production")
+
+        import mkobi.app as app_module
+
+        from mkobi.config import clear_config_cache, get_config
+        from mkobi.models.enums import EnvironmentEnum
+
+        clear_config_cache()
+        production_config = get_config().model_copy(
+            update={"environment": EnvironmentEnum.PRODUCTION}
+        )
+        monkeypatch.setattr(app_module, "get_config", lambda: production_config)
+
+        application = app_module.create_app()
+
+        assert application.docs_url is None
+        assert application.redoc_url is None
+        assert application.openapi_url is None
+
+    def test_development_serves_all_three_document_urls(self, monkeypatch) -> None:
+        """Development tier keeps the default /docs, /redoc and /openapi.json."""
+        monkeypatch.setenv("ENV", "development")
+        monkeypatch.setenv("JWT__SECRET_KEY", "test_secret_key_change_in_production")
+
+        from mkobi.app import create_app
+        from mkobi.config import clear_config_cache
+
+        clear_config_cache()
+        application = create_app()
+
+        assert application.docs_url == "/docs"
+        assert application.redoc_url == "/redoc"
+        assert application.openapi_url == "/openapi.json"

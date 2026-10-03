@@ -166,6 +166,25 @@ server {
 }
 ```
 
+### Where the API-documentation surface is protected in production
+
+The production control for the documentation surface is **nginx's `location`
+set, not the application**. The `location /api/` block proxies the API and the
+two health paths are routed explicitly; `/docs`, `/redoc` and `/openapi.json`
+are **not** among the proxied paths, so they fall through to `location /` and
+the React SPA is returned for them. Nginx therefore never asks the application
+for those paths.
+
+The application additionally sets `docs_url`, `redoc_url` and `openapi_url` to
+`None` when `ENV=production` (`src/mkobi/app.py::create_app`), so if the
+application is ever reached directly — outside the shipped nginx topology — all
+three document URLs return `404` rather than serving the schema. That is
+**defence in depth only**: in the deployed topology it is nginx that keeps the
+schema surface unreachable, and the application gate changes nothing an external
+caller can observe. The unreachable-path seam (nginx declares no `location` for
+these paths) is tracked as hand-over `HO-4`, owned by phase 12 for the
+`nginx.conf` file and phase 10 for the deployed composition.
+
 To enable, start the nginx service from `docker-compose.yml`:
 ```bash
 docker compose -f docker/docker-compose.yml --profile production up -d

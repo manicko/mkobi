@@ -249,13 +249,22 @@ def create_app() -> FastAPI:
             logger.error("CORS origins must be set in production environment")
             raise ValueError("CORS origins must be configured for production")
 
+    # The three document URLs are gated together in the production tier. They
+    # share one condition so the machine-readable /openapi.json cannot be left
+    # served while /docs and /redoc are closed. In the shipped production
+    # topology this is defence in depth only: nginx proxies /api and the health
+    # paths, and serves the SPA for everything else, so it never asks the
+    # application for these paths (hand-over HO-4).
+    documents_enabled = config.environment != EnvironmentEnum.PRODUCTION
+
     application = FastAPI(
         title=config.app.name,
         description="BI Dashboard System API",
         version=config.app.version,
         debug=config.debug,
-        docs_url=None if config.environment == EnvironmentEnum.PRODUCTION else "/docs",
-        redoc_url=None if config.environment == EnvironmentEnum.PRODUCTION else "/redoc",
+        docs_url="/docs" if documents_enabled else None,
+        redoc_url="/redoc" if documents_enabled else None,
+        openapi_url="/openapi.json" if documents_enabled else None,
         lifespan=lifespan,
     )
 

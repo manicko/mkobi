@@ -24,6 +24,14 @@ FastAPI provides automatic interactive API documentation using Swagger UI. This 
 
 Base URL: `http://localhost:8010/docs/`
 
+**Tier scope.** This guide describes a development-tier workflow. When
+`ENV=production` the application sets `docs_url`, `redoc_url` and
+`openapi_url` to `None`, so `/docs`, `/redoc` and `/openapi.json` all return
+`404` from the application. In the shipped production topology the real control
+is nginx, which proxies only `/api` and the health paths and serves the SPA for
+everything else — see
+[Deployment](../10-deployment/deployment.md#where-the-api-documentation-surface-is-protected-in-production).
+
 ## Getting Started
 
 ### 1. Start the Application
@@ -189,7 +197,7 @@ If updates return 500:
    - 201: Created (POST)
    - 204: No Content (DELETE)
 3. **View schemas** - Click on model names to see request/response schemas
-4. **Export** - You can export API definitions in OpenAPI format
+4. **Export** - In the development tier you can export API definitions in OpenAPI format; in production the schema surface is closed (see the tier scope above)
 
 ## Project Structure
 
