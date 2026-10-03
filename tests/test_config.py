@@ -307,10 +307,62 @@ class TestAppSettings(TestSettingsBase):
     """Tests for AppSettings."""
 
     def test_app_settings_defaults(self):
-        """Test default values for AppSettings."""
+        """Test default values for AppSettings.
+
+        ``app.version`` no longer has a hand-written default: it is the
+        installed distribution's declared version (see
+        ``distribution_version()``), so the assertion compares against that
+        resolver rather than a literal. Comparing against a literal would
+        re-create the very staleness this default removes — the distribution
+        bumps independently of the test.
+        """
+        from mkobi.config import distribution_version
+
         settings = Settings()
         assert settings.app.name == "mkobi"
-        assert settings.app.version == "1.0.0"
+        assert settings.app.version == distribution_version()
+
+    def test_app_version_default_has_one_source(self):
+        """The advertised version equals the installed distribution's version.
+
+        This is the EXT-010 guarantee: the value is derived, not written down,
+        so there is exactly one place to read it. The assertion reads the
+        distribution's metadata independently, so it fails if the default
+        reverts to a hard-written string that no longer matches the package.
+        """
+        from mkobi.config import distribution_version
+
+        resolved = Settings(_env_file=None).app.version
+        assert resolved == distribution_version()
+
+    def test_app_version_env_override_wins_over_distribution(self, monkeypatch):
+        """``APP__VERSION`` still overrides the distribution-derived default.
+
+        Belt-and-braces alongside the unmodified end-to-end
+        ``TestCreateAppMetadata``: this pins the override at the settings layer.
+        """
+        monkeypatch.setenv("APP__VERSION", "9.9.9")
+        settings = Settings(_env_file=None)
+        assert settings.app.version == "9.9.9"
+
+    def test_app_yaml_no_longer_pins_a_version_literal(self):
+        """``app.yaml`` does not carry a competing ``app.version`` literal.
+
+        A YAML literal outranks the code default, so any value left here would
+        keep the document stale regardless of the distribution. The key must be
+        absent, not merely equal.
+        """
+        from pathlib import Path
+
+        yaml_text = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "mkobi"
+            / "settings"
+            / "app.yaml"
+        ).read_text(encoding="utf-8")
+        app_block = yaml_text.split("app:", 1)[1].split("auto_migrate", 1)[0]
+        assert "version:" not in app_block
 
 
 class TestDatabaseSettings(TestSettingsBase):

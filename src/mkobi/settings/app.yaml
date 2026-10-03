@@ -10,7 +10,10 @@
 # App settings
 app:
   name: mkobi
-  version: "1.0.0"
+  # No ``version`` key: the advertised version has exactly one source, the
+  # installed distribution's declared version (config.py::distribution_version),
+  # which the APP__VERSION environment variable still overrides. A literal here
+  # would outrank that default and leave the published schema document stale.
 
 # Database migrations
 auto_migrate: false

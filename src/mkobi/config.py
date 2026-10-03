@@ -1,4 +1,5 @@
 import functools
+import importlib.metadata
 import logging
 import os
 from pathlib import Path
@@ -13,6 +14,38 @@ from pydantic_settings.sources import PydanticBaseSettingsSource
 from platformdirs import user_data_dir
 
 from mkobi.models.enums import EnvironmentEnum, FileExtensionEnum
+
+# Installed distribution whose metadata declares the advertised application
+# version. Named once so the resolver and its error message cannot disagree.
+DISTRIBUTION_NAME: Final[str] = "mkobi"
+
+
+@functools.cache
+def distribution_version() -> str:
+    """Return the version declared by the installed distribution.
+
+    The advertised application version has exactly one source: the installed
+    distribution's metadata, so the published schema document's ``info.version``
+    tracks the package rather than a hand-written literal. It is resolved from
+    the installed distribution named by ``DISTRIBUTION_NAME`` and memoised, so
+    repeated settings construction performs one lookup.
+
+    Returns:
+        str: The distribution's declared version.
+
+    Raises:
+        RuntimeError: If the distribution is not installed, so no metadata
+            exists. Raising is deliberate: a fallback literal would re-create
+            the hand-written value this function exists to remove.
+    """
+    try:
+        return importlib.metadata.version(DISTRIBUTION_NAME)
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise RuntimeError(
+            f"Distribution {DISTRIBUTION_NAME!r} is not installed, so its version "
+            "cannot be resolved. Install the project (for example 'uv sync') so "
+            "the advertised version has exactly one source."
+        ) from exc
 
 logger = logging.getLogger(__name__)
 
@@ -523,7 +556,11 @@ class AppSettings(BaseModel):
     """Application settings."""
 
     name: str = "mkobi"
-    version: str = "1.0.0"
+    # The advertised version has exactly one source: the installed
+    # distribution's declared version, resolved through distribution_version().
+    # This is a plain field name, not alias=, because AppSettings has no
+    # populate_by_name and the environment name would otherwise be unreachable.
+    version: str = Field(default_factory=distribution_version)
     # In production, always keep True. In development, set APP__COOKIE_SECURE=false
     # to allow HTTP cookies without TLS.
     cookie_secure: bool = Field(

@@ -34,15 +34,22 @@ Settings are loaded from multiple sources. The first matching value wins:
 | 1 (highest) | **Environment variables**                | `DATABASE__PASSWORD`, `JWT__SECRET_KEY`, etc.  |
 | 2        | **Docker secrets files** (`_FILE` suffix)   | `DATABASE__PASSWORD_FILE=/run/secrets/db_password` |
 | 3        | **`.env` file**                             | Development convenience via pydantic-settings  |
-| 4        | **`app.yaml`**                              | `cors_origins`, `app.name`/`app.version`, hosts, ports, paths |
+| 4        | **`app.yaml`**                              | `cors_origins`, `app.name`, hosts, ports, paths. It does **not** set `app.version`: that value has one source, the installed distribution, resolved in code and overridable through `APP__VERSION`. |
 | 5 (lowest) | **Code defaults**                         | Field defaults in `Settings` class             |
 
 This is implemented via `Settings.settings_customise_sources()` which returns sources in priority order.
 
 `app.yaml` contributes `cors_origins` — `http://localhost:3000` and
-`http://localhost:5173` — above the field default of an empty list. It is also the
-single owner of the application's displayed name and version through `app.name` and
-`app.version`.
+`http://localhost:5173` — above the field default of an empty list. It also supplies
+`app.name`, the application's displayed name.
+
+It is **not** the owner of the application's version. `app.version` has exactly one
+source: the installed distribution's declared version, resolved by
+`config.py::distribution_version()` and overridable through `APP__VERSION`. The
+`app.yaml` file deliberately carries **no** `version` key, because a YAML value
+outranks the code default and would pin the advertised version independently of the
+distribution — the exact drift that left the published document seven patch releases
+behind `pyproject.toml`.
 
 It carries **no key that sets the environment tier**. The lowercase `env` key it used
 to carry resolved to nothing, and the reason is not case-sensitivity:
@@ -62,6 +69,8 @@ All environment variables use the double-underscore (`__`) delimiter for nesting
 | Variable                      | Nested Path              | Default        | Description                     |
 | ----------------------------- | ------------------------ | -------------- | ------------------------------- |
 | `ENV`                         | `environment`            | `development`  | Application environment         |
+| `APP__NAME`                   | `app.name`               | `mkobi`        | The application's displayed name, transferred to the FastAPI title. `app.yaml` supplies it; the environment variable overrides it. |
+| `APP__VERSION`                | `app.version`            | the installed distribution's declared version | The advertised API version, transferred to the FastAPI version and published as the schema document's `info.version`. The default is **not** a literal: it is resolved from the installed distribution's metadata (`config.py::distribution_version()`), so the document and `pyproject.toml` cannot drift — the seven-patch-releases-stale `1.0.0` is exactly the staleness this removes. Setting the variable overrides the derived value, which the settings precedence guarantees and a test proves. `app.yaml` deliberately carries **no** `version` key: a YAML literal would outrank this default and leave the document stale again. If the distribution is not installed, resolution raises rather than falling back to a literal, because a fallback would re-create the hand-written value. |
 | `DATABASE__HOST`              | `database.host`          | `localhost`    | PostgreSQL host                 |
 | `DATABASE__PORT`              | `database.port`          | `5432`         | PostgreSQL port                 |
 | `DATABASE__DBNAME`            | `database.dbname`        | `bidb`         | Main database name              |
