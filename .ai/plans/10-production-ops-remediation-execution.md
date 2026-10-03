@@ -4,7 +4,7 @@ validation_prefix: VAL-10-
 report: .ai/audit/99-validation/10-production-ops-validated-findings.md
 phase_findings: .ai/audit/10-production-ops/findings.md
 code_context: .ai/plans/_code-context/10-production-ops-code-context.md
-status: decomposed — 15 blocks (B0 … B14) · 12 decision records open · no technical fork chosen
+status: decomposed — 15 blocks (B0 … B14) · 13 decision records (12 raised here + DP-10-13 minted 2026-10-03), of which 3 are ruled by the Product Owner · no technical fork chosen
 blocks: 15 (B0 … B14) — body carries 15 block headings, B0 … B14
 findings: 16 (OPS-001 … OPS-016) + 6 report-level defects (VAL-10-001 … VAL-10-006)
 code_context_authority: Phase-1 Auditor (overrides every report anchor)
@@ -23,7 +23,7 @@ id-namespace: >-
   C-1 … C-7 (plan 03), C05-*/C06-*/C11-*/C13-*/C15-*/C16-* (other phases). A bare
   D-<digit> belongs to plan 02 (D-1 … D-7) or plan 03 (D-1 … D-4) and is never this plan's; the
   phase-qualified D-04-* / D-06-* / D-08-* / DP-11-* forms are the ones a cross-phase citation must use.
-decisions: 12 (DP-10-1 … DP-10-12; none chosen — each names its chooser and what stays blocked)
+decisions: 13 (DP-10-1 … DP-10-12; plus DP-10-13, the RPO/RTO record minted by the **adjudicated** 2026-10-03 owner ruling — neither input register carried it — with `DP-10-2`, `DP-10-7` and `DP-10-13` **ruled** by the Product Owner; the other ten name their chooser and what stays blocked)
 external_dependencies:
   - phase 11 — the disk-budget ruling `DP-11-H` / `C11-7` (measurement set delivered by `PRF-11`; the number is the Coordinator's)
   - phase 06 C06-4 (artefact volume layout, budget, backup, alerts) and C06-11 (RQ durability) — accepted
@@ -41,6 +41,26 @@ verification_entry_point: .\Makefile.ps1 ps (read-only stack evidence) · .\Make
 
 # Execution Plan — Phase 10: Production operations remediation
 
+## Owner rulings applied — 2026-10-03
+
+The authoritative source is **`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md`** — the single
+authority for owner rulings across plans 07–16. It merges the two input registers of 2026-10-03 and
+adjudicates every disagreement, and **its option letters are not this file's option letters**, so every
+ruled row below is recorded **by description**. **This plan consumes register cluster 8 (Production,
+recovery and operational capacity)** — `DP-10-7` / `DP-11-H` and `DP-10-13` — and the **health-endpoint
+posture** paragraph of cluster 3, which concerns `DP-10-2`. This table is a pointer to that file, not a
+substitute for it.
+
+| ID | Ruling | Chooser | Blocks released |
+| -- | ------ | ------- | --------------- |
+| **`DP-10-2`** | **(a)** — liveness stays database-only; the store appears as a detailed component that never moves the overall status. Phase 10 co-signs and signs the three facts the ruling depends on | **Product Owner (2026-10-03)**, phase 10 as named co-signer | `B0`'s register |
+| **`DP-10-7`** *(one decision, two IDs — ruled TOGETHER with phase 11's `DP-11-H`)* | **chosen by description: a budget of 50 GB for the artefact and log volume, enforced before accepting an upload that would exceed it; retention is temporary files 24 hours and processing logs 90 days.** The **derivation is published next to the figure**, and **the number is revised if the derivation contradicts it**; the register **supersedes** the retracted `1,036.2 MB / 101.2 %` pair wherever it is cited | **Product Owner (2026-10-03)** | **phase 06 `C06-4`**, **phase 05 `C05-7`, `C05-8`, `C06-7`**, and phase 11's `PRF-0` and `DP-11-H` |
+| **`DP-10-13`** *(minted by this ruling — the file had no identifier for it; **adjudicated-new**: neither input register carried the RPO/RTO question)* | **RPO 24 h · RTO 4 h**, daily backups. Both numbers **published** in `docs/10-deployment/deployment.md` and **gated on a rehearsed restore against a scratch database**; `backup` and `restore` must not report success unconditionally | **Product Owner (2026-10-03)** | `B1`, `B2`; the runbook's restore rehearsal becomes an acceptance criterion |
+
+**`DP-10-1`, `DP-10-3`, `DP-10-4`, `DP-10-5`, `DP-10-6`, `DP-10-8`, `DP-10-9`, `DP-10-10`, `DP-10-11`
+and `DP-10-12` are untouched**, with their named choosers unchanged — the ruling file names
+`DP-10-1`, `DP-10-5` and `DP-10-8` as explicitly *not* decided.
+
 ## Purpose
 
 Turn the validated findings of audit phase 10 into a dependency-safe rollout sequence for the deployed
@@ -51,9 +71,15 @@ defects it discharges, its risk across implementation / rollout / regression / c
 it requires, its documentation impact, its verification, and its definition of done.
 
 The plan fixes **order and risk containment**. It does not fix **implementation choices** where the
-owner must choose: twelve decision records (`DP-10-1` … `DP-10-12`) are carried with alternatives,
+owner must choose: thirteen decision records (`DP-10-1` … `DP-10-13`) are carried with alternatives,
 alternatives' trade-offs, a named chooser, and an explicit statement of what stays blocked until ruled.
-**This plan chooses none of them.**
+**This plan chooses none of the technical ones.** Three are **ruled by the Product Owner on 2026-10-03**
+— **`DP-10-2`** (database-only liveness, store as a non-fatal detailed component), **`DP-10-7`** (the
+**50 GB** artefact-and-log budget, enforced before accept, with 24 h / 90-day retention — ruled **together
+with phase 11's `DP-11-H`**) and **`DP-10-13`**, the **RPO / RTO** record this file previously had no
+identifier for and which the adjudicated ruling introduced **new**; see **Owner rulings applied** above
+and `.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md`, the single authority. The remaining
+ten keep their choosers exactly as written.
 
 **This phase can take the stack down.** `docker/docker-compose.yml` is one file containing every
 service; `Invoke-Up` runs `up -d --wait --wait-timeout 180`, and `docker compose` publishes
@@ -168,7 +194,7 @@ that landed during this decomposition, and each is recorded where it belongs rat
 
 | From phase 11 | What phase 10 owes | Where it lives in this plan |
 | ------------- | ------------------ | ---------------------------- |
-| `DP-11-H` / `C11-7` — the artefact-volume **budget** number | The Coordinator ruling; phase 10 owns the budget, phase 06 the ceiling | **`DP-10-7`** · **C10-1** |
+| `DP-11-H` / `C11-7` — the artefact-volume **budget** number | The **ruled** budget: **50 GB** for the artefact and log volume, enforced **before accepting** an upload that would exceed it, with **temporary files 24 h** and **processing logs 90 days** (Product Owner, 2026-10-03, ruled **together** with phase 11's `DP-11-H`); the **derivation is published next to the figure** and the number is **revised if the derivation contradicts it**. Phase 10 owns the budget, phase 06 the ceiling | **`DP-10-7`** · `DP-10-13` · **C10-1** |
 | A **queue-depth alert** as an operations surface (`C06-4`, `C05-7`) | The alert surface — conditional on the depth metric existing, which phase 11 records as an instrumentation gap nobody owns (`C11-15`) | **C10-6** (widened) |
 | A capacity and connection-budget **statement** in the deployment file (`C06-4`) — *raise, do not edit* | The sentence, once the number exists | **B14** (input only) |
 | **Four-worker contention measurement**, production only — the dev `app` overrides its command with `--reload`, so every HTTP timing available in dev is a **single-process** timing | The measurement, on a tier where `--workers 4` actually runs | **B12**'s prod-tier label · **C10-12** |
@@ -220,7 +246,7 @@ test, so a bound that exists only in one topology is not a bound.
 | `--workers 4` sizing, the OOM restart, `PERF-001` | **phase 01** (model) / **phase 11** (sizing) | `OPS-008`'s *ceiling* is B10's arithmetic; the *sizing* is phase 11's. Adjacency, no merge. |
 | The `Invoke-Check` gate-entry verdict (no `pytest` in the aggregate) | **phase 09** | OPS-009's block touches the *credential* set handed to those gates, not which gates run. Distinct edits. **C10-10**. |
 | Redis durability for accepted-but-unfinished work (`C06-11`) | **phase 10** — accepted here | Phase 10 owns the backup story for `redis_data` (B3). The *growth* half is phase 06's. **C10-1**. |
-| The **disk-budget number** | **Coordinator** / **phase 11** | No number ships today. Phase 06 `C06-4` and phase 05 `C05-7` are hard-blocked on it and this plan **does not invent one**. External dependency, recorded in the block map as a diamond. `DP-10-7`. |
+| The **disk-budget number** | **Product Owner** (ruled 2026-10-03, `DP-10-7` **together with** phase 11's `DP-11-H`) · **derivation** from **phase 11** | **A number now exists: 50 GB for the artefact and log volume**, enforced **before accepting** an upload that would exceed it, with retention **temporary files 24 h** and **processing logs 90 days**. Phase 06 `C06-4` and phase 05 `C05-7`/`C05-8`/`C06-7` are **released by that ruling**. The **derivation is phase 11's to deliver** and is **published next to the figure** — and **the number is revised if the derivation contradicts it**. |
 | The uvicorn respawn loop's *runtime* evidence | **not re-measurable here** | Re-inducing it means a throwaway container against an unreachable database on a daemon other agents share. The static path is unconditional and dispositive. |
 
 **`docker/nginx/nginx.conf` ownership ruling** (`C04-5`, phase 04 → phase 12). The file has two
@@ -241,12 +267,12 @@ flowchart TD
     B0["B0 · anchor, dead-symbol, refuted-claim and decision registers"]
 
     DP1{{"DP-10-1 · TOPO-002 vs TestRqWorkerComposeWiring"}}
-    DP2{{"DP-10-2 · probe contract co-signature"}}
+    DP2["DP-10-2 · probe contract co-signature — RULED (a) 2026-10-03"]
     DP3{{"DP-10-3 · the exact-dict assertion"}}
     DP4{{"DP-10-4 · Redis producer/consumer credential parity"}}
     DP5{{"DP-10-5 · enqueue-time failure mode"}}
     DP6{{"DP-10-6 · SPA carrier: image stage or bind mount"}}
-    DP7{{"DP-10-7 · the disk-budget number"}}
+    DP7["DP-10-7 · the disk-budget number — RULED, 50 GB, 2026-10-03"]
     DP8{{"DP-10-8 · nginx.conf templating vs relocation"}}
     DP9{{"DP-10-9 · does Invoke-Up join the exit-code fix"}}
     DP10{{"DP-10-10 · advisory-lock doc fix vs conformance escalation"}}
@@ -311,7 +337,8 @@ flowchart TD
 `==>` = hard dependency (a blocker). `-->` = ordering required because the later block's **text
 describes** the earlier block's result — a documentation dependency, not a data dependency.
 `-.->` = recommended sequencing in the single-implementor queue. `DP-*` and `EXT` diamonds are gates
-owned by an owner or another phase, not by this one.
+owned by an owner or another phase, not by this one. **`DP-10-2` and `DP-10-7` are drawn as rectangles
+because they are decided** (Product Owner, 2026-10-03); every undecided record keeps its diamond.
 
 **Two blocks touch no decision record and need none:** B7 and B10 are local, mechanism-level edits
 whose alternatives are stated inside the block.
@@ -320,7 +347,7 @@ whose alternatives are stated inside the block.
 
 | Block | Findings discharged | Decisions gating it | Agents |
 | ----- | -------------------- | -------------------- | ------ |
-| **B0** | `VAL-10-001` … `VAL-10-006` as rulings · every dead symbol · every refuted claim · all twelve `DP-10-*` records | — | Planner (owns); Auditor confirms completeness at `ab76989` |
+| **B0** | `VAL-10-001` … `VAL-10-006` as rulings · every dead symbol · every refuted claim · all thirteen `DP-10-*` records, **including that `DP-10-2`, `DP-10-7` and `DP-10-13` are Product Owner rulings of 2026-10-03 and that `DP-10-7` and phase 11's `DP-11-H` are one decision ruled together** | — | Planner (owns); Auditor confirms completeness at `ab76989` |
 | **B1** | `OPS-005` | `DP-10-9` for the `Invoke-Up` sub-item only | Auditor, Planner, Validator |
 | **B2** | `OPS-010` | — (ordering follows B1) | **All four** |
 | **B3** | `OPS-001` (code half) | — | Auditor, Planner, Validator |
@@ -373,7 +400,7 @@ whose alternatives are stated inside the block.
 
 | Field | Value |
 | ----- | ----- |
-| **Semantic target** | **No production code.** This plan's own `Anchor authority`, `Refuted claims`, `Scope rulings`, `Open decisions` and `Cross-phase seam and hand-over register` sections are the deliverable, carried into every later block's `Definition of done`. |
+| **Semantic target** | **No production code.** This plan's own `Anchor authority`, `Refuted claims`, `Scope rulings`, `Decision records` and `Cross-phase seam and hand-over register` sections are the deliverable, carried into every later block's `Definition of done`. |
 | **Discharges** | `VAL-10-001` (**moot** — the `OPS-002` ↔ `TOPO-002` duplication no longer exists; the residue is two stale document rows and one test contract) · `VAL-10-002` (**upheld, half discharged** — the consumer half already landed; the co-signature and the 503 policy remain) · `VAL-10-003` (**applied** — four writers; `uvicorn.access` console-only; dev-unverifiable by construction) · `VAL-10-004` (**applied and corrected** — 13 failures, not four; the shipped production env file resolves nothing) · `VAL-10-005` (**applied and widened** — CFG-001 half-closed; the `CORS_ORIGINS` gap is new) · `VAL-10-006` (**applied** — git-ignored twice) · **phase 11's `VAL-11-005` retraction** of the memory-peak figure this phase's own context cited · all seven dead report symbols · all eight refuted claims · the 28 stale anchors · all twelve `DP-10-*` records |
 | **blocked_by** | — |
 | **Execution order** | **1.** Nothing else starts without it. |
@@ -384,7 +411,7 @@ whose alternatives are stated inside the block.
 | **Agents** | **Planner** — owns the registers. **Auditor** — confirms at `ab76989` that the dead-symbol register names every symbol the code context lists as gone, that the refuted-claim register names every refutation, and that **no new dead anchor appeared** while the registers were being written. **Researcher / Validator — not required and not wanted:** nothing here is a code claim a green gate could check, and a Researcher would be inventing external argument against decisions this repository already made. |
 | **Documentation impact** | **One row** appended to `docs/SPEC.md` **Version History** naming this plan — house convention, matching sibling plans. **Nothing else.** `docs/05-health/health-api.md` is phase 07's (`HO-3`) and is **not** touched here. |
 | **Verification** | `git status --porcelain` clean of tracked source at block start · `git rev-parse HEAD` recorded in the commit body · confirm **no** file under `.ai/audit/`, `.ai/plans/_code-context/` or any sibling `.ai/plans/0[1-9]-*.md` appears as modified · confirm `core/task_queue.py` is still RQ-only and that none of the seven dead symbols can be re-found (`git grep -n "default_queue\|enqueue_with_worker"` over `src/` returns nothing) · confirm the dev override still declares no `healthcheck:` key · **no test run required** |
-| **Definition of done** | The registers exist and name: the seven dead symbols with the reality of each; the eight refuted claims, **including phase 11's retraction of the memory-peak figure this phase's own context cited**; `VAL-10-001` as **moot** rather than merged; `VAL-10-002` as **half discharged** with the landed commits named; the corrected interpolation count (**13**) and the corrected `OPS-008` multiplier (**four**) and the corrected `OPS-008` ceiling (**~240 MB**, not ~300 MB); the five required secrets **and** `CORS_ORIGINS` commented out in `docker/.env.production`; the complete live Redis key inventory including the reconciler lease and `rq:queues`; `TestRqWorkerComposeWiring`'s four forbidden substrings and its service-existence assertion; the fact that **no** compose service declares an `image:` key; phase 11's four hand-overs that name phase 10; all twelve `DP-10-*` records with their choosers, including that `DP-10-7` and `DP-11-H` are one decision recorded twice; `C10-1` … `C10-12`; and that `ab76989` is HEAD. |
+| **Definition of done** | The registers exist and name: the seven dead symbols with the reality of each; the eight refuted claims, **including phase 11's retraction of the memory-peak figure this phase's own context cited**; `VAL-10-001` as **moot** rather than merged; `VAL-10-002` as **half discharged** with the landed commits named; the corrected interpolation count (**13**) and the corrected `OPS-008` multiplier (**four**) and the corrected `OPS-008` ceiling (**~240 MB**, not ~300 MB); the five required secrets **and** `CORS_ORIGINS` commented out in `docker/.env.production`; the complete live Redis key inventory including the reconciler lease and `rq:queues`; `TestRqWorkerComposeWiring`'s four forbidden substrings and its service-existence assertion; the fact that **no** compose service declares an `image:` key; phase 11's four hand-overs that name phase 10; all thirteen `DP-10-*` records, **including that `DP-10-2`, `DP-10-7` and `DP-10-13` are Product Owner rulings of 2026-10-03, that `DP-10-7` and phase 11's `DP-11-H` are one decision ruled together, that the `DP-10-7` budget is 50 GB enforced before accept with 24 h / 90-day retention, and that `DP-10-13` records RPO 24 h / RTO 4 h on daily backups**; `C10-1` … `C10-12`; and that `ab76989` is HEAD. |
 
 ---
 
@@ -393,7 +420,7 @@ whose alternatives are stated inside the block.
 | Field | Value |
 | ----- | ----- |
 | **Semantic target** | `Makefile.ps1::Invoke-Backup` · `Makefile.ps1::Invoke-Restore` · **`Makefile.ps1::Invoke-Restore` is the only destructive target in the repository** · the new `Makefile.ps1` target `rehearse-restore` · `Makefile.ps1::Show-Help` · the script's terminal `exit $LASTEXITCODE` dispatch · `$BackupDir` |
-| **Discharges** | `OPS-005` in full: the unchecked inbound copy, the missing existence and size assertions, the unconditional success message, the unread `pg_restore` result, the absent rehearsal path, and the absent RPO/RTO statement. |
+| **Discharges** | `OPS-005` in full: the unchecked inbound copy, the missing existence and size assertions, the unconditional success message, the unread `pg_restore` result, the absent rehearsal path, and **the RPO/RTO statement — now ruled: RPO 24 h, RTO 4 h, daily backups (`DP-10-13`, Product Owner 2026-10-03)**. |
 | **blocked_by** | B0 (note). Soft: **`DP-10-9`** — only the `Invoke-Up` sub-item is gated; the `backup`/`restore` half is not. |
 | **Execution order** | **2** |
 | **Risk — implementation** | **Low.** The defect is dispositive from source: `Write-Host` does not reset `$LASTEXITCODE`, so a failed copy is followed by a successful `rm` and the script exits **zero**. Nothing needs to be re-induced — and nothing may be: re-inducing it would write into the shared `backups/` directory and into the `bidb` database that peer phases own. The implementation risk is *only* the temptation to reintroduce the **PowerShell binary-redirection hazard**: `backup` uses `docker compose cp` today, and rewriting either copy line as `>`, `Out-File` or `Tee-Object` corrupts host-side binary output. `.kilo/rules/commands.md` states this; the block's implementation contract is that the copy stays a `docker compose cp`. |
@@ -403,7 +430,7 @@ whose alternatives are stated inside the block.
 | **Agents** | **Auditor** — the complete `$LASTEXITCODE` census of `Makefile.ps1`: which functions check it, which do not, and which of the unchecked ones can fail (the report names two vacuous controls; an Auditor establishes whether that is the true count, because a third changes whether `DP-10-9`'s options are the right two). Also: confirm `$BackupDir`'s ignore rule and whether any other target writes into it. **Planner** — required pre-implementation: the rehearsal target's contract (what it creates, what it drops, what it proves, and how it cannot touch `bidb`) is design, not a flag flip, and it is the prerequisite for B2's ordering. **Validator** — required: the rehearsal must be **executed against a scratch database** before B2 lands, and the validator's verdict is whether a *deliberately corrupted* artefact is actually reported. **Researcher — not required.** The failure chain is fully determined by the shipped script; there is no external question to look up. |
 | **Documentation impact** | `Makefile.ps1::Show-Help` gains a `rehearse-restore` row (this is the target's own discoverability, not a prose document). `docs/10-deployment/deployment.md`'s backup/restore section and its RPO/RTO gap are **B14's** — this block states the facts, B14 writes them down, and the same rule as `b646ef1`'s: **the document must not claim a rehearsal target that does not exist**. |
 | **Verification** | `.\Makefile.ps1 help` (the new row is present; no row removed) · `.\Makefile.ps1 backup` and confirm **non-zero on a deliberately failed copy** — the cheapest honest induction is a source file that does not exist, which must fail before any container command runs · `.\Makefile.ps1 prune-backups` unchanged · the rehearsal run end to end against a scratch database, asserting the produced artefact's catalogue is readable and that the scratch database is dropped afterwards · `.\Makefile.ps1 ps` before and after, confirming `bidb` was never touched (container uptime and the absence of a `test-migrate`-style marker) · **a `restore` must never be run against `bidb` as part of verification** |
-| **Definition of done** | Every unchecked step in `Invoke-Backup` and `Invoke-Restore` reads its result · the success message is unreachable on failure · `pg_restore`'s exit status is read, and the option `--exit-on-error` is **not** presented as the fix in any comment · `rehearse-restore` exists, is listed in `Show-Help`, and has been **executed at least once against a scratch database** with the outcome recorded · the copy is still `docker compose cp` and no redirection was introduced · the RPO/RTO statements B14 needs are produced here and handed over, not written into `deployment.md` · `DP-10-10`'s absent sibling (`DP-10-9`) is recorded with its option, or is explicitly noted as not scheduled. |
+| **Definition of done** | Every unchecked step in `Invoke-Backup` and `Invoke-Restore` reads its result · the success message is unreachable on failure — **`backup` and `restore` must not report success unconditionally, per `DP-10-13`** · `pg_restore`'s exit status is read, and the option `--exit-on-error` is **not** presented as the fix in any comment · `rehearse-restore` exists, is listed in `Show-Help`, and has been **executed at least once against a scratch database** with the outcome recorded — **this rehearsal is the acceptance gate `DP-10-13` places on the RPO and RTO** · the copy is still `docker compose cp` and no redirection was introduced · **the RPO/RTO statements are produced here as the ruled figures — RPO 24 h, RTO 4 h, daily backups — and handed to `B14`, not written into `deployment.md` by this block** · `DP-10-10`'s absent sibling (`DP-10-9`) is recorded with its option, or is explicitly noted as not scheduled. |
 
 **`Invoke-Up` is the sibling this block must not quietly absorb.** It detects a failed `up --wait` and
 prints three helpful lines — and **never returns non-zero**, so the script's terminal
@@ -597,12 +624,12 @@ perform; they differ in what B14 must write.
 | ----- | ----- |
 | **Semantic target** | the `LOGGING__LOG_FILE` environment key on the `app` and `rq-worker` service blocks in the base compose file — **removed**, not reconfigured · the same key's dev-override value, which blanks it and is why the defect is invisible in dev · `core/logging_config.py`'s rotating-handler installation, **read-only for this block** — the fix is the environment, not the code · the settings layer's handling of the name, which is `*_FILE`-shaped, derives to no field, and is therefore skipped with a warning · the `migrate` service, which sets no such key at all — so "enable it only where a single process owns it" currently names **no service** |
 | **Discharges** | `OPS-008` in full: four independent `RotatingFileHandler`s hold one path with four rotation states and no lock. `VAL-10-003` (four writers, not five; the supervisor parent never imports the application). |
-| **blocked_by** | B0 (note). Soft: **`DP-10-7`** — if a **dedicated log volume** is ruled (phase 06's `D-06-E` option (b)), a single-writer file handler comes back and this block becomes one half of that design rather than the whole of it. |
+| **blocked_by** | B0 (note). Soft: **`DP-10-7`** — **ruled 2026-10-03 (50 GB, enforced before accept), so the budget now exists**; the conditional below stands only if a **dedicated log volume** is separately chosen (phase 06's `D-06-E` option (b)), which is **not** part of the ruled shape — option (b) was not chosen. |
 | **Execution order** | **11** |
 | **Risk — implementation** | **Low.** The fix is a two-key removal. The trap is the opposite one: **replacing a shared file with a per-worker file** (`app.log.1`, `app.log.2` …) looks like it preserves the log and creates four logs nobody reads. The single-writer principle is what the finding is about, and the console stream already carries everything: the application's stream handler is on standard output, and `uvicorn.access` and `uvicorn` are **console-only by explicit configuration**, so the only records that ever reached the file were `uvicorn.error`, the `mkobi*` namespaces and `root`. |
 | **Risk — rollout** | **Medium, and the honest risk is silence.** After this block nothing writes to the file path, so anyone reading logs from a **volume** rather than from `docker logs` stops seeing them. That is correct — the file was the broken artefact — but it is a visible change to how logs are read, and the runbook must say so. The `/app/data/logs` directory becomes empty in production too, which is exactly what it already is in dev. |
 | **Risk — regression** | **None in code** — no handler is touched, so no logging behaviour, no format and no level changes. The regression surface is the runbook's log-collection instruction, which is B14's. |
-| **Risk — compatibility** | **Low.** A collector that reads a file path must be repointed at `docker logs`. The log ceiling drops from ~240 MB to zero for logs, which feeds — but does not settle — the disk-budget question `DP-10-7` exists for. |
+| **Risk — compatibility** | **Low.** A collector that reads a file path must be repointed at `docker logs`. The log ceiling drops from ~240 MB to zero for logs, which is an **input to the disk-budget number** `DP-10-7` now rules (Product Owner, 2026-10-03) rather than a question that number is waiting on. |
 | **Agents** | **Auditor** — confirm at implementation time which services set the key and what the dev override's value is; confirm that no collector, script or document reads the file path; and establish whether anything relies on the settings layer's warning about the non-field name. **Planner** — short: the key removal, and the statement of what the log ceiling becomes. **Validator** — **a `prod`-tier run is required.** In dev the override blanks the key and the file handler is never installed, so the dev tier cannot observe this defect or its fix; the validator's honest options are a `prod`-tier run or an explicit statement that the check requires one. **Researcher — not required**: whether a rotating file handler is safe across processes is not in question, and the project has already ruled on it. |
 | **Documentation impact** | The in-file comment if any. `docs/10-deployment/deployment.md`'s log-collection section and the volumes table — **B14's**. `docs/SPEC.md` version row. |
 | **Verification** | `.\Makefile.ps1 ps` (dev) · `docker inspect mkobi-app-1 --format '{{range .Config.Env}}{{println .}}{{end}}'` filtered for the key — it must be **absent** after the change and present in the resolved file before it · **`prod`-tier run required** to observe that `/app/data/logs/` stays empty and that every record reaches `docker logs`: `docker exec mkobi-app-1 ls -la /app/data/logs` and `docker logs mkobi-app-1` under `--workers 4` · `.\Makefile.ps1 test` · any logging test module in the suite |
@@ -673,7 +700,7 @@ perform; they differ in what B14 must write.
 | ----- | ----- |
 | **Semantic target** | `docs/10-deployment/deployment.md`: the **Quick Start** invocations (three, none of which can start the stack) · the **Production Profiles** rq-worker entry (which names a retired command) · the eight in-container `uv run …` instructions · the **Docker Image Rollback** section (which names a registry that does not exist) · the **Database Migrations** section's advisory-lock sentence (which names the wrong lock holder) · the **Volumes** table (two volumes, no budget, no backup, no retention, no RPO/RTO) · `docs/10-deployment/security-checklist.md`'s Docker Compose production check (correct in form, cannot execute) · `docs/SPEC.md`'s matching advisory-lock claim |
 | **Discharges** | `OPS-015` in full — the profile claim (already fixed upstream, confirmed), the registry rollback (B4 supplies the coordinate), the `uv run` instructions, plus the two new stale claims the fix introduced · `VAL-10-004` (the verification method that cannot produce its output, recorded as "the shipped production file resolves nothing") · `VAL-10-005` (`CFG-001` half-closed; three documents give mutually inconsistent invocations and the one every operator copies first is the one that fails) · **the new live gap**: `CORS_ORIGINS` is commented out in `docker/.env.production`, so the compose placeholder default wins in production and the application's placeholder-origin guard refuses startup |
-| **blocked_by** | **B2, B3, B4, B6, B9, B10** (all hard — each of them changes what the runbook must say, and a runbook written before them describes a system that no longer exists) · **`DP-10-1`** (hard, for the rq-worker service entry only) · **`DP-10-10`** (hard, for the advisory-lock sentence) · soft: B0, and `DP-10-7` (the volumes table's budget row cannot be written until the budget exists) |
+| **blocked_by** | **B2, B3, B4, B6, B9, B10** (all hard — each of them changes what the runbook must say, and a runbook written before them describes a system that no longer exists) · **`DP-10-1`** (hard, for the rq-worker service entry only) · **`DP-10-10`** (hard, for the advisory-lock sentence) · soft: B0. **`DP-10-7` and `DP-10-13` are ruled (2026-10-03), so the volumes table's budget row and its RPO/RTO row are now writable — and must be filled from the ruled figures, not marked pending: the budget row carries **50 GB** with the **24 h / 90-day retention**, and the RPO/RTO row carries **RPO 24 h, RTO 4 h, daily backups** with the rehearsed restore named as its acceptance gate.** |
 | **Execution order** | **15 — last, by rule.** |
 | **Risk — implementation** | **Low in mechanism; the risk is the runbook becoming a description of the intended system again.** That is the failure this whole block exists to reverse, and it is invisible to every gate. |
 | **Risk — rollout** | **Medium, and it is the only block whose rollout risk is an operator.** A runbook that names an invocation which exits 1 with thirteen interpolation errors, or an `uv run` that exits 127, sends an operator down a dead end during an incident. Every command this block writes must be **run**, not just typed. |
@@ -682,16 +709,18 @@ perform; they differ in what B14 must write.
 | **Agents** | **Auditor** — required and specific: **every** command the runbook contains is executed, or its non-execution is stated in the commit body with the reason. The `uv run` corrections are only verifiable by running them, and the corrected invocation form is verifiable by resolving the compose file. **Planner** — the document structure, the rollback section's dependency on B4's outcome, and the volumes table's budget row's dependency on `DP-10-7`. **Validator** — the runbook's Quick Start is followed literally on a throwaway project name, and the three documents agree. **Researcher — not required.** |
 | **Documentation impact** | **This block is the documentation impact.** `docs/10-deployment/deployment.md` · `docs/10-deployment/security-checklist.md` · `docs/SPEC.md` (one version row; the advisory-lock sentence only if `DP-10-10` rules doc-only). |
 | **Verification** | the resolved compose check with `--quiet` (never paste resolved output — it contains secret values) · `.\Makefile.ps1 doctor` (versions and service lists) · each corrected in-container command **run** in a throwaway container (`docker compose … run --rm --no-deps app <cmd>`), with `uv --version` confirmed to still exit 127 so the corrected form is genuinely different · `.\Makefile.ps1 ps` confirming the shared stack is untouched · a `git grep` over `docs/` for `--env-file` confirming the runbook now names it, and for `uv run` inside containers confirming those occurrences are gone or justified · no `restore` is run |
-| **Definition of done** | Every command in the runbook has been executed, or its non-execution is stated with a reason · the Quick Start supplies the env file and says where the five required secrets **and** `CORS_ORIGINS` come from, since the shipped file contains none of them · the `security-checklist.md` check **runs** against a resolvable configuration, or is amended to a form that does · no in-container `uv run` instruction remains unverified · the rollback section describes a procedure that B4's artefact coordinate actually supports, and names the coordinator if B4 ruled the local-tag option · the volumes table carries backup, retention and RPO/RTO facts from B2 and B3, and its **budget row is explicitly marked as pending `DP-10-7`** rather than filled with a guess · the advisory-lock sentence matches the real lock holder, or is escalated under `DP-10-10` · `docs/SPEC.md`'s version row is appended, never an existing row edited. |
+| **Definition of done** | Every command in the runbook has been executed, or its non-execution is stated with a reason · the Quick Start supplies the env file and says where the five required secrets **and** `CORS_ORIGINS` come from, since the shipped file contains none of them · the `security-checklist.md` check **runs** against a resolvable configuration, or is amended to a form that does · no in-container `uv run` instruction remains unverified · the rollback section describes a procedure that B4's artefact coordinate actually supports, and names the coordinator if B4 ruled the local-tag option · the volumes table carries backup, retention and **RPO/RTO** facts from B2 and B3 — **RPO 24 h, RTO 4 h, daily backups, per `DP-10-13`, with the rehearsed restore named as the acceptance gate** — and its **budget row carries the `DP-10-7` figure — 50 GB for the artefact and log volume, enforced before accept, with temporary files at 24 h and processing logs at 90 days — with its derivation beside it, never the number alone, and the number revised if the derivation contradicts it**; **neither row may be marked pending**, because both rulings have landed (2026-10-03) and a pending cell is now a stale claim · the advisory-lock sentence matches the real lock holder, or is escalated under `DP-10-10` · `docs/SPEC.md`'s version row is appended, never an existing row edited. |
 
 ---
 
-## Open decisions — owner rulings required
+## Decision records — three ruled (2026-10-03), ten open
 
-**This plan chooses none of them.** `DP-10-1` … `DP-10-5` are carried from the code context's decision
-points; `DP-10-6` … `DP-10-12` are raised here, each marked as such. Every record states what stays
-blocked until it is ruled. `DP-10-11` and `DP-10-12` block nothing in this plan; they are recorded so
-they are not dropped.
+**This plan chooses none of the technical ones.** `DP-10-1` … `DP-10-5` are carried from the code context's
+decision points; `DP-10-6` … `DP-10-12` are raised here, each marked as such; `DP-10-13` is minted by the
+2026-10-03 ruling. Each open record states what stays blocked until it is ruled. `DP-10-11` and
+`DP-10-12` block nothing in this plan; they are recorded so they are not dropped. **`DP-10-2`,
+`DP-10-7` and `DP-10-13` are ruled by the Product Owner on 2026-10-03** — see **Owner rulings applied**
+above and `.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md`, the single authority.
 
 ### DP-10-1 — Does `TestRqWorkerComposeWiring` block TOPO-002's "delete the service" option?
 
@@ -718,8 +747,11 @@ Both tiers run the wrapper module, and that is what the runbook must say under e
 
 ### DP-10-2 — Phase 10's co-signature of the probe contract (phase 07's `DP-1`)
 
-**Gating:** B0's register (soft) · nothing else in this plan. **Chooser: Tech Lead**, with **phase 10
-as co-signer** (phase 07's `HO-3` names phase 10 in exactly this role) and phase 07 owning the code.
+**Status: RULED — option (a). Chooser: Product Owner, 2026-10-03.** Phase 10 signs as the named
+co-signer; phase 07's `DP-1` is ruled **(a)** by the same ruling.
+**Gating:** B0's register — **released** by the ruling. **Chooser: Product Owner (2026-10-03)**, with
+**phase 10 as co-signer** (phase 07's `HO-3` names phase 10 in exactly this role) and phase 07 owning the
+code.
 
 Phase 07's ruling is between leaving the liveness endpoint on the database alone and widening it. **Two
 facts decide how phase 10 signs, and both are now known.** First, the consumer half already landed:
@@ -730,15 +762,21 @@ components including one that can degrade without moving the overall status.
 
 | Option | Trade-off |
 | ------ | --------- |
-| **(a)** Liveness stays database-only; the store appears as a detailed component that never moves the overall status | Matches the existing precedent in the same function, keeps every `service_healthy` dependent unchanged, and is the shape the health document already argues for in prose. Leaves anyone polling only the liveness endpoint with the original blind spot — which the documentation currently tells operators to do. |
-| **(b)** The store joins the liveness endpoint and a failure returns 503 | Closes the finding for every existing consumer. Converts a blip into an unavailable application, and the dependents refuse to start rather than degrade. Requires the shipped exact-dict assertion to change with it. |
-| **(c)** A third, separate readiness path | Additive; existing consumers keep their contract. A new public surface with its own documentation and its own wiring, and anything not migrated keeps the old blind spot. |
+| **(a) Liveness stays database-only; the store appears as a detailed component that never moves the overall status** — **CHOSEN, Product Owner 2026-10-03** | Matches the existing precedent in the same function, keeps every `service_healthy` dependent unchanged, and is the shape the health document already argues for in prose. Leaves anyone polling only the liveness endpoint with the original blind spot — which the documentation currently tells operators to do. |
+| **(b) The store joins the liveness endpoint and a failure returns 503** | Closes the finding for every existing consumer. Converts a blip into an unavailable application, and the dependents refuse to start rather than degrade. Requires the shipped exact-dict assertion to change with it. |
+| **(c) A third, separate readiness path** | Additive; existing consumers keep their contract. A new public surface with its own documentation and its own wiring, and anything not migrated keeps the old blind spot. |
 
-**What phase 10 signs, whichever option is ruled:** the number of services that gate on the
-application's health state, the fact that the dev tier **inherits** the probe (the report's contrary
-claim is refuted and must not be restated), and the fact that the fail-closed store policy is now a
-**declared production setting** on two services — so the meaning of "unhealthy" must be decided against
-that policy, not in isolation.
+**What phase 10 signs under the ruled option — the three facts, now signed rather than pending:** the
+number of services that gate on the application's health state, the fact that the dev tier **inherits**
+the probe (the report's contrary claim is refuted and must not be restated), and the fact that the
+fail-closed store policy is now a **declared production setting** on two services — so the meaning of
+"unhealthy" must be decided against that policy, not in isolation.
+
+**The trade the ruling accepts, stated so a reader does not mistake it for a fix.** Option (a) leaves
+anyone polling only the liveness endpoint with the original blind spot. That is a **recorded** residual,
+not a closed defect: the same trade is written into phase 07's own residual-risk list and into its
+`EB-1` constraints. **What the ruling does change is the co-signature's status** — phase 10 is no longer
+waiting on a probe ruling, so `B0`'s register carries the signed facts rather than an open gate.
 
 ### DP-10-3 — What happens to the shipped exact-dict assertion on the liveness endpoint?
 
@@ -808,33 +846,70 @@ deployment started without the edge profile actually serves.
 
 ### DP-10-7 — The disk-budget number
 
-**Gating:** nothing in this plan is hard-blocked on it; **B14's volumes table budget row** and B10's
-log-ceiling statement are, and both are explicitly permitted to record "pending" rather than guess.
-**Chooser: Coordinator** (topology and operations), informed by phase 11's measurement and phase 06's
-growth factor. **Explicitly not phase 10 to invent.**
+**Status: RULED — Product Owner, 2026-10-03, chosen by description. Ruled TOGETHER with phase 11's
+`DP-11-H`; one decision, two IDs.** This record and `DP-11-H` must never be ruled differently.
+**Gating: released.** **Chooser: Product Owner (2026-10-03)**, informed by phase 11's measurement set
+and phase 06's growth factor — replacing the Coordinator chooser this record previously named.
+**Explicitly still not phase 10's to invent; the number was set by the owner.**
 
 No disk budget exists anywhere in the repository — no size limit, no quota, no documented number. Three
-phases are waiting on one: phase 06's `C06-4` (hard, before its artefact ceiling) and phase 05's
+phases were waiting on one: phase 06's `C06-4` (hard, before its artefact ceiling) and phase 05's
 `C05-7`. The growth sources are the log area, the uploads area, the temporary area, the store volume and
 the database volume.
 
 | Option | Shape | Trade-off |
 | ------ | ----- | --------- |
-| **(a)** A size check before accept, rejecting the upload | An **admission check on the resolved directory**, expressed as a byte number the check compares against — i.e. phase 06's pre-accept ceiling | A real admission bound expressed against the **resolved** directory. Turns a disk-full incident into a user-visible rejection, and needs phase 06's error-code ruling. |
-| **(b)** A dedicated volume for the log area with its own budget | A **separate volume with its own byte budget** — the layout half of phase 10's budget, not the ceiling half | Separates the fastest-growing unbounded writer from the data. A new volume is a new backup subject and a new thing to monitor. |
-| **(c)** Both | **Both of (a) and (b)**: an admission ceiling on the resolved directory *and* a dedicated log volume with its own budget | Complete, and two mechanisms to keep consistent. |
-| **(d)** A documented operator-facing budget with no enforcement | A **documentation-only number** with no enforcement path; the number itself is ruled by the Coordinator via `DP-11-H` (see the external-status paragraph below) | Honest and cheap. Leaves the ceiling unenforced, which is the state today, and it does not unblock the two phases waiting on a number any more than a guess would. |
+| **(a)** A size check before accept, rejecting the upload | An **admission check on the resolved directory**, expressed as a byte number the check compares against | **This is the shape the ruling selects, by description**: the budget is **enforced before accepting** an upload that would exceed it, so the 50 GB figure is an **admission bound**, not a note. A real admission bound expressed against the **resolved** directory turns a disk-full incident into a user-visible rejection, and needs phase 06's error-code ruling. |
+| **(b)** A dedicated volume for the log area with its own budget | A **separate volume with its own byte budget** — the layout half of phase 10's budget, not the ceiling half | Separates the fastest-growing unbounded writer from the data. A new volume is a new backup subject and a new thing to monitor. **not chosen** — the ruling takes one byte number and one admission check, not two budgets. |
+| **(c)** Both | **Both of (a) and (b)**: an admission ceiling on the resolved directory *and* a dedicated log volume with its own budget | Complete, and two mechanisms to keep consistent. **not chosen** — same reason as (b); the ruling does not create a second volume. |
+| **(d)** A documented operator-facing budget with no enforcement | A **documentation-only number** with no enforcement path | Honest and cheap. Leaves the ceiling unenforced, which is the state today. **not chosen** — the ruling requires the budget to be **enforced before accept**, which is precisely what (d) declines. |
+
+**What the ruling says, in the owner's words, because the letter alone is not the substance:**
+
+| Item | Ruled value |
+| ---- | ----------- |
+| **The budget** | **50 GB** for the **artefact and log volume** |
+| **Where it is enforced** | **before accepting** an upload that would exceed it |
+| **Retention — temporary files** | **24 hours** |
+| **Retention — processing logs** | **90 days** |
+| **The derivation** | **published next to the figure** — and **the number is revised if the derivation contradicts it** |
+| **Superseded figure** | the retracted `1,036.2 MB / 101.2 %` pair, **wherever it is cited** |
+
+**The revision clause is not optional and not a footnote.** The 50 GB figure was supplied by the owner as
+a figure to plan against; the **derivation** is phase 11's deliverable. If the derivation lands and
+contradicts the figure, **the number is revised** — it is not defended, and it is not left standing
+because three phases have already been released against it. That is why the register states the
+requirement that makes the number trustworthy *in the same ruling* that supplies it.
+
+**The separation that must not be blurred** (`C11-7`, unchanged by the ruling). **Phase 06 owns the
+artefact area's *ceiling***; **phase 10 owns the *budget*** (compose layout, volume, backup story,
+alerts); **phase 11 owns the *capacity measurement*** underneath both. The ruling sets the number and
+requires the derivation to be published with it. **A wrong number is worse than no number** — which is
+why the derivation must ship next to the figure, and why the measurement set is not optional.
+
+**Blocks released by this ruling.** Phase 06 **`C06-4`**, phase 05 **`C05-7`**, **`C05-8`** and
+**`C06-7`**, and phase 11's `DP-11-H` and `PRF-0`. **Three phases were blocked on this.**
+
+**Letter note, superseded by the adjudication.** The two **input** registers of 2026-10-03 labelled this
+decision **(a)**, and in **this** file option **(a)** is an *admission check on the resolved directory* —
+which `C11-7` assigns to phase 06 as the **ceiling**. The **adjudicated** register resolves this
+explicitly: **option letters in the ruling are not plan option-table letters; the words are what is
+implemented.** The words — a **50 GB** budget for the artefact and log volume, **enforced before
+accepting**, with **24 h / 90-day** retention — name row **(a)** of this file's table, which is therefore
+marked chosen **by description**. **No row above is deleted or re-lettered**, and rows (b), (c) and (d)
+keep their trade-offs. The former escalation under *Conflicts requiring a Coordinator ruling* at the end
+of this file is `X-10-01`, and it is now **answered**.
 
 **External status, corrected at implementation time.** A phase-11 execution plan
 (`.ai/plans/11-performance-remediation-execution.md`) **now exists**, and it names the same question:
-its `DP-11-H` asks exactly this, with the **same Coordinator as chooser**, and it separates what each
-phase owns — **phase 06 owns the artefact area's *ceiling*, phase 10 owns the *budget*** (compose
-layout, volume, backup story, alerts), and phase 11 owns the **capacity measurement** underneath both
-(`C11-7`). **This record and `DP-11-H` are one decision recorded twice and must be ruled together.**
+its `DP-11-H` asks exactly this, with the **same chooser**, and it separates what each phase owns —
+**phase 06 owns the artefact area's *ceiling*, phase 10 owns the *budget*** (compose layout, volume,
+backup story, alerts), and phase 11 owns the **capacity measurement** underneath both (`C11-7`).
+**This record and `DP-11-H` were one decision recorded twice and were ruled together on 2026-10-03.**
 Phase 11's `PRF-11` block supplies the measurement set — the measured expansion factors, the residency
-budget, the configured retention horizon — but explicitly **not** the number. So the number is owed by
-the Coordinator ruling, informed by phase 11's measurement set, and phase 05's `C05-8`, phase 06's
-`C06-7` and this record all wait on that single ruling.
+budget, the configured retention horizon — and explicitly **not** the number, which the owner has now
+set. **What `PRF-11` still owes is the derivation**, which the ruling requires to be published next to
+the figure.
 
 ### DP-10-8 — Templating the edge size bound: relocate the file, or not?
 
@@ -902,6 +977,55 @@ interval and retry count multiply that. A wedged worker therefore stays healthy 
 that is the desired window, and whether it needs a retune, a stop grace period, or a second faster
 probe, is an operator-facing trade-off between detection speed and false positives.
 
+### DP-10-13 — What are the RPO and the RTO? *(minted by the **adjudicated** 2026-10-03 owner ruling — **adjudicated-new**: neither input register carried this question)*
+
+**This file previously had no identifier for the RPO/RTO question.** `B1` and `B14` both carried it as
+an unfilled cell — "no RPO/RTO" in the volumes table, and "the absent RPO/RTO statement" in `B1`'s
+discharges — with nothing to attach it to. The adjudicated Product Owner ruling of **2026-10-03** answers
+it, so the record is minted here under this file's existing `DP-10-<n>` convention. **It is
+adjudicated-new**: neither of the two input registers of 2026-10-03 raised it, so nothing here is carried
+across from an input or reconciled against one — the authority for it is
+`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md`, cluster 8.
+
+**Status: RULED. Chooser: Product Owner, 2026-10-03.**
+**Gating: released** — `B1` and `B2` no longer wait on the question, only on the rehearsal the ruling
+requires.
+
+**The ruling, in full and with nothing added to it:**
+
+| Item | Ruled value | Where it must appear |
+| ---- | ----------- | -------------------- |
+| **RPO** (recovery point objective) | **24 h** | published in `docs/10-deployment/deployment.md` |
+| **RTO** (recovery time objective) | **4 h** | published in `docs/10-deployment/deployment.md` |
+| **Backup cadence** | **daily** | the volumes table's backup and retention rows |
+| **Acceptance gate** | **gated on a rehearsed restore against a scratch database** | `B1`'s `rehearse-restore`, executed before `B2` lands |
+| **`backup` / `restore` reporting** | **must not report success unconditionally** | `B1`'s exit-code work — the same defect `OPS-005` files |
+
+**What the numbers mean in the operator's terms, so a reader does not have to infer it.** An RPO of
+**24 h** is the answer to "how much accepted work may be lost", and it is only true because backups are
+**daily** — the RPO is a consequence of the cadence, not an independent promise. An RTO of **4 h** is the
+answer to "how long may the service be down", and it is only true because the restore path is
+**non-vacuous**: an operator who cannot tell a failed restore from a successful one cannot meet any RTO,
+which is exactly why the ruling gates the numbers on a rehearsed restore and states that `backup` and
+`restore` **must not report success unconditionally**.
+
+**Why the gate is a rehearsal and not a document.** A published RPO/RTO with no rehearsed restore is
+`OPS-015`'s defect in a different dress — a description that no longer prices the behaviour beside it.
+The ruling therefore makes the **rehearsal an acceptance criterion**, and `B1` already requires
+`rehearse-restore` to have been **executed at least once against a scratch database**. **A restore must
+never be run against `bidb` as part of verification** — that clause stands and is not weakened by this
+ruling.
+
+**Released blocks.** `B1` and `B2`. `B14`'s volumes table gains an RPO/RTO row from this record, and the
+runbook's restore rehearsal becomes an acceptance criterion rather than a good practice.
+
+### Ruling cross-check — none of these is a Planner's choice
+
+`DP-10-2`, `DP-10-7` and `DP-10-13` are recorded above as Product Owner rulings with the date. **This
+plan chose none of them.** The remaining ten records — `DP-10-1`, `DP-10-3`, `DP-10-4`, `DP-10-5`,
+`DP-10-6`, `DP-10-8`, `DP-10-9`, `DP-10-10`, `DP-10-11`, `DP-10-12` — keep the choosers and trade-offs
+written above them, unchanged.
+
 ---
 
 ## Cross-phase seam and hand-over register
@@ -914,7 +1038,7 @@ and several are hand-overs **phase 10 owes**.
 | **C10-1** | **The store volume's backup, durability and artefact story** (accepted from phase 06 `C06-4` and `C06-11`) | the store volume declaration in the base compose file · `Makefile.ps1::Invoke-Backup` / `::Invoke-Restore` / `::Invoke-PruneBackups` · the volumes table in `deployment.md` | **The whole backup story** (B3) and, in B14, the volume's documented retention | phase 10 (accepted) · phase 06 for growth | Deliver the export, the paired artefact, the load ordering and the retention facts. Report the durability consequence of losing accepted work: the queue is the only record of accepted jobs, and the sweeper's retention window then reclaims their files, leaving rows with no file. | Do not decide the artefact volume's topology (`DP-10-11`, phase 06's `D-06-K`) · do not invent the budget (`DP-10-7`) · do not touch the sweeper's lifetime (phase 05's `C05-7`). |
 | **C10-2** | **The uncommitted deactivation write that amplifies `OPS-001`** | the account-deactivation route's user write and the revocation write that follows it | **Cross-reference only** | phase 03 — `TXN-001` | State in B3's commit body that the revocation marker is only a durable record once the transactional write persists, so the two fixes are complementary rather than overlapping. | Do not edit the write path. The report recommends no edit there and neither does this plan. |
 | **C10-3** | **The health surface's store and schema components** (`EXT-001`) | the two health handlers · the health API document | **None — by rule.** Phase 10 does not schedule a second edit to the same handlers | phase 07 — `EB-1` | Record in B0's register that phase 10 must not touch the handlers, that the **deployment half already landed**, and that the store component belongs to the single change phase 07 owns. Carry the `CORS_ORIGINS` and fail-closed facts as inputs. | Do not edit the handlers or the health document. Do not restate the refuted dev-healthcheck claim. |
-| **C10-4** | **The probe contract co-signature** (`HO-3`) | the same two handlers, read as deployed consumers | **Co-signer** of `DP-10-2` | phase 07 with Tech Lead | Sign with the three facts in `DP-10-2`: the number of healthy-state dependents, the dev tier **inheriting** the probe, and the declared fail-closed store policy. | Do not edit any file under `docker/` to make a probe ruling land. |
+| **C10-4** | **The probe contract co-signature** (`HO-3`) | the same two handlers, read as deployed consumers | **Co-signer** of `DP-10-2` — **signature given, Product Owner 2026-10-03, option (a)** | phase 07 with **Product Owner** | Sign with the three facts in `DP-10-2`: the number of healthy-state dependents, the dev tier **inheriting** the probe, and the declared fail-closed store policy. **Signed, not pending** — and the same ruling states that the fact that the change has no shipped effect in the shipped production topology must be recorded, so no reader over-reads it. | Do not edit any file under `docker/` to make a probe ruling land. |
 | **C10-5** | **The revocation-read guard** (`AUTH-008`, merged in by phase 07) | the per-request gate's two revocation reads · the permissions module's two | **None** | phase 04 | Name in B11's commit body that the guard belongs to phase 04 and that scheduling it here would put two teams in one dependency. | Do not edit the gate or the permissions module. |
 | **C10-6** | **Alert expressions over the metrics surface** (`OPS-007`'s residue, widened by phase 11) | no exporter, no collector, no alert rule exists · the worker depth metric phase 11 names as an instrumentation gap nobody owns (`C11-15`) · a **queue-depth alert**, which phase 11 identifies as **phase 10's** operations surface (`C06-4`, `C05-7`) | **None code, and named as unowned** | Coordinator | Record in B0 that the absent **series** is OPS-007's only distinct content; that phase 11 places the queue-depth alert on phase 10's surface; and that **an alert with no metric source is a dashboard reading zero**, which phase 11 states explicitly and which must therefore be stated again before any alert is added. | Do not introduce an exporter, a collector or an alert rule. That is a new surface, not a remediation. Do not add an alert over a metric nothing emits. |
 | **C10-7** | **The logout ordering** | the logout route's revocation writes and the cookie clear | **The ordering decision; not the edit** | phase 04 — the file is phase 04's | State the requirement precisely: the cookie clear must precede the revocation writes, so a store failure cannot produce a failed logout that leaves the session live. It is a two-line change with **no** dependency on the timeout work and must not wait for it. | Do not edit the route. Do not schedule it here. |
@@ -981,7 +1105,7 @@ that must hold.
 | 8 | **B7** | none | B0 |
 | 9 | **B8** | none (`DP-10-12`'s retune folds in **if ruled first**) | B0 |
 | 10 | **B9** | **`DP-10-8` ruled** | B0 |
-| 11 | **B10** | none (a dedicated log volume under `DP-10-7` would reshape it) | B0 |
+| 11 | **B10** | none (`DP-10-7` **ruled 2026-10-03 — the 50 GB budget is enforced before accept**, so B10's corrected ceiling arithmetic feeds it rather than being marked pending) | B0 |
 | 12 | **B11** | **`DP-10-4` ruled** · **`DP-10-5` ruled** · phase 07's `DP-3`/`DP-4` ruled | B0 |
 | 13 | **B12** | none | B0 |
 | 14 | **B13** | none (its one open question is the historical-document treatment, stated in-block) | B0 |
@@ -1105,17 +1229,29 @@ target in the repository gains an exit code before any new restore order is intr
 - **Neither half of the deployed system becomes fully revertible.** B4 gives the server artefacts a
   coordinate and B6 gives the bundle one carrier — but with the local-tag option ruled, "rollback" is a
   rollback on **one daemon**, not a recovery. The runbook must say which it is.
-- **The disk budget is still an empty cell.** `DP-10-7` is one decision recorded twice (here and as
-  phase 11's `DP-11-H`), the Coordinator has not ruled it, phase 11 has delivered only the measurement
-  set, and phase 05's `C05-8` and phase 06's `C06-7` are still waiting. Phase 06's artefact ceiling stays
-  hard-blocked, and this plan deliberately did not invent a number to unblock it.
+- **The disk budget is no longer an empty cell, but its derivation is not here yet.** `DP-10-7` is one
+  decision recorded twice (here and as phase 11's `DP-11-H`) and it was **ruled on 2026-10-03**: **50 GB
+  for the artefact and log volume, enforced before accepting an upload that would exceed it, with
+  retention of 24 hours for temporary files and 90 days for processing logs**. Phase 06 `C06-4` and
+  phase 05 `C05-7`, `C05-8` and `C06-7` are released. **This is the one residual the ruling genuinely
+  changes**, and it changes it in this
+  direction: the old risk was *no number at all*; the new risk is **a number whose derivation has not
+  landed**. The owner requires the derivation to be published **next to** the figure, and **the number is
+  revised if the derivation contradicts it** — so a derivation that lands and disagrees does not leave a
+  defended constant in four places. **A wrong number is worse than no number** — so the register
+  supersedes the retracted
+  `1,036.2 MB / 101.2 %` pair wherever it is cited, and the figure never travels alone.
 - **No queue-depth alert exists, and the metric it would read does not exist either.** Phase 11 places
   the alert on phase 10's surface and separately records the depth metric as an instrumentation gap with
   no owner (`C11-15`). An alert added over a metric nothing emits is a dashboard reading zero, so this
   is a named residual rather than an omission.
-- **The health surface still cannot tell an operator the store is down.** Under `DP-10-2` option (a) the
-  finding survives for anyone polling the liveness endpoint alone — which is what the documentation
-  tells operators to do. The plan makes the trade explicit and recorded; it does not make it disappear.
+- **The health surface still cannot tell an operator the store is down — and the 2026-10-03 ruling
+  confirms it rather than leaving it open.** `DP-10-2` keeps liveness **database-only**, with the store
+  as a **non-fatal detailed component**, so the finding survives
+  for anyone polling the liveness endpoint alone — which is what the documentation tells operators to do.
+  **This is the second residual the ruling genuinely changes**: the trade is no longer conditional on
+  which option were chosen, it is now a recorded decision with phase 10's co-signature attached. The
+  plan makes the trade explicit and recorded; it does not make it disappear.
 - **The store's five failure modes are still five.** B11 declares the submit contract; the per-request
   revocation reads, the logout ordering and the credential store's own contracts are phase 04's.
 - **The edge's configuration remains unobserved.** B9 validates with `nginx -t` in a throwaway container
@@ -1132,3 +1268,17 @@ target in the repository gains an exit code before any new restore order is intr
   discount a correct finding.** B0 records that and does not repair the audit corpus. Anyone reading the
   report as a checklist must re-derive every location by symbol, and must not treat the corrected count,
   the corrected multiplier or the corrected ceiling as the report's numbers.
+
+---
+
+## Conflicts requiring a Coordinator ruling
+
+Recorded, not resolved. Each item is a place where a ruling's **wording** and text this plan does not own
+cannot both be read literally, and where picking a reading silently would be a Planner's re-ruling. **Two
+rows below are answered by `.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` and say so;
+they are retained because the question was asked, not because it is still open.**
+
+| # | Subject | The conflict | What is needed |
+| - | ------- | ------------ | --------------- |
+| **`X-10-01`** | **`DP-10-7`'s option letter does not match this file's option table.** Anchor: `### DP-10-7 — The disk-budget number`, option rows (a)–(d) | The two input registers of 2026-10-03 ruled `DP-10-7` / `DP-11-H` with a letter, and the letters were assigned against their **own** tables. In **this** file the letter **(a)** attaches to *"a size check before accept, rejecting the upload"*, and in phase 11's table the same content is priced differently again. A reader who took any input register's letter at face value in this file could implement the wrong thing and call the budget done | **ANSWERED by the adjudicated register.** It rules `DP-10-7` / `DP-11-H` **by description, not by letter**: a budget of **50 GB** for the artefact and log volume, **enforced before accepting** an upload that would exceed it, with retention **temporary files 24 hours** and **processing logs 90 days**. In **this** file's table that is row **(a)**, marked **chosen by description**; rows (b), (c) and (d) keep their trade-offs and are named **not chosen**. **The register states explicitly that its option letters are not plan option-table letters.** **No option row has been deleted, re-lettered or re-scoped here.** |
+| **`X-10-02`** | **Two owner registers existed for the same date.** Anchor: the frontmatter key `decisions` and the *Owner rulings applied* table above | Both input registers of 2026-10-03 applied, and they disagreed on substance for the same identifiers — for instance on `DP-11`, where one ruled *"reject on the declared content length, truncate on the parsed field values"* and the other **413 rejection on the parsed field values**. These are **different behaviours**, not two letters for one behaviour | **ANSWERED by the adjudicated register.** `.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` is the **single authority**: it merges both inputs and adjudicates every disagreement, and its ruling on the oversize boundary is **reject on the declared length *and* truncate on the parsed values**. Both inputs are **superseded** wherever they differ. **Neither input register has been edited by this plan, and phase 07's own fold has been brought onto the adjudicated wording.** |

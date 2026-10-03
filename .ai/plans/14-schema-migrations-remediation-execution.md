@@ -12,7 +12,7 @@ chain_shape: 8 revisions · linear · single head · 13 tables · 13 FKs · 6 en
 blocks: 14 (MIGB-0 … MIGB-13)
 id-namespace: >-
   Block IDs are MIGB-0 … MIGB-13, decision records are D-14-A … D-14-J, and seam and hand-over IDs are
-  C14-1 … C14-16. All three are this file's and are never to be conflated with a sibling plan's. Taken
+  C14-1 … C14-17. All three are this file's and are never to be conflated with a sibling plan's. Taken
   and separately owned, not reused here: B* (bare block ranges — plans 01, 02, 03 and 10; plan 10's own
   B0 … B14 is cited as "plan 10 B3"), D-1 … D-7 (plans 02 and 03), DP-1 … DP-8 (phase 07; plan 05's own
   are the code context's DP-001 … DP-019, and plan 10's own records are cited as DP-10-*), D-08-* (phase 08),
@@ -22,7 +22,10 @@ id-namespace: >-
   D-14-B, never as D-B.
 decisions: >-
   10 (D-14-A … D-14-H carried verbatim from the code context §8; D-14-I, D-14-J raised by this
-  Planner) — none picked
+  Planner) — D-14-J RULED by the Product Owner on 2026-10-03 and adjudicated in
+  .ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md (Cluster 1); the remaining NINE picked
+  by nobody. Option letters in that register are NOT this plan's option-table letters; the ruled content
+  is recorded by description
 findings_owned: >-
   8 whole (MIG-001 … MIG-008), of which MIG-005's premise half is already delivered by 8178610 and
   only its mutual-exclusion half is open
@@ -32,7 +35,7 @@ gate_baseline: >-
   `mypy src/`; pyproject.toml excludes alembic/ from mypy) — `uv run ruff check alembic/` returns
   4 errors today (1 × UP035 + 3 × UP007, VAL-14-002). A green gate is a precondition of every block
   and is never its evidence
-status: decomposed — 14 blocks · 10 decision records open · no technical fork chosen
+status: decomposed — 14 blocks · 9 decision records open · 1 ruled (D-14-J) · no technical fork chosen
 ---
 
 # Phase 14 — Schema and migrations remediation execution plan
@@ -45,6 +48,12 @@ implementation choices where technical uncertainty exists: `D-14-A` … `D-14-H`
 from the code context's §8 — which states "Genuine technical uncertainty. **This context picks none of
 them.**" — and `D-14-I`, `D-14-J` are raised here because two forks appear where the code context's
 list is silent.
+
+**One of the ten has since been ruled and one hand-over has arrived.** `D-14-J` is **RULED** by the
+Product Owner on 2026-10-03, and phase 16's `D-16-2` makes this phase a **participant** in the `range`
+filter disposition — both adjudicated in
+`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md`. See `Owner rulings applied` below.
+**The remaining nine are still open by design and their choosers are untouched.**
 
 Every block names a **semantic** target (revision · migration module · model class · table · column ·
 index · constraint · enum value · model-versus-chain mismatch — **never a line number**), the `MIG-*`
@@ -59,6 +68,32 @@ without executing any of them. Where a report or a sibling plan instructs a repa
 artefact, this plan **records** the correction and **applies** it as a ruling, and names the repair as
 an authorised authoring task it does not perform — the phase-04 `VAL-04-001` and phase-08 `VAL-08-001`
 precedents, applied.
+
+## Owner rulings applied
+
+**`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` — Product Owner, adjudicated by the
+Tech Lead, 2026-10-03 — decides `D-14-J`, and hands this phase one participation.** That file is **the
+single authority**: it merges two parallel owner registers and adjudicates every disagreement, and neither
+input file may be cited as authority any more. **The clusters this plan consumes are Cluster 1 (which
+rules `D-14-J` together with phase 12's `DP-12-H`) and Cluster 4 (which rules phase 16's `D-16-2` and, in
+doing so, makes this phase a participant in the stored-`range`-filter disposition).** Nothing below is
+this plan's choice, and no option was ruled by default because a question went unanswered. The record
+section below keeps every option and every trade-off; the ruled option is marked, and the rejected ones
+are marked rejected rather than deleted.
+
+**Option letters are not carried across.** The adjudicated register's letters denote which *input
+register* won each decision, not which option in *this plan's* tables was taken — **implement the words.**
+
+| ID | Ruled — by description | Consequence for this plan |
+| -- | ---------------------- | ------------------------- |
+| `D-14-J` | **Exactly one creator. `created_by` is provenance, not authority. NO rename migration and NO backfill.** **The 1:1 multiplicity assumption is UNCHANGED** — there is no co-owner model, no second-writer question, and nothing to migrate | **A SETTLED QUESTION, NOT A BLOCK.** It gates nothing, it creates no `MIGB-*`, and no revision is authored. Recorded here and in `C14-12` so no implementor opens a migration for it. **The blast radius statement in `D-14-J` still stands**: because ownership is no longer *derived* from the column, a dashboard must remain reachable by its creator through an explicit grant row |
+| `D-16-2` (phase 16's, a **participation** for this phase) | **`range` is removed from the client filter control, and any stored `range` filter is REJECTED with a message naming the reason, until a definition exists.** Do not ship a control that either does nothing or silently fails | **This phase is a participant, not an owner.** Whether stored `range` filters need a migration, a quarantine, or a documented fallback is a schema question, and it is **named in the hand-over register as `C14-17`**. **No block is unblocked by it and no block is created for it now** — the disposition depends on whether such rows exist, which is a measurement, and the ruling fixes the *client* side while leaving the stored-row handling explicitly open to this phase's participation |
+
+**Everything else stays open.** `D-14-A` … `D-14-I` are **still open** with their original choosers, and
+**no option was ruled for any of them.** `D-14-A` … `D-14-H` continue to be carried verbatim from the
+code context's §8.
+
+---
 
 ## Anchor authority
 
@@ -713,11 +748,13 @@ layer". **(b)** add a gate as well: **duplicates `CQLT-6`**, collides with phase
 
 ## Open decisions — owner rulings required
 
-**Ten decision records. None is picked by this plan.** `D-14-A` … `D-14-H` are carried **verbatim**
-from the code context's §8, which states "Genuine technical uncertainty. **This context picks none of
-them.**" `D-14-I` and `D-14-J` are **raised by this Planner**, marked as such, following phase 04's
-`D-04-I` … `D-04-L` and phase 08's `D-10`/`D-11` precedent. Options already priced inside a block are
-**not** repeated here — they are pointed at.
+**Ten decision records. Nine are picked by nobody; one is ruled.** `D-14-A` … `D-14-H` are carried
+**verbatim** from the code context's §8, which states "Genuine technical uncertainty. **This context picks
+none of them.**" `D-14-I` and `D-14-J` are **raised by this Planner**, marked as such, following phase
+04's `D-04-I` … `D-04-L` and phase 08's `D-10`/`D-11` precedent. **`D-14-J` has since been RULED by the
+Product Owner (2026-10-03)** — see `Owner rulings applied` — **and it remains a settled question rather
+than a block: it gates no `MIGB-*` and authors no revision.** `D-14-A` … `D-14-I` stay open with their
+original choosers. Options already priced inside a block are **not** repeated here — they are pointed at.
 
 | # | Question | Chooser | Blocks |
 | - | -------- | ------- | ------ |
@@ -730,7 +767,7 @@ them.**" `D-14-I` and `D-14-J` are **raised by this Planner**, marked as such, f
 | **`D-14-G`** | The `docs/09-database/` debt exceeds `C05-6` — does this phase absorb it all? | **Tech Lead** | **MIGB-12** |
 | **`D-14-H`** | Does the phase write a drift answer, or only take phase 08's gate? | **Tech Lead**, with phase 08 | **MIGB-11** |
 | **`D-14-I`** | The two privilege sites transcribe **different** grant sets — `USAGE` versus `USAGE, CREATE`. Which is canonical, and is the divergence a defect or two tiers' requirements? *(raised by this Planner)* | **Tech Lead**, with phase 01 and phase 10 | **MIGB-10** |
-| **`D-14-J`** | `dashboards.created_by`: does it mean **authorship** or **ownership**, and does the 1:1 multiplicity survive? *(raised by this Planner — the hand-over is phase 12's `C12-6`)* | **Tech Lead**, with **phase 12** as co-signer (its `DP-12-H` depends on the answer) | **nothing today — it is a question, not a block** |
+| **`D-14-J`** | `dashboards.created_by`: does it mean **authorship** or **ownership**, and does the 1:1 multiplicity survive? *(raised by this Planner — the hand-over is phase 12's `C12-6`)* | **Product Owner — RULED 2026-10-03** (ADJUDICATED register, **Cluster 1**): **exactly one creator; `created_by` is provenance, not authority; NO rename migration and NO backfill; the 1:1 multiplicity assumption is UNCHANGED.** *While open, the chooser was **Tech Lead**, with **phase 12** as co-signer — its `DP-12-H` depended on the answer and has now been ruled alongside it* | **nothing — a settled question, not a block.** It gates no `MIGB-*` and authors no revision |
 
 ### D-14-A — `MIG-005`: what mutual exclusion, and where is it acquired?
 
@@ -872,26 +909,42 @@ flat set, the union — simplest artefact, and it hands the application role `CR
 every tier, which production should not have. **(c)** one flat set, the intersection — least privilege
 everywhere, and it **breaks the test tier**, which must create tables in the database it just created.
 
-### D-14-J — does `dashboards.created_by` mean authorship or ownership? *(raised by this Planner)*
+### D-14-J — does `dashboards.created_by` mean authorship or ownership? *(raised by this Planner)* — **RULED**
+
+**RULED by the Product Owner, 2026-10-03**, and adjudicated in
+`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` (**Cluster 1**, where it is ruled
+**together with phase 12's `DP-12-H`**). **Exactly one creator. `created_by` is provenance, not
+authority. NO rename migration and NO backfill. The 1:1 multiplicity assumption is UNCHANGED** — no
+co-owner model, no second-writer question, and nothing to migrate. **It is recorded here as a SETTLED
+QUESTION, NOT A BLOCK** (`O-09`): it gates no `MIGB-*`, it authors no revision, and no implementor may
+open a migration for it. **Its content is recorded by description, not by an option letter** — the
+register's letters denote which input register won the decision, not which row of the table below was
+taken.
 
 Accepted from **phase 12's `C12-6`**, whose own text is precise: *"State the assumption and its blast
 radius: **if `created_by` is re-read as authorship alone, ownership must be reachable through an
 explicit grant, because it can no longer be derived from the column.**"* And its prohibitions: **do
 not migrate the column, do not widen it into a grants structure, and do not rename it — that is phase
-14's if it happens at all.**
+14's if it happens at all.** **The ruling satisfies all three prohibitions, which is why it is recorded
+here rather than executed: it authorises no DDL at all.**
 
-**This is a question, not a block, and this plan does not create one from it** (`O-09`). It is recorded
-because `DP-12-H`'s outcome depends on it, and because the only schema-shaped action available to this
-phase is the one phase 12 forbade.
+**The blast-radius statement still stands, and phase 12 carries it.** Because ownership is no longer
+*derived* from the column, a dashboard must remain reachable by its creator **through an explicit grant
+row** — the creator's automatic owner grant at creation, revocable by a later administrator. **That is
+phase 12's `DP-12-H` implementation, not this phase's**, and this plan's part is only to record that the
+schema question is closed and closed *cheaply*.
 
-**Alternatives, none of them this plan's to take now:** **(a)** `created_by` is ownership and the FK's
-`RESTRICT` behaviour is the enforcement — zero schema change, confirms what the model already enforces,
-leaves the name ambiguous, which is the defect phase 12 named. **(b)** `created_by` is authorship and
-ownership moves to `dashboard_access` — the honest reading, and the one that **requires a data migration
-and a code change across phase 12's authorization rules**, which is exactly why phase 12 filed it here
-instead of deciding it. **(c)** rename the column to say which it is — the only option whose DDL is this
-phase's, a rename on a hot table (`ACCESS EXCLUSIVE` for milliseconds, every read path that selects
-`created_by` affected), and **still not an answer to the multiplicity question**.
+**The options, all three retained with their trade-offs — one chosen by description:**
+
+| Option | What it is | Status |
+| ------ | ---------- | ------ |
+| **Ownership** — `created_by` is authority and the FK's `RESTRICT` behaviour is the enforcement | Zero schema change; confirms what the model already enforces; **leaves the name ambiguous, which is the defect phase 12 named** | **Rejected.** It is the reading the column's name suggests and the reading the authorization code must *not* rely on |
+| **Authorship** — `created_by` records who created the dashboard, and ownership lives in `dashboard_access` | The honest reading. It would **require a data migration and a code change across phase 12's authorization rules** if it were adopted as a *change* — which is exactly why phase 12 filed it here instead of deciding it. **As a ruling it is chosen, and it costs nothing: the creator already receives an automatic owner grant at creation, so there is no row to backfill and no authorization rule to rewrite** | **CHOSEN — by description.** `created_by` is **authorship only**, ownership lives as an **explicit grant row**, and **the 1:1 multiplicity assumption is unchanged** |
+| **Rename** — rename the column to say which it is | The only option whose DDL is this phase's: a rename on a hot table (`ACCESS EXCLUSIVE` for milliseconds, every read path that selects `created_by` affected) — and **still not an answer to the multiplicity question** | **Rejected, explicitly: NO rename migration.** Phase 12's prohibition on renaming stands, and the ruling records that no DDL is authorised |
+
+**What the ruling forecloses, stated so nothing is opened later:** no co-owner column, no
+creator-to-grant backfill, no `created_by` rename revision, and no second-writer constraint. **What it
+does not do:** it does not migrate anything, and it does not create a block.
 
 ---
 
@@ -912,6 +965,7 @@ the `C14-*` register below would be a gap in the plan, not a silent omission.
 | **O-25** | **`make_test_media_dash`'s writes into `dashboards`/`graphs`/`processing_configs` on every dev boot** | Phase 03 `B8`'s territory; no phase-14 finding touches it, and it writes rows to the shared dev database | **phase 03** | Record so an implementor does not attribute a dev-database row to a rehearsal (`O-15`) |
 | **O-26** | **`EXPLAIN` against production-shaped `aggregated_data` data** | **`aggregated_data` holds 0 rows** in both live databases; the measurement is unexecutable, not merely unrun | **nobody until data exists** | `MIGB-3` and `MIGB-4` record the row count and **say in the commit body that no `EXPLAIN` could confirm the post-change plan** |
 | **O-27** | **A fresh-volume restore rehearsal for `MIGB-10`** | It would wipe a volume peers use; the constraint forbids altering Docker state | **the operator**, in a maintenance window | `MIGB-10` states the rehearsal as the verification an operator performs, and records that this phase did not perform it |
+| **O-28** | **The `dashboards.created_by` 1:1 creator-multiplicity assumption** — **and the `D-14-J` ruling that settles it** | No phase-14 finding touches it, and the schema-shaped action available here is the one phase 12 forbade | **phase 14's `D-14-J` — now RULED, 2026-10-03** | **Nothing, and deliberately so.** **Exactly one creator; `created_by` is provenance, not authority; NO rename migration and NO backfill; the 1:1 multiplicity assumption is UNCHANGED.** It is a **settled question, not a block** — no `MIGB-*` is gated on it and no revision is authored. **What phase 14 owes is the record**, so that no implementor later reads the unresolved name as an invitation to migrate it. **`D-14-J`'s own text cites `O-09`, which is a pre-existing mis-citation** — `O-09` is the retention row, and this is the row the ruling belongs to
 
 ---
 
@@ -935,11 +989,12 @@ the drift question without taking phase 08's gate.
 | **C14-9** | **`alembic/` sits outside both quality gates** | `Makefile.ps1` (`ruff check src/ tests/`, `mypy src/`) · `pyproject.toml`'s `[tool.mypy] exclude` · the 4 current errors in `82739c97fde1…py` | **Manual `uv run ruff check alembic/` in every DDL block's verification** | **phase 08** — the TOPO-007 adjudication assigns gate coverage there | Record the error count and composition in each block's definition of done; state that a green gate is a **precondition, never evidence** | Do **not** widen the `alembic/` directory into either gate. Do **not** edit `82739c97fde1…py` to clear its errors — it is an applied revision |
 | **C14-10** | **`StorageManager`'s two UPSERT conflict-target spellings are another phase's diff** | `data/storage/manager.py::StorageManager._bulk_upsert` and `::upsert_aggregate`, both spelling `text("((dims)::text)")` | **The invariant `MIGB-3` and `MIGB-4` must not break** | **phase 11 `PRF-10`** (the set-based aggregate write, re-deriving both sites) | Assert the conflict target is **byte-identical** before and after; name `PRF-10` in the commit body so the two diffs are reconciled rather than merged | Do **not** "improve" the conflict target. Do **not** edit `StorageManager` in this phase |
 | **C14-11** | **Three advisory-lock namespaces now exist and are unrelated** | `alembic/env.py::MIGRATION_ADVISORY_LOCK_KEY = 42` (chain replay) · `db/advisory_lock.py` (`863b81b`, aggregate rebuild) · `MIGB-9`'s (database recreation) | **The third** (`MIGB-9`) | **phase 03** (`B2`/`B9`) · **phase 11** (`PRF-10`) | Open a separate acquisition with its own key space; state the separation in the commit body | Do **not** merge them. Do **not** reuse key `42`. Do **not** add a second wait ceiling against `ab76989`'s lock |
-| **C14-12** | **`dashboards.created_by`'s multiplicity assumption is this phase's question** | `db/models/dashboard.py::Dashboard.created_by` and its FK · the `RESTRICT` delete behaviour · `core/permissions.py::check_dashboard_access`'s owner branch (read-only) | **The question only** (`D-14-J`) | **phase 12** — `C12-6`, `DP-12-H`, `AZ-1` | Record the assumption and its blast radius; state that if `created_by` is authorship, ownership must become an explicit grant | Do **not** migrate the column. Do **not** widen it into a grants structure. Do **not** rename it **without a ruling** — and note that even a rename does not answer the multiplicity question |
+| **C14-12** | **`dashboards.created_by`'s multiplicity assumption was this phase's question — and it is now RULED** | `db/models/dashboard.py::Dashboard.created_by` and its FK · the `RESTRICT` delete behaviour · `core/permissions.py::check_dashboard_access`'s owner branch (read-only) | **The question only** (`D-14-J`) — **now a settled question, not a block** | **phase 12** — `C12-6`, `DP-12-H`, `AZ-1` | Record the assumption and its blast radius; state that if `created_by` is authorship, ownership must become an explicit grant. **RULED 2026-10-03 (ADJUDICATED register, **Cluster 1**): exactly one creator; `created_by` is provenance, not authority; NO rename migration and NO backfill; the 1:1 multiplicity assumption is UNCHANGED.** The blast-radius statement is **confirmed**, not retired — ownership now lives as an explicit grant row (`O-28`) | Do **not** migrate the column. Do **not** widen it into a grants structure. **And do not rename it** — the ruling rejected the rename explicitly, so it is no longer awaiting a decision |
 | **C14-13** | **`tests/test_data_worker.py` carries two other phases' assertions** | the three `commit.assert_not_called()` assertions · `ab76989`'s advisory-lock and bounded-wait assertions | **Read-only** | **phase 03 `B3`** · **phase 11 `PRF-10`** · **phase 05** | State in every affected block's commit body that this file must stay green **unmodified** | Do **not** edit it. Do **not** relax an assertion to let an index change land |
 | **C14-14** | **`test-fresh` may be needed if a phase-14 migration lands mid-phase** | `Makefile.ps1::Invoke-TestFresh` (`Invoke-TestReset` + `Invoke-Test` — **wipes test volumes**) | **The sequencing note** (`MIGB-13`'s verification row) | **phase 06** — it recorded the condition | State the condition in `MIGB-2`'s procedure and in `MIGB-13`; warn that it **must not** run while a peer session holds the test stack | Do **not** run it as a routine step. Do **not** mutate Docker state |
 | **C14-15** | **A new `ProcessingStatus` member's migration is this phase's; the member is the requester's** | `models/enums.py::ProcessingStatus` · the native `processing_status` type · `tests/test_enum_db_consistency.py::TestProcessingStatusEnumConsistency` (asserts **both** directions) | **The migration** (`MIGB-13` or a new block, once requested) | **the requester** — phase 05 (`PB-16`) or phase 06 | Record the tripwire: adding a member **without** a migration **fails the suite**; adding a member **with** the migration this phase writes is the only supported order | Do **not** add a member to `models/enums.py`. Do **not** edit `TestEnumDbConsistency` to accommodate a status value |
 | **C14-16** | **Two documentation homes for the migration workflow, neither existing** | `docs/14-schema-migrations/*` (**does not exist**, phase 08's named SSOT) · `docs/09-database/`'s index reference (this phase's) | **`docs/09-database/`** (`MIGB-12`) | **phase 08 `CQLT-6`** creates the migration-workflow directory | Keep the phase-14 rehearsal procedure and the scoped drift answer in `docs/09-database/`, cross-referenced rather than duplicated | Do **not** create `docs/14-schema-migrations/` (`O-04`) |
+| **C14-17** | **Stored `range` filters are a PHASE-14 PARTICIPATION — arrived by ruling, not by request** | `models/filters.py`'s `FilterConfigDict`'s `type` field and its `range` member (if one is declared) · `db/models/dashboard.py`'s stored filter rows · any `aggregated_data`-adjacent column a range would have read | **The disposition of the stored rows — nothing yet** | **phase 16** (`CHTB-6`, `D-16-2`) for the **client** side; **this phase** for the **stored-row** side | **`D-16-2` is RULED (Product Owner, 2026-10-03; ADJUDICATED register, **Cluster 4**): `range` is REMOVED from the filter control, and any stored `range` filter is REJECTED with a message naming the reason, until a definition exists.** *"Do not ship a control that either does nothing or silently fails."* The ruling fixes the **client** surface and deliberately leaves the **stored-row handling to this phase as a participation.** **What this phase owes, now: the record, not a revision.** Whether stored `range` rows need a migration, a quarantine, or a documented fallback depends on **whether such rows exist**, which is a measurement — and this plan's standing rule is that a Planner may not create, delete or reconcile database rows (`O-15`). **The `multiselect` half of `CHTB-6` is independently unblocked and must not wait** for this row, and nothing here gates it | Do **not** author a `range`-related migration on the strength of this row alone — **first measure whether the rows exist**, and record the count. Do **not** treat "no definition yet" as "delete the rows": a rejection that names its reason is phase 16's client behaviour, and any **data** disposition is this phase's and needs the measurement. Do **not** let this participation delay `CHTB-6`'s `multiselect` half, which is the type dashboards actually use |
 
 ---
 
@@ -982,7 +1037,7 @@ implementation target (phase 04's `VAL-04-001` and phase 08's `VAL-08-001` prece
 | **An upgrade that works from `base` but not from the current head passes the suite and fails in production** | The code context, §7.5 — `.\Makefile.ps1 test` exercises **only `upgrade`, only from `base`** | **MIGB-2**'s deliverable, in **five** definitions of done |
 | **`aggregated_data` holds 0 rows**, so MIG-002's post-change `EXPLAIN` confirmation is unexecutable | The code context, §2 and the report's own Rollout Safety | **MIGB-3**, **MIGB-4** · `O-26` |
 | **Phase 05's `DP-017` / `C05-5` and phase 06's `FAB-3` / `C06-3` both hand DDL to this phase** | Phase 05's and phase 06's seam registers | **MIGB-13** · `C14-5`, `C14-15` |
-| **Phase 12's `C12-6` hands over the `created_by` multiplicity assumption** | Phase 12's out-of-scope table | **`D-14-J`** · `C14-12` (a question, not a block) |
+| **Phase 12's `C12-6` hands over the `created_by` multiplicity assumption** | Phase 12's out-of-scope table | **`D-14-J` — RULED, 2026-10-03** · `C14-12` (**a settled question, not a block**) · `O-28` |
 
 **Tally.** Eight `MIG-*` findings: **7 owned whole** (`MIG-001`, `MIG-003`, `MIG-004`, `MIG-006`,
 `MIG-007`, `MIG-008`, and `MIG-002` across two blocks) and **1 owned as a half** (`MIG-005`, the other
@@ -1149,9 +1204,9 @@ and the fresh-volume restore rehearsal is recorded as the **operator's** procedu
 
 ## Plan closure
 
-**Nothing is closed by this plan.** Fourteen blocks, ten open decision records, three blocks requiring all
-four agents, two blocks requiring no product code, one reserved slot, and one question (`D-14-J`) that
-is deliberately not a block.
+**Nothing is closed by this plan.** Fourteen blocks, **nine open decision records and one ruled** (`D-14-J`, 2026-10-03), three blocks requiring all
+four agents, two blocks requiring no product code, one reserved slot, and one question that is deliberately not a block.
+**Recorded here and settled, not worked:** `D-14-J` (`dashboards.created_by` — exactly one creator, provenance not authority, **no rename migration and no backfill**, the 1:1 multiplicity assumption unchanged) and phase 16's `D-16-2` participation for stored `range` filters (`C14-17`). **Neither creates a block or a revision.**
 
 **The order a single implementor works in is:** `MIGB-0` → `MIGB-2` → `MIGB-9` → `MIGB-1` →
 `MIGB-7` → `MIGB-5` → `MIGB-6` → `MIGB-8` → `MIGB-10` → `MIGB-3` → `MIGB-4` → `MIGB-11` →
@@ -1163,7 +1218,7 @@ whose failure destroys another session's work.
 `D-14-D`-independent half of `MIGB-12`'s work is blocked by `D-14-G`, so **`MIGB-0`, `MIGB-2` and
 `MIGB-7`** are the three that need nothing from anyone.
 
-**Ruled before they can start:** everything else needs at least one of `D-14-A` … `D-14-J`.
+**Ruled before they can start:** everything else needs at least one of `D-14-A` … `D-14-I`. **`D-14-J` is already ruled and gates nothing** — it is a settled question, not a block, and its answer authorised no DDL (`O-28`).
 
 **Carried forward, not done here:** the two `MIG-*` findings' other layers (`O-01`, `O-02`), the drift
 **gate** (`O-04`, phase 08's `CQLT-6`), the `db/starter.py` rewiring (`O-05`, `C14-2`), phase 01's report

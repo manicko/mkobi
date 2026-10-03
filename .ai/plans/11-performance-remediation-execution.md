@@ -18,13 +18,14 @@ sibling_plans:
   - .ai/plans/08-code-quality-remediation-execution.md
   - .ai/plans/09-test-coverage-remediation-execution.md
 status: >-
-  open — ten decision records unruled, eight of them carried verbatim from the code context §6 and
-  two raised by this Planner. Executable today with no ruling at all: PRF-0, PRF-1, PRF-2, PRF-5,
-  PRF-6, PRF-8. PRF-3 needs DP-11-F, PRF-4 needs DP-11-A and DP-11-B and PRF-3, PRF-7 needs
-  DP-11-D, PRF-9 needs phase-03 B7 and DP-11-C, PRF-10 needs phase-03 B2/B3, phase-05 PB-14 and
-  DP-11-J, PRF-11 needs PRF-8, PRF-9 and DP-11-H.
+  four decision records ruled by the Product Owner on 2026-10-03 (DP-11-A, DP-11-B, DP-11-D, DP-11-H);
+  six still open, six of them carried verbatim from the code context §6 and two raised by this Planner.
+  Executable today with no ruling at all: PRF-0, PRF-1, PRF-2, PRF-5, PRF-6, PRF-8. PRF-3 needs
+  DP-11-F, PRF-4 needs PRF-3 and now reads the ruled DP-11-A (b) / DP-11-B (a)+(c), PRF-7 reads the ruled
+  DP-11-D (a), PRF-9 needs phase-03 B7 and DP-11-C, PRF-10 needs phase-03 B2/B3, phase-05 PB-14 and
+  DP-11-J, PRF-11 needs PRF-8, PRF-9 and now supplies the derivation the ruled DP-11-H requires.
 blocks: 12 (PRF-0 … PRF-11)
-decisions: 10 (DP-11-A … DP-11-H carried verbatim from the code context §6; DP-11-I, DP-11-J raised by this Planner) — none picked
+decisions: 10 (DP-11-A … DP-11-H carried verbatim from the code context §6; DP-11-I, DP-11-J raised by this Planner) — four **ruled** by the Product Owner on 2026-10-03 (DP-11-A, DP-11-B, DP-11-D, DP-11-H); six none picked
 id-namespace: >-
   Block IDs are PRF-*, coordination IDs are C11-*, because B0…B10 (phase 03), B0…B7 (phase 02),
   B1…B5 (phase 01), AB-* (phase 04), PB-0…PB-16 (phase 05), FAB-0…FAB-9 (phase 06), EB-0…EB-9
@@ -53,6 +54,32 @@ docker_constraint: read-only. No start, stop, restart, exec-that-changes-state, 
 
 # Execution Plan — Phase 11: Performance remediation
 
+## Owner rulings applied — 2026-10-03
+
+The authoritative source is **`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md`** — the single
+authority for owner rulings across plans 07–16. It merges the two input registers of 2026-10-03 and
+adjudicates every disagreement; **its option letters are not this file's option letters**, so every ruled
+row below is stated **by description**. **This plan consumes register cluster 6 (Performance budgets,
+frontend signals and production topology)** — `DP-11-A`, `DP-11-B`, `DP-11-D` and `DP-11-H` — plus the
+cluster 3 handoff note that touches `DP-11-I`'s Redis failure semantics. This table is a pointer to that
+file, not a substitute for it.
+
+| ID | Ruling | Chooser | Effect |
+| -- | ------ | ------- | ------ |
+| **`DP-11-A`** | **chosen by description: the server bound and the client signal land atomically, in one change** spanning `src/mkobi` and `frontend/src`. Cost accepted: one commit, two review surfaces, one revert taking both. No silent-truncation window and no unbounded interim | **Product Owner (2026-10-03)** | `PRF-4`; **phase 13's `CT-1` and `CT-3` become ONE commit**; `C11-8` is a hard requirement **inside** it |
+| **`DP-11-B`** | **chosen by description: a per-graph cap plus the untruncated total in the response, so truncation is visible** — the chart states **"showing N of M"**, and **the count field is mandatory**. Server-side aggregation is **rejected**: it is a **semantic change** to what a dashboard shows, not a performance fix. Deterministic-but-invisible truncation is **rejected** | **Product Owner (2026-10-03)** | `PRF-4`'s response shape. `tests/test_openapi.py` is the tripwire; `docs/02-dashboards/dashboards-api.md` and `docs/07-frontend/pages.md` move with it |
+| **`DP-11-D`** | **chosen by description: keep one worker replica.** Publish the measured ceiling **with its measurement conditions**, and **add a queue-depth alert** — which **has no metric source yet, so it reads zero** until `PERF-009`'s gap closes | **Product Owner (2026-10-03)** | `PRF-7`. `TOPO-002` / `TOPO-003` are **not** re-opened, and `PRF-7` **must not** assert the worker receives work |
+| **`DP-11-H`** | **chosen by description: 50 GB** for the artefact and log volume, **enforced before accepting** an upload that would exceed it, with retention **temporary files 24 hours** and **processing logs 90 days**. **One decision with phase 10's `DP-10-7`; the two must never be ruled differently.** The **derivation is published next to the figure** and **the number is revised if the derivation contradicts it**; the retracted `1,036.2 MB / 101.2 %` pair is **superseded wherever cited** | **Product Owner (2026-10-03)** | `PRF-11`'s number; **phase 06 `C06-4`, phase 05 `C05-7`, `C05-8`, `C06-7` and `PRF-0` released** |
+
+**`DP-11-C`, `DP-11-E`, `DP-11-F`, `DP-11-G`, `DP-11-I` and `DP-11-J` are untouched**, with their named
+choosers unchanged.
+
+**Two things the ruling does not lower.** **`C11-8` remains a hard requirement** — the `queryKey`
+omission is a correctness defect that threading `graphId` *introduces*, and it ships inside `PRF-4`'s
+one commit. **The `PRF-7` alert has no metric source**: a queue-depth alert over a metric nothing emits
+reads zero until `PERF-009`'s instrumentation gap (`C11-15`) is closed, and `PRF-7` **must not** assert
+the worker receives work.
+
 ## Purpose
 
 Turn the validated findings of audit phase **11-performance** into a dependency-safe execution sequence.
@@ -63,8 +90,15 @@ definition of done.
 
 The plan fixes **order, isolation and risk containment**. It does **not** fix **implementation
 choices** where genuine technical uncertainty exists. Ten decision records (**DP-11-A** … **DP-11-J**)
-are carried open, each with alternatives, a chooser and the blocks it blocks. Eight are the Phase-1
+are carried, each with alternatives, a chooser and the blocks it blocks. Eight are the Phase-1
 code context's own; two are raised by this Planner and marked as such.
+
+**Four of them are now ruled by the Product Owner on 2026-10-03** — **`DP-11-A`** (atomic),
+**`DP-11-B`** (per-graph cap plus a mandatory total count), **`DP-11-D`** (one replica, published
+ceiling, queue-depth alert that reads zero) and **`DP-11-H`** (**50 GB**, ruled together with phase 10's
+`DP-10-7`); see **Owner
+rulings applied** above and `.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md`, the single
+authority. **The other six keep their choosers exactly as written.**
 
 **This phase is on the critical path of three other phases.** Phases **05**, **06** and **10** are
 hard-blocked on numbers only this phase can produce: the loader memory ceiling cost and the `.csv.gz`
@@ -72,7 +106,10 @@ expansion ratio (05 `C05-8`, 06 `C06-7`), the worker replica count (the same two
 artifact-volume disk-budget number (05 `C05-7`, 06 `C06-4`, phase 10 §6.7). Phase 03 ruled
 "is `4 × 30` the right number" to this phase three times. Every number those phases wait on is
 discharged by **PRF-7**, **PRF-8**, **PRF-9** or **PRF-11** — and four of the twelve blocks are
-therefore *deliveries to other phases*, not fixes to this codebase.
+therefore *deliveries to other phases*, not fixes to this codebase. **The disk-budget number itself is
+now ruled (2026-10-03) as a conservative ceiling set now**, which releases phase 06 `C06-4` and phase 05
+`C05-7`/`C05-8`/`C06-7`; what `PRF-11` still owes is the **derivation**, which the ruling requires to be
+published next to the figure.
 
 **The project's rule against premature optimisation binds this plan, and the measurements agree with
 it.** Section "Measurements that say this is *not* a defect" lists what must not be touched. The most
@@ -306,10 +343,10 @@ particular **intersects `PERF-003` directly** — see PRF-10.
 
 ```mermaid
 flowchart TD
-    DPA{{"DP-11-A client or server ordering"}}
-    DPB{{"DP-11-B what LIMIT means for a chart"}}
-    DPD{{"DP-11-D worker replica count"}}
-    DPH{{"DP-11-H disk budget number"}}
+    DPA["DP-11-A client or server ordering — RULED (b) 2026-10-03"]
+    DPB["DP-11-B what LIMIT means for a chart — RULED (a)+(c) 2026-10-03"]
+    DPD["DP-11-D worker replica count — RULED (a) 2026-10-03"]
+    DPH["DP-11-H disk budget number — RULED (a) 2026-10-03"]
     DPF{{"DP-11-F which lazy relationship changes"}}
     E07{{"phase-07 EB-2 redis_client.py"}}
     E03{{"phase-03 B7 pool configuration"}}
@@ -355,21 +392,24 @@ flowchart TD
 `solid` = hard dependency (a blocker). `double` = hard sequencing required by a report, by the code
 context or by this plan. `dotted` = recommended sequencing in the single-implementor queue, **not** a
 data dependency — the project permits one implementor at a time, so these are ordered for review
-coherence.
+coherence. **`DP-11-A`, `DP-11-B`, `DP-11-D` and `DP-11-H` are drawn as rectangles because they are
+decided** (Product Owner, 2026-10-03); `DP-11-F` and every undecided record keep their diamond.
+%% Under DP-11-A (b), P13 is no longer a separate landing: PRF-4 and phase 13's CT-1/CT-3 are ONE commit.
 
 **The dependency direction other phases are waiting on, stated once:** `PRF-7`, `PRF-8`, `PRF-9` and
 `PRF-11` are **deliveries to phases 05, 06 and 10**. Phase 05's `C05-8` and phase 06's `C06-7` wait on
 the loader memory ceiling, the `.csv.gz` expansion ratio and the worker replica count —
 **PRF-8 and PRF-7 discharge them with numbers, not fixes.** Phase 05's `C05-7`, phase 06's `C06-4`
-and phase 10 §6.7 wait on the disk-budget number, which is `DP-11-H`; **PRF-11 supplies the
-measurement set the ruling needs and is blocked on the ruling itself.** Phase 03's `D-4` (pool parameters)/`B7` reaches
+and phase 10 §6.7 waited on the disk-budget number, which is `DP-11-H`; it was **ruled on 2026-10-03 —
+a conservative ceiling set now** — so those three are **released**, and **PRF-11's remaining obligation is
+the derivation**, which must be published next to the figure. Phase 03's `D-4` (pool parameters)/`B7` reaches
 this phase from the other direction: PRF-9 must not re-do it.
 
 ### Coverage ledger — all seventeen identifiers, both namespaces
 
 | ID | Band | Verdict at `ab76989` (code context §7) | Block | Rollout safety — the one thing that must not go wrong |
 | --- | --- | --- | --- | --- |
-| **PERF-001** | CRITICAL | substantiated; OOM not re-attempted; no `LIMIT` exact; 3,402 B/row linear; ceiling crossing 250–300k rows | **PRF-4** (+ PRF-3 first) | A server `LIMIT` landing before the client can signal truncation renders **four silently wrong charts**. That is the exact outcome the report's own Rollout Safety was written to prevent. Hard-blocked on `DP-11-A`. |
+| **PERF-001** | CRITICAL | substantiated; OOM not re-attempted; no `LIMIT` exact; 3,402 B/row linear; ceiling crossing 250–300k rows | **PRF-4** (+ PRF-3 first) | A server `LIMIT` landing before the client can signal truncation renders **four silently wrong charts**. That is the exact outcome the report's own Rollout Safety was written to prevent. **`DP-11-A` ruled (b) 2026-10-03: the bound and the client signal land atomically, in one commit**, so the window does not open. |
 | **PERF-002** | MEDIUM | substantiated, larger than stated — 17 statements at two row counts, **14** via `Dashboard`'s nine `selectin`; prize **2.66×** memory / **2.4×** latency | **PRF-3** | `lazy` is a global default. Nine relationships on `Dashboard` serve the config and admin paths; flipping all nine (option (b)) has an unpriced blast radius. `DP-11-F` decides. |
 | **PERF-003** | HIGH | substantiated; **not re-measured** (a write load risks the 1 GiB ceiling); `CHUNK_SIZE: int = 1000` exact; both writers chunked identically; **now intersected by `ab76989`** | **PRF-10** | The set-based write must keep UPSERT conflict detection on `uq_…dims::text`. `R-11-8`: that index is not this phase's to change, and `DP-11-J` may change its future. **The re-measurement must not run inside the serving container.** |
 | **PERF-004** | MEDIUM | re-typed — grade stands, **both narratives wrong** | **PRF-5** | The report's acceptance criterion ("execution time stayed flat") **passes at 50k and fails at 200k**. Verification must be a measured curve at the nginx-capped key count, and must record **planning** time, which is the quantity that grows 43×. |
@@ -580,10 +620,12 @@ comparison. That is the largest write-amplification object on the table and it i
 
 ## PRF-0 — Anchor reconciliation, namespace authority, and the dead-numbers register
 
-**Discharges:** `VAL-11-006` · **Blocked by:** nothing · **Blocks:** nothing formally; it is a
-constraint on every block below, and `DP-11-A`…`DP-11-J` and every `M11-*` figure downstream are
-admissible only against the baseline it fixes · **Execution order:** 1 · **Agents:** none beyond
-Implementor
+**Discharges:** `VAL-11-006` · **Blocked by:** nothing · **Released:** the 2026-10-03 ruling lists
+`PRF-0` among the blocks the disk-budget decision unblocks, so the register's budget entry may now be
+written from the **ruled conservative ceiling** rather than held pending `DP-11-H` · **Blocks:** nothing
+formally; it is a constraint on every block below, and the **unruled** `DP-11-F` … `DP-11-J` and every
+`M11-*` figure downstream are admissible only against the baseline it fixes · **Execution order:** 1 ·
+**Agents:** none beyond Implementor
 
 **Scope.** A written note, carried by this plan's first half, that records four things and edits
 nothing:
@@ -1040,9 +1082,12 @@ one `docs/SPEC.md` version row.
 ## PRF-4 — Bound the aggregate read server-side, in the order that makes it safe
 
 **Discharges:** `PERF-001` (CRITICAL) · `VAL-11-002` · `VAL-11-005` (ceiling arithmetic)
-· **Ruled by:** `DP-11-A`, `DP-11-B` · **Grade input:** `DP-11-G`
-· **Depends on:** PRF-0 · **Blocked by:** PRF-3 (hard), `DP-11-A` (hard), `DP-11-B` (hard),
-phase 13's client half (hard under `DP-11-A(a)`) · **Blocks:** PRF-11's memory headroom number ·
+· **Ruled by:** `DP-11-A` **(b)**, `DP-11-B` **(a)+(c)** — both Product Owner, 2026-10-03 ·
+**Grade input:** `DP-11-G`
+· **Depends on:** PRF-0 · **Blocked by:** PRF-3 (hard) only. `DP-11-A` and `DP-11-B` are **ruled**;
+phase 13's client half is **no longer a separate landing** — under the ruled `DP-11-A`(b) it is
+**inside this block's own commit**, and phase 13's `CT-1` and `CT-3` are **one commit** ·
+**Blocks:** PRF-11's memory headroom number ·
 **Execution order:** 7 · **Risk:** MEDIUM-HIGH implementation, **HIGH rollout**, MEDIUM regression,
 **HIGH compatibility** · **Agents: all four**
 
@@ -1081,21 +1126,42 @@ looks healthy to `docker ps` while serving nothing; under `--workers 4` the mast
 loss is the worker's in-memory state. **Which topology a rollout was verified against is part of its
 release note**, because the two answers differ.
 
-**Options — `DP-11-A` (ordering).** Cross-phase sequencing, Coordinator's call.
+**Options — `DP-11-A` (ordering). Cross-phase sequencing. RULED (b) — Product Owner, 2026-10-03.**
 
 | Option | Shape | Trade-off |
 | --- | --- | --- |
 | **(a) Client half first, server bound second** | Phase 13 threads `graphId` and signals truncation; PRF-4 lands after | The only ordering that has no silent-truncation window at all. Cost: this block waits on another phase, and between the two landings the read stays unbounded — which is the CRITICAL's actual exposure, unchanged. |
-| **(b) Bound and client atomically, in one change** | One commit spanning `src/mkobi` and `frontend/src` | No window, no wait. Cost: two owners in one commit, two review surfaces, and a revert that takes both back — which is arguably correct and is certainly larger. This plan's default reading. |
+| **(b) Bound and client atomically, in one change** — **CHOSEN, Product Owner 2026-10-03** | **One commit spanning `src/mkobi` and `frontend/src`.** Phase 13's `CT-1` and `CT-3` are **one commit**, not two, and `C11-8` ships inside it | No window, no wait — there is **no silent-truncation window and no unbounded interim**. **Accepted cost, stated once and not re-litigated:** **two owners in one commit**, **two review surfaces**, and **one revert that takes both**. This plan's default reading, now the ruling. |
 | **(c) Bound behind a feature flag with the client opting in** | The server bound ships dark; the client opts in per dashboard | The only option that avoids both a silent-truncation window and an unbounded interim. Cost: a flag is a new configuration surface, a new failure mode (a flag nobody sets means the bound never lands, and the CRITICAL is never fixed), and phase 01 owns `config.py` — `C11-12`. |
 
-**Options — `DP-11-B` (what `LIMIT` means for chart correctness).** Tech Lead + product.
+**What the ruling changes mechanically in this block.** Under (a) or (c), phase 13's client half was a
+**separate landing** and PRF-4 waited on it. Under the ruled (b) there is **one commit**: the server
+bound, the `AggregatedDataResponse` field, the `graphId` threading, the `queryKey` fix (`C11-8`) and the
+client's render path all land together. **A partial commit is now a block failure, not an interim** — the
+no-silent-truncation test below exists precisely to make a partial commit loud.
+
+**Options — `DP-11-B` (what `LIMIT` means for chart correctness). RULED (a)+(c) — Product Owner,
+2026-10-03.**
 
 | Option | Shape | Trade-off |
 | --- | --- | --- |
 | **(a) `LIMIT` + a deliberate `ORDER BY`** | A deterministic page | Deterministic and cheap, and **still truncates**. It also introduces a contract the response never made: today rows come back in whatever order the index scan yields, so an `ORDER BY` is a **semantics change** in its own right — and it must agree with **phase 05's `PB-15`**, which pins the *stored* row order (`C11-16`). Two orders disagreeing is a chart that reorders between pages. |
 | **(b) Aggregate server-side** — one point per dim-tuple | The server computes the series | **Not a performance fix; it is a semantic change to what a dashboard shows.** It also relocates aggregation into the request path, which is where PERF-003's writer cost came from. Rejected on both grounds. |
 | **(c) Per-graph bound + a total count in the response** | `LIMIT` per graph, plus the untruncated count so the client can say "showing 2,000 of 37,415" | The only option in which truncation is **visible** rather than silent, which is the property the report's Rollout Safety demands. Cost: a new field in a published response model (`tests/test_openapi.py` is the tripwire), a second query for the count, and a client change that renders the signal — **phase 13's**. |
+
+**What the ruling says, in the owner's words, because the letters are not the substance.** The bound
+ships as **a per-graph bound plus the untruncated total in the response**, so truncation is **visible**
+rather than silent. **Option (b), silent truncation, is rejected. Option (d), server-side aggregation,
+is rejected as a semantic change to what a dashboard shows, not a performance fix.**
+
+**Letter note, recorded rather than silently re-lettered.** The ruling labels this **(a)+(c)**: its
+**(a)** is the *per-graph bound*, its **(c)** is the *untruncated total in the response*. In **this**
+plan's own table the bound and the total arrive together as row **(c)**, and the **rejected**
+server-side-aggregation shape is row **(b)** — the ruling calls that **(d)**. No row above has been
+deleted or re-lettered. What is recorded as binding is the **operative requirement**: the per-graph bound
+**and** the untruncated total, with truncation visible. `C11-16`'s `ORDER BY` requirement is a standing
+**technical** invariant of this block, not a product decision, and it stands under the ruling. The
+letter mismatch is escalated under *Conflicts requiring a Coordinator ruling* at the end of this file.
 
 **Options — `DP-11-G` (grade).** PERF-001 is CRITICAL today. PRF-3 removes **2.66×** of the memory and
 **2.4×** of the latency that finding is built on. (a) The grade is unchanged, because a CRITICAL
@@ -1111,7 +1177,7 @@ explicit choice to be made, not assumed, and it changes block priority if made t
 | Implementation | **MEDIUM-HIGH.** A `LIMIT` is one keyword; everything else is the decision the `LIMIT` encodes. The derived bound must come from **M11-5's curve**, and the `ORDER BY` must agree with phase 05's `PB-15` stored order. A number picked from the report's OOM anecdote will be wrong by a factor of four in one direction or the other. |
 | Rollout | **HIGH, and it is the one step in this plan that changes observable behaviour.** Under any ordering that lands the server bound without a signalling client, **four charts truncate simultaneously on the first page view after deploy** and nothing reports it. Under (c) the bound ships dark, which means the CRITICAL is not fixed until the flag is set — a rollout that must be tracked. Revert is one commit, and the interim state is the current state, which is the argument for (c). |
 | Regression | **MEDIUM, and the fix would be unpinned without this block's own test.** **No test asserts a bound** on `get_by_graph_id`. A `LIMIT` that is later removed is invisible. The block must add a bound assertion — the only thing that catches the regression — and must keep `test_get_aggregated_data_empty`, `test_get_aggregated_data_uses_repository` and `test_get_aggregated_data_with_filters` green (`PRF-3`'s assertion is a statement count; this is a bound). Interaction with `PRF-5`: a filter whose result exceeds the bound truncates, so **the two bounds must be documented together** or a user sees a filter silently narrowing. |
-| Compatibility | **HIGH — this is the only block in the plan that changes an API contract.** Under (c) `AggregatedDataResponse` gains a field; under (a)/(b) the number of rows a client receives changes. `tests/test_openapi.py` is the tripwire, and `docs/02-dashboards/dashboards-api.md` plus `docs/07-frontend/pages.md` move with it. **Truncation that a client cannot detect is a silent data-loss contract**, and it is the reason `DP-11-A` is a hard gate rather than a preference. |
+| Compatibility | **HIGH — this is the only block in the plan that changes an API contract.** Under the ruled `DP-11-B`(c) `AggregatedDataResponse` **gains a field**; under (a)/(b) the number of rows a client receives changes. **`tests/test_openapi.py` is the tripwire**, and **`docs/02-dashboards/dashboards-api.md` plus `docs/07-frontend/pages.md` move with it** — under the ruled `DP-11-A`(b) those moves are in **PRF-4's one commit**. **Truncation that a client cannot detect is a silent data-loss contract**, and it is the reason the no-silent-truncation test is a block deliverable rather than a preference. |
 
 **Agents required — all four.**
 
@@ -1129,26 +1195,33 @@ explicit choice to be made, not assumed, and it changes block priority if made t
 - **Planner** — the recommendation that becomes `DP-11-A`, the option implementation that becomes
   `DP-11-B`, the bound's derivation from M11-5, and the interaction with `PRF-5`'s filter bound and
   phase 05's `PB-15` stored order.
-- **Validator** — that the rollout ordering is what was ruled; that **no dashboard can render a
-  truncated chart without the client saying so**; that the release note names which recovery topology
-  it was verified against; and that the ceiling figure quoted is the **cgroup counter** against
-  `memory.max`, never a per-process RSS against a container limit.
+- **Validator** — that the rollout ordering is what was ruled — **one commit spanning `src/mkobi` and
+  `frontend/src`**, so no intermediate tree ever carries the bound without the signal; that **no
+  dashboard can render a truncated chart without the client saying so**; that the release note names which
+  recovery topology it was verified against; and that the ceiling figure quoted is the **cgroup counter**
+  against `memory.max`, never a per-process RSS against a container limit.
 
-**The `queryKey` trap — a correctness bug disguised as a performance fix, and this plan's most
-important hand-over.** `dashboardApi.ts`'s `useAggregatedData` builds
+**The `queryKey` trap — a correctness bug disguised as a performance fix, and this block's most
+important obligation.** `dashboardApi.ts`'s `useAggregatedData` builds
 `queryKey: ['aggregatedData', dashboardId, filters]` while sending `graph_id: graphId`.
 **`graphId` is not in the key.** Threading `graphId` through the hook without adding it to the cache
 key makes **every per-graph fetch collide on one cache entry** — the second graph's response
 overwrites the first and TanStack Query serves whichever resolves last. That is a defect *introduced
 by the fix*, it presents as wrong chart data rather than as an error, and **no test covers it.**
 (The sibling `invalidateQueries({ queryKey: ['aggregatedData', dashboardId] })` is a **prefix** key
-and does cover per-graph entries, so invalidation is safe — only the entry key is wrong.) Recorded as
-**C11-8**, a hard requirement on phase 13.
+and does cover per-graph entries, so invalidation is safe — only the entry key is wrong.)
+
+**`DP-11-A` is ruled atomic, so this is no longer a hand-over — it is a hard requirement inside this
+block's own commit.** The server cap and the client signal land **in one change**, spanning
+`src/mkobi` **and** `frontend/src`; `C11-8` is fixed **here**, together with phase 13's `CT-1` + `CT-3`
+as **one commit**. A hand-over is no longer an acceptable disposition here: a `queryKey` left uncorrected
+in the same commit that makes the cap observable is the defect landing.
 
 **Documentation impact.** `docs/02-dashboards/dashboards-api.md` (the `/data/aggregated` contract,
-including how truncation is signalled or is not) · `docs/07-frontend/pages.md` (**phase 13's file** —
-raise the truncation-signal requirement, do not edit; `C11-8`) · `docs/06-backend/architecture.md`'s
-read-path description (**phase 03 `B10`'s file** — raise, do not edit) · `docs/SPEC.md` one version row.
+including how truncation is signalled or is not) · `docs/07-frontend/pages.md` (**this block edits it** —
+the truncation-signal requirement is raised *and written* in this commit, because the client half lands
+here; `C11-8`) · `docs/06-backend/architecture.md`'s read-path description (**phase 03 `B10`'s file** —
+raise, do not edit) · `docs/SPEC.md` one version row.
 
 **Verification.**
 
@@ -1160,28 +1233,32 @@ read-path description (**phase 03 `B10`'s file** — raise, do not edit) · `doc
 - **M11-8** — read-only `docker inspect` + cgroup reads, to state the ceiling the bound was derived
   against, and the `RestartCount` / `StartedAt` baseline so the release note can name the topology.
 - **New test — the bound.** Assert that a graph with more rows than the bound returns **exactly** the
-  bound, and that the response carries whatever signal `DP-11-B` ruled. **This assertion does not exist
-  today**, and without it the fix is unpinned.
-- **New test — no silent truncation.** Under (c): a truncated response carries a count that makes the
-  truncation detectable. Under (a)/(b) landed without a client: the test must **fail**, which is the
-  point — it is the tripwire for `DP-11-A`.
+  bound, and that the response carries the **mandatory total count** `DP-11-B` ruled. **This assertion
+  does not exist today**, and without it the fix is unpinned.
+- **New test — no silent truncation.** Under the ruled atomic shape: a truncated response carries a
+  count that makes the truncation detectable **and the chart's "showing N of M" signal is asserted**;
+  the test must **fail if the client half is removed**, which is the point — it is the tripwire for
+  `DP-11-A` and it is green only when both halves are present in the same commit.
 - `.\Makefile.ps1 test-select -k "test_get_aggregated_data" -v` ·
   `-k "test_get_aggregated_data_empty" -v` ·
   `-k "test_get_aggregated_data_with_filters" -v` · `-k "test_openapi" -v` ·
   `-k "test_aggregated_data_api" -v` (if collected under that name — resolve by symbol, not by
-  assumption) · `-k "test_dashboard_view" -v` and the frontend's `-k` selection for the dashboard view,
-  **which must be green and must not be modified by this block** (phase 13 owns the client).
+  assumption) · `-k "test_dashboard_view" -v` **and the frontend's `-k` selection for the dashboard view,
+  which this block edits and which must be green — the `queryKey` correction, the `graphId` threading and
+  the "showing N of M" signal all land in this commit.**
 - `uv run ruff check src/mkobi/db/repositories/aggregated_data_repo.py src/mkobi/api/routes/data.py src/mkobi/services/data_service.py` ·
   `uv run mypy` on the same three paths.
 
-**Definition of done.** PRF-3 landed · `DP-11-A`, `DP-11-B` and `DP-11-G` ruled, or their options
-recorded as open with this block written to survive either outcome · phase 13's client half landed
-first, or the atomic option taken, or the flag shipped dark with the opt-in tracked ·
-phase 05's `PB-15` stored order read and the `ORDER BY` made to agree · the bound **derived from
+**Definition of done.** PRF-3 landed · `DP-11-B` and `DP-11-G` ruled, or their options recorded as open
+with this block written to survive either outcome · **`DP-11-A`'s atomic shape landed: the server cap and
+the client signal are in one commit spanning `src/mkobi` and `frontend/src`, with phase 13's `CT-1` +
+`CT-3` and `C11-8` inside it — the client half is not deferred, not flagged dark, and not handed over**
+· phase 05's `PB-15` stored order read and the `ORDER BY` made to agree · the bound **derived from
 M11-5's measured curve**, with the derivation recorded · the bound assertion and the no-silent-
 truncation test both present, both green, and **both failing before the change** · `test_openapi` green
-under the ruled response shape · the release note names the recovery topology it was verified against
-and quotes the **cgroup counter**, not a per-process figure · `ruff` and `mypy` clean · one
+under the ruled response shape, with the **mandatory count field** in the published contract ·
+`queryKey` includes `graphId`, asserted · the release note names the recovery topology it was verified
+against and quotes the **cgroup counter**, not a per-process figure · `ruff` and `mypy` clean · one
 `docs/SPEC.md` version row.
 
 ---
@@ -1380,11 +1457,12 @@ one `docs/SPEC.md` version row.
 
 ## PRF-7 — Dispose `PERF-006` as already-fixed, and price the RQ successor nobody examined
 
-**Discharges:** `PERF-006` (MEDIUM — **already-fixed**) · **Ruled by:** `DP-11-D` ·
-**Delivers:** the **worker replica count** half of `C05-8` and `C06-7` · **Depends on:** PRF-0 ·
-**Blocked by:** `DP-11-D` (for the topology half; the disposition and the measurement are executable
-now) · **Blocks:** nothing · **Execution order:** 8 · **Risk:** LOW implementation for the disposition,
-**MEDIUM** for the bound half, **MEDIUM rollout** (it is a topology change) · **Agents:** Auditor,
+**Discharges:** `PERF-006` (MEDIUM — **already-fixed**) · **Ruled by:** `DP-11-D` — **RULED, Product Owner,
+2026-10-03: keep one replica, publish the measured ceiling with its measurement conditions, add a
+queue-depth alert** · **Delivers:** the **worker replica count** half of `C05-8` and `C06-7` ·
+**Depends on:** PRF-0 · **Blocked by:** nothing (the topology question `DP-11-D` gated is ruled) ·
+**Blocks:** nothing · **Execution order:** 8 · **Risk:** LOW implementation for the disposition,
+MEDIUM rollout (**a queue-depth alert is an operations surface**) · **Agents:** Auditor,
 Planner, Validator
 
 **Semantic target.** `core/task_queue.py::get_rq_queue` (`@functools.cache`d), `rq_worker_wrapper.py`,
@@ -1421,13 +1499,15 @@ repository bounds.** `PERF-006` measured the *retired* queue; the live ceiling i
 is unbounded. Whether to change the topology is `DP-11-D`, and adding a replica is **a topology change
 with a lease interaction** (`reconciler_lease`), not a tuning knob.
 
-**Options — `DP-11-D`.** Coordinator + phase 01.
+**Options — `DP-11-D`. RULED — Product Owner, 2026-10-03, chosen by description.** The register's option
+letters are not this table's, so the row below is marked **by description** and the rejected rows keep
+their trade-offs.
 
 | Option | What it does | Trade-off |
 | --- | --- | --- |
-| **(a) Keep one replica, document the ceiling and its bounds** | A written statement of what one worker can do and what nothing bounds | Zero risk, and the number other phases are blocked on is produced. Leaves a known throughput ceiling in place and **leaves it unbounded by anything** — the same class of defect `PERF-010` was re-graded for, applied to throughput. |
-| **(b) Raise the replica count, settling the `reconciler_lease` interaction first** | More workers | The ceiling moves, and a **lease interaction** appears with it: `reconciler_lease` elects a single reconciler, so more replicas change who holds that lease. Phase 01 owns the model and `9a77625` just corrected its liveness threshold. This is phase 01's decision to make with phase 11's number as input. |
-| **(c) Keep one replica and add a queue-depth alert only** | Observability without topology change | Makes the ceiling **visible** without touching it, which is the smallest thing that converts a silent ceiling into a reported one. Costs: an alert is phase 10's surface (`C06-4`, `C05-7`) and a metric nothing yet emits — which is `PERF-009`'s instrumentation gap, filed and not built (`R-11-9`, `C11-15`). **A depth alert with no metric source is a dashboard reading zero**, and that must be stated if (c) is ruled. |
+| **(a) Keep one replica, document the ceiling and its bounds** | A written statement of what one worker can do and what nothing bounds | Zero risk, and the number other phases are blocked on is produced. Leaves a known throughput ceiling in place and **leaves it unbounded by anything** — the same class of defect `PERF-010` was re-graded for, applied to throughput. **This is the shape the ruling selects, by description** — and the ruling pairs it with the queue-depth alert below, which is what converts a silent ceiling into a reported one. |
+| **(b) Raise the replica count, settling the `reconciler_lease` interaction first** | More workers | The ceiling moves, and a **lease interaction** appears with it: `reconciler_lease` elects a single reconciler, so more replicas change who holds that lease. Phase 01 owns the model and `9a77625` just corrected its liveness threshold. This is phase 01's decision to make with phase 11's number as input. **not chosen** — the ruling keeps **one** replica and does not re-open the lease interaction. |
+| **(c) Keep one replica and add a queue-depth alert only** | Observability without topology change | Makes the ceiling **visible** without touching it, which is the smallest thing that converts a silent ceiling into a reported one. Costs: an alert is phase 10's surface (`C06-4`, `C05-7`) and a metric nothing yet emits — which is `PERF-009`'s instrumentation gap, filed and not built (`R-11-9`, `C11-15`). **A depth alert with no metric source is a dashboard reading zero**, and that must be stated. **This half is chosen** — it is folded into the ruling together with (a): one replica, the ceiling published, **and** the alert. **The alert reads zero until `PERF-009`'s gap is closed, and that is stated, not glossed.** |
 
 **Risk assessment.**
 
@@ -1445,18 +1525,17 @@ with a lease interaction** (`reconciler_lease`), not a tuning knob.
   `app.py`'s absence of any consumer task. Re-run the **retired-symbol scan** across `src/` and
   `tests/`. Plus the **throughput measurement**: current queue depth, registered worker count, and the
   observed job-duration distribution from `processing_logs` (read-only) so the longest legitimate job
-  is known before any timeout is ruled.
-- **Planner** — the recommendation that becomes `DP-11-D`, the written ceiling statement other phases
-  consume, and the interaction map for option (b): what `reconciler_lease` does when more than one
-  replica exists.
+  is known. **The measurement carries its conditions** — the replica count is never quoted without the
+  CPU and memory share it was measured under (`rq-worker` has **512 MiB / 0.5 CPU**).
+- **Planner** — the written ceiling statement other phases consume, published **with its measurement
+  conditions**, and the queue-depth alert's hand-over to phase 10 (`C06-4`, `C05-7`), including the
+  statement that **the alert has no metric source yet and therefore reads zero** until `PERF-009`'s gap
+  (`C11-15`) is closed.
 - **Validator** — required. That `TestRetiredSymbolsRemoved` is green (the tripwire from `3848e7a`),
-  that the RQ tests are green, and that the delivered number states its measurement conditions — a
-  replica count quoted without the CPU share it was measured under (`rq-worker` has **512 MiB / 0.5
-  CPU**) is not a number.
-- **Researcher** — **not required** for the disposition. **Conditionally required** if `DP-11-D`
-  rules for (b) or (c): RQ's own semantics for `--burst`, `job_timeout`, `result_ttl` and worker
-  lifecycle. That is a library question with real compatibility consequences, and it belongs to the
-  block that rules the topology, not to this one.
+  that the RQ tests are green, that the delivered number states its measurement conditions — a
+  replica count quoted without the CPU share it was measured under is not a number — and that the
+  queue-depth alert's **zero-reading state is stated in writing**, so nobody later reads a flat-zero
+  alert as evidence that the queue is genuinely idle.
 
 **Documentation impact.** `docs/03-processing/task-queue.md` and `docs/11-guides/task-queue-migration.md`
 — the retired-`TaskQueue` prose is **phase 05's `PB-16` / phase 10's `C05-9`**, so this block
@@ -1484,11 +1563,18 @@ worker description (**phase 03 `B10`'s file** — raise, do not edit) ·
 
 **Definition of done.** All four deleted anchors and both `app.py` anchors confirmed absent at HEAD ·
 `PERF-006` recorded as **already-fixed** with the guard test named · the successor surface recorded:
-one replica, no burst bound, no job timeout, no result TTL, no queue-depth alert, with the measurement
-conditions attached · the **worker replica count delivered to `C05-8` and `C06-7` as a number plus its
-conditions**, not as a change · longest legitimate job duration measured before any timeout is ruled ·
-`DP-11-D` ruled with its options on record · `TestRetiredSymbolsRemoved` and the RQ/lease tests green ·
-no reintroduced in-process queue (which would fail the tripwire anyway) · one `docs/SPEC.md` version row.
+**one replica**, no burst bound, no job timeout, no result TTL, with the measurement conditions attached ·
+the **worker replica count delivered to `C05-8` and `C06-7` as a number plus its conditions** — the CPU
+and memory share it was measured under — and **not** as a change · the measured ceiling **published with
+its measurement conditions**, never the number alone · the **queue-depth alert specified and handed to
+phase 10** (`C06-4`, `C05-7`), and **its zero-reading state stated in writing**: it has **no metric
+source yet, so it reads zero** until `PERF-009`'s gap (`C11-15`) is closed · the longest legitimate job
+duration measured · `DP-11-D` recorded as **ruled by the Product Owner on 2026-10-03**, with its
+options on record and (b) named not chosen · `TestRetiredSymbolsRemoved` and the RQ/lease tests green ·
+no reintroduced in-process queue (which would fail the tripwire anyway) · **no assertion that the worker
+receives work is added anywhere in this block** — `TOPO-002` / `TOPO-003` are phase 01's and are **not
+re-opened** here, and a run in which no job arrives is a valid observation, not a failed test · one
+`docs/SPEC.md` version row.
 
 ---
 
@@ -1818,9 +1904,10 @@ rewritten · `ruff` and `mypy` clean · one `docs/SPEC.md` version row.
 
 ## PRF-11 — The capacity number register, and the measurement set the disk-budget ruling needs
 
-**Discharges:** `PERF-009` (telemetry half + the capacity sentence) · **Ruled by:** `DP-11-H` ·
-**Depends on:** PRF-0 · **Blocked by:** PRF-8 (hard — the loader expansion factors), PRF-9 (hard — the
-connection budget), `DP-11-H` (hard, for the number itself) · **Blocks:** phase 10, phase 06 `FAB-5`,
+**Discharges:** `PERF-009` (telemetry half + the capacity sentence) · **Ruled by:** `DP-11-H` — **RULED,
+Product Owner, 2026-10-03: 50 GB**, ruled **together** with phase 10's `DP-10-7` · **Depends on:** PRF-0 ·
+**Blocked by:** PRF-8 (hard — the loader expansion factors), PRF-9 (hard — the
+connection budget) · **Blocks:** phase 10, phase 06 `FAB-5`,
 phase 05 `C05-7` · **Execution order:** 11 · **Risk:** LOW implementation, MEDIUM rollout (it changes
 what an operator believes), LOW regression, **HIGH compatibility for the wrong number** ·
 **Agents:** Auditor, Planner, Validator
@@ -1850,13 +1937,17 @@ derived, so the register has one source for it.
    `redis_data`, `postgres_data` — and the loader's expansion factors from **PRF-8**, which turn a
    byte-of-file number into a byte-of-residency number.
 
-**Options — `DP-11-H`.** Coordinator (topology + operations).
+**Options — `DP-11-H`. RULED — Product Owner, 2026-10-03, chosen by description, and ruled TOGETHER with
+phase 10's `DP-10-7` — one decision, two IDs.** The register's option letters are not this table's, so
+the row below is marked **by description** and the rejected rows keep their trade-offs. **The ruled
+number is 50 GB**, with the **derivation published next to it** and the **number revised if the
+derivation contradicts it**.
 
 | Option | What it does | Trade-off |
 | --- | --- | --- |
-| **(a) Derive from the measured expansion factors** | PRF-8's ratios × PRF-9's budget × the retention horizon, with every factor sourced | Every number is traceable to a measurement, and the derivation can be re-run. Against it: it inherits every assumption in those measurements, and the retention horizon is a *configured* value whose production value nobody has observed — so the derivation is exact about mechanism and estimated about volume. |
-| **(b) Wait for production observation** | Instrument or measure a real deployment first | No guessed number. Against it: **the three blocked phases stay blocked**, and this is the number they are hardest-blocked on. It also needs the instrumentation `PERF-009` says does not exist. |
-| **(c) A conservative fixed ceiling** | Pick a round number with headroom | Unblocks everything today and cannot be too small. Against it: a fixed ceiling with no derivation is exactly the "capacity sentence that names no number" defect in a different dress, and it will be wrong in whichever direction the deployment actually grows. |
+| **(a) Derive from the measured expansion factors** | PRF-8's ratios × PRF-9's budget × the retention horizon, with every factor sourced | Every number is traceable to a measurement, and the derivation can be re-run. Against it: it inherits every assumption in those measurements, and the retention horizon is a *configured* value whose production value nobody has observed — so the derivation is exact about mechanism and estimated about volume. **This is the shape the ruling selects, by description: the derivation must be published beside the 50 GB figure — and if it contradicts the figure, the figure is revised, not defended.** The retention values the figure is enforced against are ruled with it: **temporary files 24 hours, processing logs 90 days.** |
+| **(b) Wait for production observation** | Instrument or measure a real deployment first | No guessed number. Against it: **the three blocked phases stay blocked**, and this is the number they are hardest-blocked on. It also needs the instrumentation `PERF-009` says does not exist. **not chosen** — the ruling sets the figure now and makes the derivation the deliverable. |
+| **(c) A conservative fixed ceiling** | Pick a round number with headroom | Unblocks everything today and cannot be too small. Against it: a fixed ceiling with no derivation is exactly the "capacity sentence that names no number" defect in a different dress, and it will be wrong in whichever direction the deployment actually grows. **not chosen as stated** — but **the ruled 50 GB *is* a fixed figure**, and the ruling's answer to (c)'s objection is not to derive the number, it is to **bind the derivation to it**: publish it, and revise the number if it disagrees. That is the requirement that makes (c)'s weakness survivable here, and it is not optional. |
 
 **The separation that must not be blurred.** **Phase 06 owns the artefact area's *ceiling*** (FAB-5's
 pre-accept bound, hard-blocked on the budget) and **phase 10 owns the *budget*** — the compose layout,
@@ -1915,67 +2006,109 @@ cross-reference if the index census is summarised there (**PRF-1's file**) ·
   any code change, that is a scope violation and the change is reverted, not reviewed.
 
 **Definition of done.** PRF-8 and PRF-9 landed and their numbers read from their own records ·
-`DP-11-H` ruled with its options on record, and the chosen option's number **published with its
-derivation beside it, never alone** · the capacity sentence in `docs/10-deployment/deployment.md` names
-a number and its source · the instrumentation gap **filed** with a named owner-less status
-(`C11-15`), **not built** · every register entry names a measurement procedure; entries that cannot are
+**`DP-11-H` recorded as ruled by the Product Owner on 2026-10-03, together with phase 10's `DP-10-7`**
+— the figure is **50 GB** for the artefact and log volume, enforced **before accepting** an upload that
+would exceed it, with retention **temporary files 24 hours** and **processing logs 90 days** — and the
+**derivation published beside it, never the number alone**, with the **number revised if the derivation
+contradicts it** · the capacity sentence in `docs/10-deployment/deployment.md` names
+the number and its source · the instrumentation gap **filed** with a named owner-less status
+(`C11-15`), **not built** · the queue-depth alert handed to phase 10 recorded as **reading zero** until
+that gap closes, so a flat-zero alert is never read as an idle queue · every register entry names a
+measurement procedure; entries that cannot are
 removed · the retracted `1,036.2 MB / 101.2 %` pair recorded as superseded, with the correction raised
 to phase 10 (`C11-11`) · the ceiling-versus-budget separation stated explicitly in the hand-over to
-phases 05, 06 and 10 · `test_health` and `TestRetiredSymbolsRemoved` green · no Python changed · one
+phases 05, 06 and 10 (`C11-7`: phase 06 owns the ceiling, phase 10 the budget, phase 11 the measurement)
+· `test_health` and `TestRetiredSymbolsRemoved` green · no Python changed · one
 `docs/SPEC.md` version row.
 
 ---
 
-## Decision records — none picked
+## Decision records — four ruled by the Product Owner, six open
 
 Ten records. **DP-11-A … DP-11-H are the Phase-1 code context's own (§6), carried verbatim; the
-Planner picks none of them.** **DP-11-I** and **DP-11-J** are raised by this Planner and marked as
-such. Each record names its alternatives, its chooser, and **what stays blocked** while it is unruled.
+Planner picks none of them that the owner has not ruled.** **DP-11-I** and **DP-11-J** are raised by this
+Planner and marked as such. Each record names its alternatives, its chooser, and **what stays blocked**
+while it is unruled.
+
+**The authority is `.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md`** — the single
+authority, which merges the two input registers of 2026-10-03. **This plan consumes register cluster 6
+(Performance budgets, frontend signals and production topology)** — `DP-11-A`, `DP-11-B`, `DP-11-D` and
+`DP-11-H` — plus the cluster 3 handoff note that touches `DP-11-I`'s Redis failure semantics. **Its
+option letters are not this section's option letters**, so every ruled record below is stated **by
+description**, and the rejected rows stay visible with their trade-offs.
 
 **Rule on partial rulings.** Each record blocks only the blocks named under *Blocks*. The rest of the
 phase proceeds — six blocks are executable today with no ruling at all (`PRF-0`, `PRF-1`, `PRF-2`,
 `PRF-5`, `PRF-6`, `PRF-8`).
 
-### DP-11-A — Can the server bound land at all before phase 13?
+### DP-11-A — Can the server bound land at all before phase 13? — **RULED: atomic, Product Owner, 2026-10-03**
 
 **Alternatives.** (a) client half first, server bound second · (b) bound + client atomically in one
-change · (c) bound behind a feature flag with the client opting in. *(Trade-offs: PRF-4's options
-table.)*
-**Chooser.** **Coordinator** — a cross-phase sequencing call. (c) is the only option that avoids both a
-silent-truncation window and an unbounded interim.
-**Blocks.** **PRF-4 (hard).** Under (a), phase 13 lands first and PRF-4 waits on it.
-**Not blocked.** PRF-4's ceiling arithmetic (M11-5) is executable now.
+change · (c) bound behind a feature flag with the client opting in. *(Trade-offs: PRF-4's options table.)*
+**Chooser of record: Product Owner, 2026-10-03** — a cross-phase sequencing call, which the register makes
+explicitly.
 
-### DP-11-B — What does `LIMIT` mean for chart correctness?
+**Chosen by description: (b), the atomic change.** The server cap and the client signal land in **one
+change** spanning `src/mkobi` **and** `frontend/src`. **The cost is accepted, not argued away: two
+owners, two review surfaces, and one revert that takes both** — a revert of the bound removes the
+truncation signal with it, and that is the trade the ruling accepts. It does not buy silence: it buys the
+absence of a window in which the application silently truncates.
+
+**What it releases.** `PRF-4` is **unblocked**, and it carries phase 13's `CT-1` + `CT-3` **as one
+commit**. **`C11-8` is a hard requirement inside that commit**, not a hand-over to phase 13: the
+`queryKey` omission must be corrected in the same change that makes the cap observable.
+**Blocks released: `PRF-4` (hard).** Under (a) or (c) the record would have blocked `PRF-4` outright;
+those options are **closed**.
+
+### DP-11-B — What does `LIMIT` mean for chart correctness? — **RULED: per-graph cap plus a total count, Product Owner, 2026-10-03**
 
 **Alternatives.** (a) `LIMIT` + `ORDER BY` (deterministic, still truncates) · (b) aggregate
 server-side, one point per dim-tuple (changes the chart's meaning) · (c) per-graph bound + a total
 count in the response so the client can signal truncation. *(Trade-offs: PRF-4's options table.)*
-**Chooser.** **Tech Lead + product.** (b) is not a performance fix — it is a semantic change to what a
-dashboard shows, and it relocates aggregation into the request path, which is where `PERF-003`'s cost
-comes from.
-**Blocks.** **PRF-4 (hard)**; under (c), phase 13 additionally owes a truncation signal in the UI
-(`C11-8`) and `tests/test_openapi.py`'s expected shape changes.
+**Chooser of record: Product Owner, 2026-10-03.** (b) is not a performance fix — it is a semantic change
+to what a dashboard shows, and it relocates aggregation into the request path, which is where
+`PERF-003`'s cost comes from.
+
+**Chosen by description: (c).** A **per-graph cap plus a total count**; the chart states **"showing N of
+M"**; and **the count field is mandatory** — a response that truncates without it is a defect, not a
+variant. (a) is **closed** because a deterministic truncation the client cannot see is the silent
+truncation `C11-8` exists to prevent.
+
+**Blocks released: `PRF-4` (hard).** `tests/test_openapi.py`'s expected shape changes, which is a
+verification step, not a blocker; and the "showing N of M" display is part of the same atomic commit
+`DP-11-A` requires.
 
 ### DP-11-C — Is `4 × 30 = 120` right, and what is the store's ceiling?
 
 **Alternatives.** (a) keep the values, document the budget · (b) reduce and make configurable ·
 (c) reduce **and** set Postgres `max_connections` explicitly. *(Trade-offs: PRF-9's options table.)*
-**Chooser.** **Tech Lead.** Phase 03 ruled the question phase 11's and deliberately left the number
+**Chooser of record: Tech Lead.** Phase 03 ruled the question phase 11's and deliberately left the number
 open; `max_connections` is configured nowhere today.
 **Blocks.** **PRF-9 (hard).** Under (c), **phase 10 owns the compose change** — this plan cannot make
 it, so (c) is really a joint ruling. **M11-7 is executable now.**
 
-### DP-11-D — What is the worker's replica count, and is one enough?
+### DP-11-D — What is the worker's replica count, and is one enough? — **RULED: keep one replica, publish the ceiling, add a queue-depth alert, Product Owner, 2026-10-03**
 
 **Alternatives.** (a) keep 1, document · (b) raise, and settle the `reconciler_lease` interaction ·
 (c) keep 1 and add a queue-depth alert only. *(Trade-offs: PRF-7's options table.)*
-**Chooser.** **Coordinator + phase 01.** This is topology, and the lease makes it more than a replica
-number — `9a77625` just corrected that lease's liveness threshold.
-**Blocks.** **PRF-7's topology half (hard).** PRF-7's disposition of `PERF-006` and its throughput
-measurement are **executable now** and do not wait.
-**Note.** Under (c) the alert needs a metric nothing emits — `PERF-009`'s instrumentation gap, filed
-and not built (`R-11-9`, `C11-15`). A depth alert with no metric source reads zero forever.
+**Chooser of record: Product Owner, 2026-10-03.**
+
+**Chosen by description: keep one worker replica, publish the measured ceiling *with its measurement
+conditions*, and add a queue-depth alert.** (b) is **closed** — the replica count does not move, so the
+`reconciler_lease` interaction is not entered.
+
+**The alert's honest state is part of the ruling, not an afterthought.** The alert has **no metric source
+yet, so it reads zero** until `PERF-009`'s instrumentation gap is closed (`R-11-9`, `C11-15`). That must
+be **stated wherever the alert is described**, so a later reader does not read a flat-zero alert as
+evidence that the queue is genuinely idle.
+
+**What is explicitly not re-opened.** Phase 01's `TOPO-002` / `TOPO-003` own whether the deployed worker
+ever receives a job, and `9a77625` just corrected the reconciler lease's liveness threshold.
+**`DP-11-D` does not re-open either**, and **`PRF-7` must not assert the worker receives work** as a
+precondition or a verification result.
+
+**Blocks released: `PRF-7` (hard).** Its throughput record, the published ceiling and the alert hand-over
+were all executable already; what the ruling removes is the topology question itself.
 
 ### DP-11-E — Should the unused GIN index be dropped, documented, or kept?
 
@@ -2008,17 +2141,28 @@ explicit choice rather than an assumption.
 `PRF-3` removes cost without removing the **absence of a bound**, which is what `PERF-001` is about.
 Under (b), `PRF-4` is re-sequenced behind everything else and `PRF-3` becomes the phase's priority.
 
-### DP-11-H — What is the disk-budget number?
+### DP-11-H — What is the disk-budget number? — **RULED: 50 GB, ruled together with phase 10's `DP-10-7`, Product Owner, 2026-10-03**
 
 **Alternatives.** (a) derive from the measured expansion factors · (b) wait for production observation
 · (c) set a conservative fixed ceiling.
-**Chooser.** **Coordinator.** Phase 10's own code context states explicitly that this is **not phase 10
-to invent and not phase 11 alone**.
-**Blocks.** **PRF-11's number (hard)**; and downstream of it, **phase 06 `FAB-5`'s ceiling**, phase 05
-`C05-7` and phase 10 §6.7.
-**Not blocked.** PRF-8's and PRF-9's measurements are the record the ruling reads, and both are
-executable today. **A missing number blocks three phases; a guessed one misleads them.** Publishing the
-derivation beside whichever number is chosen is mandatory under all three options.
+**Chooser of record: Product Owner, 2026-10-03.** Phase 10's own code context states explicitly that the
+question is not phase 10's to invent alone; the register settles it **across both phases**.
+
+**Chosen by description: 50 GB**, for the **artefact and log volume**, **enforced before accepting** an
+upload that would exceed it, with retention **temporary files 24 hours** and **processing logs 90 days**.
+**One decision, two IDs — `DP-10-7` and `DP-11-H` must never be ruled differently.** (b) is **closed**:
+the number is set now, not deferred to observation.
+
+**The derivation is published next to the figure, and the number is revised if the derivation contradicts
+it.** This is the requirement that makes the number trustworthy, and it is **mandatory under every
+option** — it is also what answers (c)'s objection, since the figure is fixed but is not undefended. The
+register additionally **supersedes the retracted `1,036.2 MB / 101.2 %` pair wherever it is cited**.
+
+**Blocks released: `PRF-11`'s number (hard)**; and downstream of it, **phase 06 `FAB-5`'s ceiling**,
+phase 05 `C05-7` and phase 10 §6.7 — all three are released by the figure.
+**Not blocked.** PRF-8's and PRF-9's measurements are the record the derivation reads, and both are
+executable today. **The separation stands** (`C11-7`): **phase 06 owns the ceiling**, **phase 10 owns
+the budget**, **phase 11 owns the capacity measurement**.
 
 ### DP-11-I — *(raised by this Planner)* What is the shared Redis client's lifecycle, and who closes it?
 
@@ -2075,7 +2219,7 @@ phase 11.**
 | **C11-5** | **`StorageManager`'s writers are phase-05 edit targets.** `::save_aggregates`, `::_bulk_upsert`'s `text("((dims)::text)")` conflict target and `::_normalize_json_keys` are named by `DP-003` (`PB-5`) and `DP-004` (`PB-3`). PRF-10 must read them, must not re-decide `DP-003` or `DP-004`, and must not collide with `PB-5`'s canonicalisation of row identity — the same identity PRF-10's UPSERT depends on. | phase 05 | PRF-10 |
 | **C11-6** | **The loader memory ceiling cost, the `.csv.gz` expansion ratio and the worker replica count.** Phase 05's `PB-12` makes the ceiling *reachable*; phase 11 owns the *cost measurement* and the residency budget. **Discharged with a number by PRF-7 and PRF-8 — explicitly not as a find-and-fix**, because the measurement says the loader is **not currently a defect**: 400,000 rows cost 0.30 s and ~103 MB against the worker's 512 MiB. | **phase 11 → phase 05 / 06** | answered by PRF-7, PRF-8 |
 | **C11-7** | **The artifact-volume disk-budget number.** Phase 06 owns the *ceiling* (`FAB-5`'s pre-accept bound, hard-blocked on the budget); **phase 10 owns the budget**, the compose layout, the backup story and the alerts. **The brief's phrasing conflates ceiling and budget**; this plan separates them. Phase 10's code context states it is neither phase 10's to invent nor phase 11's alone. **No disk budget exists anywhere in the repository.** PRF-11 supplies the measurement set; `DP-11-H` is the ruling. | phase 10 / Coordinator | **PRF-11 (the number) → `FAB-5`, `C05-7`, phase 10 §6.7** |
-| **C11-8** | **Phase 13 — the client half of the read bound, and a correctness trap.** `frontend/src/features/dashboards/ui/DashboardView.tsx` calls `useAggregatedData(id \|\| '', filters)` with two arguments against a three-parameter signature, so `graph_id` is never sent and one response carries **every** graph. **Hard requirement on phase 13: `dashboardApi.ts`'s `queryKey` is `['aggregatedData', dashboardId, filters]` and omits `graphId`.** Threading `graphId` without adding it to the key makes every per-graph fetch **collide on one cache entry** — the second graph's response overwrites the first and TanStack Query serves whichever resolves last. That is a **correctness defect introduced by the fix**, it presents as wrong chart data rather than an error, and **no test covers it**. (The sibling `invalidateQueries` uses a **prefix** key and does cover per-graph entries, so invalidation is safe — only the entry key is wrong.) | phase 13 | **`DP-11-A` under option (a) or (c); PRF-4 under (b)** |
+| **C11-8** | **Phase 13's client half of the read bound is now inside `PRF-4`'s commit — and a correctness trap.** `frontend/src/features/dashboards/ui/DashboardView.tsx` calls `useAggregatedData(id \|\| '', filters)` with two arguments against a three-parameter signature, so `graph_id` is never sent and one response carries **every** graph. **Hard requirement inside `PRF-4`'s atomic commit** (`DP-11-A` ruled 2026-10-03), alongside phase 13's `CT-1` + `CT-3`: **`dashboardApi.ts`'s `queryKey` must become `['aggregatedData', dashboardId, filters, graphId]`.** Threading `graphId` without adding it to the key makes every per-graph fetch **collide on one cache entry** — the second graph's response overwrites the first and TanStack Query serves whichever resolves last. That is a **correctness defect introduced by the fix**, it presents as wrong chart data rather than an error, and **no test covers it** — which is why it is a hard requirement in this commit and not a hand-over. (The sibling `invalidateQueries` uses a **prefix** key and does cover per-graph entries, so invalidation is safe — only the entry key is wrong.) | **phase 11 `PRF-4`** (fixed in the same commit as phase 13's `CT-1` + `CT-3`) | **`PRF-4` — hard; inside the atomic commit** |
 | **C11-9** | **`uq_aggregated_data_dashboard_graph_dims` — 83,480 kB at 375,000 rows.** Roughly **8× the GIN** and larger than the table's own data; the largest write-amplification object on `aggregated_data`, named by **no report**. It is `DP-003`'s write cost: phase 05 owns the defect and `PB-5`'s canonicalisation; **phase 14 owns any DDL**. Dropping it would silently change `DP-003` behaviour **and break UPSERT conflict detection**, which is PRF-10's conflict target. `R-11-8` forbids this phase touching it. | phase 05 (`DP-003`) + phase 14 (DDL) | `DP-11-J` |
 | **C11-10** | **Phase 09 `TCO-7` — the coverage mask.** **No test anywhere pins the 17-statement read shape, the eager-load behaviour, or a bound on `get_by_graph_id`.** A `lazy` change is therefore **invisible to the suite**, and a `LIMIT` is **unpinned**. PRF-3, PRF-4 and PRF-7 must add those assertions; deciding what is masked is **phase 09's**, not this phase's. | phase 09 | PRF-3, PRF-4, PRF-7 (assertions) |
 | **C11-11** | **A retracted number is load-bearing in another phase's plan.** Phase 10's code context cites *"PERF-001's 1,036.2 MB peak against the live 1 GiB app limit = 101.2 %"* as corroboration. **`VAL-11-005` refuted that as a per-process-vs-cgroup units error** — the defensible comparison is the cgroup's `memory.peak` against `memory.max`. Phase 10 must strike it. **PRF-11 raises the correction; this plan does not edit another phase's file.** | phase 10 | PRF-11 |
@@ -2098,14 +2242,14 @@ subset that must hold.
 | 2 | **PRF-1** | none — the doc fix is required under every `DP-11-E` option | PRF-0 |
 | 3 | **PRF-2** | phase-07 `EB-2` landed or waived in writing · **`DP-11-I` ruled** | PRF-0 · C11-1 |
 | 4 | **PRF-3** | **`DP-11-F` ruled** · the caller census complete (Auditor) | PRF-0 |
-| 5 | **PRF-4** | PRF-3 landed · **`DP-11-A`, `DP-11-B`, `DP-11-G` ruled** · phase-13's client half landed first (under (a)/(c)) or the atomic option taken · phase 05 `PB-15` read | **PRF-3 (hard)** |
+| 5 | **PRF-4** | PRF-3 landed · **`DP-11-B`, `DP-11-G` ruled** (`DP-11-A` **and** `DP-11-B` are already ruled — atomic, 2026-10-03) · **`DP-11-A`'s atomic shape: the client half and phase 13's `CT-1` + `CT-3` + `C11-8` land in this one commit** · phase 05 `PB-15` read | **PRF-3 (hard)** |
 | 6 | **PRF-5** | none — M11-3 is executable now | PRF-0 |
 | 7 | **PRF-6** | none — the surface census is executable now | PRF-0 |
-| 8 | **PRF-7** | `DP-11-D` ruled **for the topology half only**; the `PERF-006` disposition and the throughput record are executable now | PRF-0 |
+| 8 | **PRF-7** | none — `DP-11-D` **ruled** (one replica, published ceiling, queue-depth alert), 2026-10-03 | PRF-0 |
 | 9 | **PRF-8** | none — M11-6 is executable now | PRF-0 |
 | 10 | **PRF-9** | **phase-03 `B7` landed and read** · **`DP-11-C` ruled** · the Researcher's per-connection cost answer in hand | PRF-0 · C11-2 |
 | 11 | **PRF-10** | phase-03 `B2`/`B3` landed and read · phase-05 `PB-14`'s `D-05-B` ruled · **`DP-11-J` ruled** · `ab76989`'s lock read | PRF-0 · C11-3, C11-4, C11-5 |
-| 12 | **PRF-11** | PRF-8 and PRF-9 landed · **`DP-11-H` ruled** | **PRF-8, PRF-9 (hard)** |
+| 12 | **PRF-11** | PRF-8 and PRF-9 landed · **`DP-11-H` ruled** (50 GB, ruled with phase 10's `DP-10-7`) — the **derivation** is this block's deliverable, not the number | **PRF-8, PRF-9 (hard)** |
 
 Blocks 1–4, 6–9 may run in any order relative to each other; they are numbered for review coherence.
 **The four blocks that unblock other phases — PRF-7, PRF-8, PRF-9, PRF-11 — should be scheduled first
@@ -2175,7 +2319,7 @@ retracted `101.2 %`.
 | `tests/test_health.py`, `tests/test_app_lifespan.py`, `tests/test_rq_worker.py` | Assert the existing lease behaviour and the RQ lifecycle — the seams `b646ef1` and `9a77625` landed. | **Must stay green.** PRF-2 adds a teardown step and PRF-7 concerns the worker topology; a lease rebuild appearing in a diff means the block has gone wrong. |
 | `tests/test_db_pool.py` | Builds its own engines. | Unaffected by PRF-9's settings change. **Must stay green**, and it proves nothing about the production pool — the suite does not run four workers. |
 | `tests/test_openapi.py` | The response shape is a published contract. | **The tripwire for `DP-11-B(c)`** — a new total-count field changes it, and the frontend's extraction chain must be checked. Also the tripwire for any `PERF-005` change that drops a field the response model still declares. |
-| Frontend: the dashboard-view selection | **No test covers the `queryKey` omission.** | Phase 13's, recorded as **C11-8**. **PRF-2, PRF-3 and PRF-4 must not modify frontend files** — and must record that no test would catch the collision. |
+| Frontend: the dashboard-view selection | **No test covers the `queryKey` omission.** | **PRF-4's**, and it is fixed **inside** `DP-11-A`'s atomic commit rather than handed over. **PRF-2 and PRF-3 must not modify frontend files** — and must record that no test would catch the collision. **PRF-4 must modify them** (`DashboardView.tsx`, `dashboardApi.ts`'s `queryKey`, the "showing N of M" signal), and it adds the assertion that the key includes `graphId`. |
 
 ---
 
@@ -2184,12 +2328,24 @@ retracted `101.2 %`.
 - **Three phases are unblocked by numbers, not by fixes.** `C05-8`, `C06-7`, `C06-4` and `C05-7` leave
   this plan with a figure and a measurement condition. If the figures are quoted without their
   conditions they become the next three irreconcilable GIN sizes.
-- **The disk-budget number remains a Coordinator decision** (`DP-11-H`), and a **guessed** one is worse
-  than a missing one. Under option (b) three phases stay blocked; under (a) or (c) the derivation must
-  be published beside the number or it becomes an untraceable constant.
-- **The read bound is a behaviour change with a client dependency.** If `DP-11-A` is ruled (a) or (c)
-  and phase 13's half does not land, PRF-4 either waits or ships the silent-truncation defect. **The
-  no-silent-truncation test exists to make that failure loud** rather than silent.
+- **The disk-budget number is 50 GB, and its derivation is not here yet.** `DP-11-H` was ruled by the
+  Product Owner on **2026-10-03, together with phase 10's `DP-10-7` — one decision, two IDs**: **50 GB**
+  for the artefact and log volume, **enforced before accepting** an upload that would exceed it, with
+  retention **temporary files 24 h** and **processing logs 90 days**. Phase 06 `C06-4`, phase 05 `C05-7`
+  and `C06-7` are released. **What remains is the derivation**, which is phase 11's deliverable — it is
+  **published beside the figure**, and **if it contradicts the figure the number is revised**. That is
+  the residual the ruling leaves open, and it is deliberate: a fixed figure with a binding derivation is
+  governable; a fixed figure with no derivation is the "capacity sentence that names no number" defect in
+  a different dress. The register also **supersedes the retracted `1,036.2 MB / 101.2 %` pair wherever it
+  is cited**, and the figure never travels alone.
+- **The read bound is a behaviour change, and it is now a cross-boundary commit.** `DP-11-A` is ruled
+  **atomic**, so the cap and the client signal land together in one change spanning `src/mkobi` and
+  `frontend/src`. The accepted cost is real: **two owners, two review surfaces, and one revert that
+  takes both** — reverting the bound removes the truncation signal with it. The mitigation is not a
+  smaller change but a stronger test: **the no-silent-truncation test must fail if either half is
+  removed**, and `C11-8` — the `queryKey` omission, which would make every per-graph fetch collide on
+  one cache entry and present as wrong chart data rather than an error — is fixed **inside that same
+  commit**, not handed to phase 13.
 - **`PERF-010`'s fix changes the auth path's connection topology.** Revert is one commit, but the
   interim has a different connection count per request, and a shared client introduces a single point
   whose failure mode five surfaces with **already-declared** failure directions inherit. That is the

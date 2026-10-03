@@ -32,7 +32,7 @@ ownership: >-
   leaves its own step and becomes a HARD co-requisite of CHT-006 — one commit, xaxis merged, never
   revertible by half.
 blocks: 10 (CHTB-0 … CHTB-9)
-decisions: 8 (D-16-1 … D-16-8) — none picked anywhere in this plan
+decisions: 8 (D-16-1 … D-16-8) — SIX ruled by the Product Owner on 2026-10-03 (D-16-1, D-16-2, D-16-3, D-16-4, D-16-5, D-16-8) and adjudicated in .ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md (Clusters 4 and 5); D-16-6 and D-16-7 remain open with their original choosers. Option letters in that register are NOT this plan's option-table letters; the ruled content is recorded by description
 seams: 12 (C16-1 … C16-12)
 id-namespace: >-
   Blocks are CHTB-*, decisions D-16-*, seams C16-*. This plan TAKES no bare B*, D-1…D-7 or
@@ -49,7 +49,7 @@ gate_baseline: >-
   never reaches fe-test. No fe-typecheck target exists. frontend/coverage/ (15 tracked files) was
   already wiped before any gate ran, the red run wrote no replacement, and 0 files remain on disk —
   NOT restored, by instruction.
-status: decomposed — 10 blocks · 8 decision records open · 12 cross-phase seams · no technical fork chosen
+status: decomposed — 10 blocks · 2 decision records open · 6 ruled · 12 cross-phase seams · no technical fork chosen
 ---
 
 # Phase 16 — Chart presentation contract: remediation execution plan
@@ -66,6 +66,43 @@ the agents it needs, its documentation impact, named verification, and its defin
 This plan fixes **order, isolation, risk containment and proof obligations**. It does **not** fix
 implementation choices where genuine uncertainty exists: `D-16-1` … `D-16-8` are carried open, each
 with its alternatives, its chooser, and **what stays blocked** until it is ruled.
+
+**Six of the eight have since been ruled and two remain open.** The rulings are in
+`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md`, which is **the single authority**:
+it merges two parallel owner registers and adjudicates every disagreement, and neither input file may
+be cited as authority any more. See `Owner rulings applied` below. **`D-16-6` and `D-16-7` stay open
+with their original choosers, and no option was ruled for either.**
+
+## Owner rulings applied
+
+**`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` — Product Owner, adjudicated by the
+Tech Lead, 2026-10-03 — rules six of this plan's eight decision records.** That file is **the single
+authority**: it merges two parallel owner registers and adjudicates every disagreement, and neither
+input file may be cited as authority any more. **The clusters this plan consumes are Cluster 4
+(`CT-3`'s two findings, `D-16-2` and `D-16-5`) and Cluster 5 (`D-16-1`, `D-16-3`, `D-16-4`,
+`D-16-8`).** Nothing below is this plan's choice, and **no option was ruled by default because a
+question went unanswered.** The record sections keep every option and every trade-off; the ruled
+content is marked **by description**, and the rejected options are marked rejected rather than
+deleted.
+
+**Option letters are not carried across.** The adjudicated register's letters denote which *input
+register* won each decision, not which option in *this plan's* tables was taken — **implement the
+words.** Where this plan's own option table has a matching row, that row is marked chosen and the
+row's letter is *this plan's*, not the register's.
+
+| ID | Ruled — by description | Gates released |
+| -- | ---------------------- | -------------- |
+| `D-16-1` | **Widen to what the product uses** — `metrics`, `orientation`, `barmode`, `title`, `x`, `y`, `color` — **and refuse genuinely unknown keys with a message naming the key.** **`CHT-004`'s remaining declared-but-unread keys — `yoy`, `secondary_y`, `xaxis`, `yaxis`, `layout`, `sort_x`, `sort_color` — are RECLASSIFIED AS RESERVED AND DOCUMENTED AS SUCH, not silently ignored.** **Acceptance criteria: a declared key set SURVIVES create → read → update → read UNCHANGED, and a bar graph's trace `y` array CONTAINS A VALUE GREATER THAN ZERO on a fixture whose measure is non-zero.** **Phase 15's `D-15-I` is this same ruling from the other tier — one decision, two ends** | **`CHTB-1`**; soft-blocks **`CHTB-4`**, **`CHTB-8`** |
+| `D-16-2` | **`range` is REMOVED from the filter control, and any stored `range` filter is REJECTED with a message naming the reason, until a definition exists.** *"Do not ship a control that either does nothing or silently fails."* | **The `range` half of `CHTB-6` only. The `multiselect` half is INDEPENDENTLY UNBLOCKED and MUST NOT WAIT** |
+| `D-16-3` | **`'category'` SURVIVES as the bar chart's default axis type unless a stored layout overrides it.** The bar branch **merges `xaxis`** per `VAL-16-003` | **`CHTB-3`** |
+| `D-16-4` | **This phase owns ALL FOUR empty/absent states, distinguishes ABSENT from ZERO ON THE WIRE, and adds an absent-graph card.** **Acceptance criteria: a `null` measure and a `0` measure are distinguishable ON THE WIRE; an empty `data` array still reaches the empty branch; an absent graph is distinguishable from an empty one.** **Release note: dashboards quietly drawing flat zeros will warn for the first time, and the number affected is UNKNOWN and must be stated as unknown, NOT estimated** | **`CHTB-5`** |
+| `D-16-5` | **DEFER ALL FOUR hand-overs (`H-1` … `H-4`), recorded as "held by phase 16, deferred by decision" — explicitly NOT "unowned".** **This RELEASES phase 13's `CT-5` and `CT-10`** | **`CHTB-9`**, and phase 13's `CT-5` / `CT-10` |
+| `D-16-8` | **Enforce the frontend coverage thresholds AFTER this phase's blocks land tests** — the only ordering in which enforcement is meaningful. **No block may restore `frontend/coverage/`** — that is phase 13's `CT-15` | **`CHTB-9`** |
+
+**What stays open.** `D-16-6` (`CHT-003` versus phase 12's `AZ-8`: serialise, co-commit, or defer) and
+`D-16-7` (the `filterValues` staleness framing) are **still open**, with their original choosers —
+**Coordinator**, and **Planner with product sign-off** respectively — and **no option was ruled for
+either.**
 
 **The correctness risks are the substance here, not the styling.** Six of the ten `CHT` findings are
 about a figure that is drawn as though it were complete when it is not:
@@ -696,45 +733,70 @@ Recorded once, here; **`C16-3` is the register entry.**
 
 ## Open decisions — owner rulings required
 
-**Eight records, none picked anywhere in this plan.** Each is stated once with its alternatives, its
-chooser, and **what stays blocked** until it is ruled. The options tables live in their blocks; this
-section is the index and the ruling sheet.
+**Six records are ruled; two are not picked anywhere in this plan.** Each is stated once with its
+alternatives, its chooser, and **what stays blocked** until it is ruled. The options tables live in
+their blocks; this section is the index and the ruling sheet. **The rulings are in
+`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` and are recorded below by
+description, not by letter** — see `Owner rulings applied`. **`D-16-6` and `D-16-7` stay open with
+their original choosers.**
 
-### D-16-1 — Which `GraphConfigDict` keys survive? · **chooser: Tech Lead + product, with phase 15's `D-15-I` as co-signer**
+### D-16-1 — Which `GraphConfigDict` keys survive? · **RULED — `chooser: Tech Lead + product`, with phase 15's `D-15-I` as co-signer**
 
 Options: **(a)** narrow to `x`/`y`/`color` · **(b)** promote `title` and `y`, delete six · **(c)** keep all eleven, document as reserved · **(d)** widen to include what the client already reads (phase 15's `D-15-I` option (a)). Full table in `CHTB-1`.
 
-**Hard constraint, from the report:** a *narrowing* answer must not ship before `CHTB-2`'s response shape lands, or a silently-ignored key becomes a rejected one exactly when the client loses its only workaround.
+**RULED 2026-10-03 (Product Owner, adjudicated; Cluster 5): WIDEN TO WHAT THE PRODUCT USES — `metrics`, `orientation`, `barmode`, `title`, `x`, `y`, `color` — AND REFUSE GENUINELY UNKNOWN KEYS WITH A MESSAGE NAMING THE KEY.** **This is phase 15's `D-15-I` from the other tier: one decision, two ends.** The narrowing options are therefore not merely rejected — **the chosen answer is the opposite direction from both of them.** **`CHT-004`'s remaining declared-but-unread keys — `yoy`, `secondary_y`, `xaxis`, `yaxis`, `layout`, `sort_x`, `sort_color` — are RECLASSIFIED AS RESERVED AND DOCUMENTED AS SUCH**, not silently ignored and not deleted.
 
-**Blocks:** `CHTB-1` entirely. **Soft-blocks:** `CHTB-4`, `CHTB-8`. **Does not block:** `CHTB-3`, `CHTB-6`, `CHTB-7`.
+**The hard constraint the report set is satisfied by the ruling's shape:** because the ruling *widens*
+rather than narrows, a client that loses a workaround is not turned into a rejection — the widened
+keys are honoured. **The refusal that remains is aimed at keys no shipped path uses.**
 
-### D-16-2 — Does a `range` filter target a dimension or a measure? · **chooser: Tech Lead + product**
+**Acceptance criteria, both of them and neither is optional:** (i) **a declared key set SURVIVES
+create → read → update → read UNCHANGED**; (ii) **a bar graph's trace `y` array CONTAINS A VALUE
+GREATER THAN ZERO on a fixture whose measure is non-zero.**
+
+**Blocks released:** **`CHTB-1` entirely.** Soft-blocks: **`CHTB-4`**, **`CHTB-8`**. Does not block: `CHTB-3`, `CHTB-6`, `CHTB-7`.
+
+### D-16-2 — Does a `range` filter target a dimension or a measure? · **RULED — `chooser: Tech Lead + product`**
 
 Options: **(a)** a dimension, needing a documented string-range encoding or an outright rejection · **(b)** a measure, which requires the repository to read `metrics` — **a new capability, not a fix** · **(c)** remove `range` from the client switch, which makes phase 14 a participant for any stored `FilterConfigDict`. Full table in `CHTB-6`.
 
-**Blocks:** the `range` half of `CHTB-6` only. **The `multiselect` half is independently unblocked and must not wait** — it is the type dashboards actually use, and holding it for a product definition leaves the finding open for no gain.
+**RULED 2026-10-03 (Product Owner, adjudicated; Cluster 4): `range` IS REMOVED FROM THE FILTER CONTROL, AND ANY STORED `range` FILTER IS REJECTED WITH A MESSAGE NAMING THE REASON, UNTIL A DEFINITION EXISTS.** **The rationale is the ruling's own sentence: do not ship a control that either does nothing or silently fails.** Option (b) is therefore not merely deferred — it is **out of scope until someone defines what a range over a measure means**, and option (a)'s string-range encoding is not adopted in its place.
 
-### D-16-3 — Does the forced `category` survive as the default? · **chooser: Planner, with product sign-off**
+**The stored-row half is a PHASE-14 PARTICIPATION and is named in that plan's hand-over register as `C14-17`** — a schema question this phase does not answer and does not block on. **What this phase owns is the client surface and the rejection message.**
 
-Settled half: the bar branch **merges** `xaxis`; `VAL-16-003` decides that and it is not an option. Open half: whether `'category'` remains the default when the converted layout supplies no `type`. Options: **(a)** keep as default · **(b)** drop entirely, let Plotly infer · **(c)** keep only for ungrouped bars. Full table in `CHTB-3`.
+**The `multiselect` half of `CHTB-6` is INDEPENDENTLY UNBLOCKED AND MUST NOT WAIT** — it is the type dashboards actually use, and holding it for a product definition leaves the finding open for no gain.
 
-**The factual input is resolved:** `PlotlyChart.tsx` is a two-line re-export; nothing in this repository asserts a bar trace needs a categorical axis; no comment claims the constant is load-bearing. **Library grounds do not keep it — only a product preference does.**
+**Blocks released:** the `range` half of `CHTB-6`. **Does not block:** anything else.
 
-**Blocks:** `CHTB-3`. **Nothing else.**
+### D-16-3 — Does the forced `category` survive as the default? · **RULED — `chooser: Planner`, with product sign-off**
 
-### D-16-4 — Who owns empty-state rendering? · **chooser: Coordinator**
+**RULED 2026-10-03 (Product Owner, adjudicated; Cluster 5): `'category'` SURVIVES as the bar chart's default axis type UNLESS A STORED LAYOUT OVERRIDES IT.** The bar branch **merges `xaxis`** per `VAL-16-003` — that half was never an option and is unaffected.
+
+Options: **(a)** keep as default · **(b)** drop entirely, let Plotly infer · **(c)** keep only for ungrouped bars. Full table in `CHTB-3`. **Chosen by description: (a), with the override condition stated — a stored layout that supplies its own `type` wins.** Option (b) is rejected on the factual ground this record already read: nothing in this repository asserts a bar trace needs a categorical axis. **Option (c) is rejected** because it makes the default depend on a grouping flag, which is a rule a reader cannot check by looking at the chart.
+
+**Blocks released:** **`CHTB-3`.** Nothing else.
+
+### D-16-4 — Who owns empty-state rendering? · **RULED — `chooser: Coordinator`**
 
 Four states, three claimants, none naming it. Options: **(a)** phase 16 owns all four now · **(b)** phase 13 takes the absent-graph state, phase 16 the three data states · **(c)** phase 16 takes the three data states, the absent-graph state deferred to whoever builds a per-graph fetch. Full table in `CHTB-5`.
 
-**Blocks:** `CHTB-5`. Note that **option (b) leaves the actual requirement unmet** — no block in either phase requires the four states to be mutually distinguishable.
+**RULED 2026-10-03 (Product Owner, adjudicated; Cluster 5): THIS PHASE OWNS ALL FOUR STATES, DISTINGUISHES ABSENT FROM ZERO ON THE WIRE, AND ADDS AN ABSENT-GRAPH CARD.** **Chosen by description: (a) — and the note this record already carried is the reason: option (b) leaves the actual requirement unmet, because no block in either phase enforces that the four states are mutually distinguishable.**
 
-### D-16-5 — Accept or defer the four unnamed hand-overs? · **chooser: Coordinator**
+**Acceptance criteria, all three:** (i) **a `null` measure and a `0` measure are distinguishable ON THE WIRE** — not only after the client has computed something; (ii) **an empty `data` array still reaches the empty branch**; (iii) **an absent graph is distinguishable from an empty one.**
+
+**Release note, and the unknown must stay unknown:** **dashboards quietly drawing flat zeros will warn for the first time. The number affected is UNKNOWN to this plan and MUST BE STATED AS UNKNOWN, NOT ESTIMATED** — an estimate here would be a number nobody measured, and this plan has already recorded that its own `:8010` probe examined zero aggregate rows.
+
+**Blocks released:** **`CHTB-5`.**
+
+### D-16-5 — Accept or defer the four unnamed hand-overs? · **RULED — `chooser: Coordinator`**
 
 `H-1` (six `errorMessages.ts` files, `useAuth.ts`'s 429 branch, the four forced-password redirects, `adminApi.ts::retrieveTempPassword`, `UserManagement.tsx`, `RegistrationRequests.tsx`) · `H-2` (the `errorHandler.ts` switch, the admin code map, the 403 double render) · `H-3` (presentation of a bounded response) · `H-4` (frontend test coverage, **unnumbered**). Full table with per-item cost in `CHTB-9`.
 
-**The scope cost is stated, not estimated away:** accepting all four roughly doubles the phase, takes on four other phases' open decisions, and puts `H-1` and `H-2` on **one file**. Declining all four leaves phase 13's `CT-5`/`CT-10` hard-blocked and plan 04's `C04-4` unexecuted — and the honest state is *"named as phase-16-held, deferred by decision"*, not *"unowned"*.
+**RULED 2026-10-03 (Product Owner, adjudicated; Cluster 4): DEFER ALL FOUR, RECORDED AS "held by phase 16, deferred by decision" — EXPLICITLY NOT "unowned".** The distinction is the ruling's own wording and it is load-bearing: *"unowned"* would describe an omission, and what happened here is a decision.
 
-**Blocks:** `CHTB-9`, and therefore the release of phase 13's `CT-5` and `CT-10`.
+**The scope cost is stated, not estimated away:** accepting all four roughly doubles the phase, takes on four other phases' open decisions, and puts `H-1` and `H-2` on **one file**. Deferring leaves plan 04's `C04-4` unexecuted — and the honest state is the one the ruling names.
+
+**Blocks released:** **`CHTB-9`, and therefore the release of phase 13's `CT-5` and `CT-10`** — see `C16-1`, which records that phase 13 was blocked on a **ruling, not on work**.
 
 ### D-16-6 — `CHT-003` versus phase 12's `AZ-8`: serialise, co-commit, or defer? · **chooser: Coordinator**
 
@@ -748,11 +810,15 @@ Options: **(a)** serialise, phase 12 first · **(b)** one joint commit · **(c)*
 
 **Blocks:** `CHTB-7`'s framing. **The one-line invalidation is correct under every option** and does not wait.
 
-### D-16-8 — Do the never-gating coverage thresholds get enforced? · **chooser: Tech Lead, jointly with `D-16-5`'s `H-4`**
+### D-16-8 — Do the never-gating coverage thresholds get enforced? · **RULED — `chooser: Tech Lead`, jointly with `D-16-5`'s `H-4`**
 
 Options: **(a)** enforce as written — **they fail**: `ChartRenderer.tsx` has zero coverage and holds six of the ten findings · **(b)** enforce after this phase's blocks have landed tests — the only ordering in which enforcement is meaningful, and "after" is a measured number because the coverage tree is deleted · **(c)** record them as advisory. Full table in `CHTB-9`.
 
-**Blocks:** `CHTB-9`. **This plan does not restore `frontend/coverage/` and no block may** — that is phase 13's `CT-15`.
+**RULED 2026-10-03 (Product Owner, adjudicated; Cluster 5): ENFORCE THE THRESHOLDS AFTER THIS PHASE'S BLOCKS LAND TESTS — chosen by description: (b), and it is the only ordering in which enforcement is meaningful.** Option (a) is rejected because it converts `fe-test` red into a *harder* red against a file the gate would measure at zero. Option (c) is rejected because it leaves the file holding 60 % of the findings unmeasured until someone owns the measurement.
+
+**The constraint that travels with it, and it is not this plan's to lift:** **no block may restore `frontend/coverage/`** — that is phase 13's `CT-15`. And because the thresholds' values were chosen against a codebase that had coverage at some point, **"after" is a real measured number and not a guess.**
+
+**Blocks released:** **`CHTB-9`.**
 
 ---
 
@@ -763,12 +829,12 @@ owner, a blocking direction, and — where the direction matters — what phase 
 
 | # | Item | Owner | Blocking |
 | --- | --- | --- | --- |
-| **C16-1** | **The `C13-1` contention, resolved in words.** Plan 13 records `C13-1` as a **hard blocker on its own `CT-5` and `CT-10`**, because plan 04's `C04-4` reserved `errorMessages.ts` and `useAuth.ts`'s `RATE_LIMIT_EXCEEDED` branch — *precisely the two locations `CT-5` and `CT-10` must edit* — to this phase. **What this phase now owns, plainly:** (i) all **six** `errorMessages.ts` files — `shared/api/` and `features/{auth,admin,dashboards,upload,users}/model/`; (ii) `useAuth.ts`'s `RATE_LIMIT_EXCEEDED` branch, i.e. the `removeToken()`-with-no-toast path; (iii) the four `force_password_change` redirect sites (`useAuth.ts`×3, `LoginForm.tsx`×1); (iv) `adminApi.ts::retrieveTempPassword`; (v) `UserManagement.tsx` and `RegistrationRequests.tsx`. **What phase 13 must stop waiting for:** phase 13 is not blocked on *work* from this phase — it is blocked on a **ruling**. Phase 16 has executed its ten `CHT` findings, and **none of them names a single one of these symbols**; the reservation is held by plan 04's out-of-scope row, not by a phase-16 finding. **The block is released the moment `D-16-5` rules**, and it is released **against** the plan-13 requirement to proceed "only once phase 16 confirms the work is additive" — because as of this plan, **there is no phase-16 work in those files to be additive to.** Phase 13 should be told this directly rather than inferring it from silence. | **Coordinator** (`D-16-5`) | **phase 13's `CT-5` and `CT-10` (hard, until ruled)** |
+| **C16-1** | **The `C13-1` contention, resolved in words.** Plan 13 records `C13-1` as a **hard blocker on its own `CT-5` and `CT-10`**, because plan 04's `C04-4` reserved `errorMessages.ts` and `useAuth.ts`'s `RATE_LIMIT_EXCEEDED` branch — *precisely the two locations `CT-5` and `CT-10` must edit* — to this phase. **What this phase now owns, plainly:** (i) all **six** `errorMessages.ts` files — `shared/api/` and `features/{auth,admin,dashboards,upload,users}/model/`; (ii) `useAuth.ts`'s `RATE_LIMIT_EXCEEDED` branch, i.e. the `removeToken()`-with-no-toast path; (iii) the four `force_password_change` redirect sites (`useAuth.ts`×3, `LoginForm.tsx`×1); (iv) `adminApi.ts::retrieveTempPassword`; (v) `UserManagement.tsx` and `RegistrationRequests.tsx`. **What phase 13 must stop waiting for, and why:** **phase 13 was blocked on a RULING, NOT ON WORK.** Phase 16 has executed its ten `CHT` findings, and **none of them names a single one of these symbols**; the reservation is held by plan 04's out-of-scope row, not by a phase-16 finding. **The block is RELEASED — `D-16-5` is RULED (2026-10-03, Cluster 4) and it DEFERS ALL FOUR hand-overs, recorded as *"held by phase 16, deferred by decision"* and explicitly NOT *"unowned".** It is released **against** the plan-13 requirement to proceed "only once phase 16 confirms the work is additive" — because as of this plan, **there is no phase-16 work in those files to be additive to.** **Phase 13 must be told this DIRECTLY rather than inferring the release from silence**, and its `C13-1` register entry is **not withdrawn**: it records that the contention existed, how it resolved, and that fact. | **Coordinator** (`D-16-5`, now RULED) | **phase 13's `CT-5` and `CT-10` — RELEASED 2026-10-03** |
 | **C16-2** | **`ChartRenderer.tsx::convertToPlotlyData` has two owners and one function.** `C13-6` and `VAL-16-001` point the same way and should be read as **one ruling**: the *typing* of the payload is phase 13's (`FE-007`/`FE-008` → `CT-7`); the *presentation defaults* — `xCol`, `metricCols`, `orientation`, `barmode` — are phase 16's. **This plan is the "read" `CT-7` waits on**, and it is delivered by `CHTB-1` and `CHTB-4`. **The hazard, stated once and for the last time: `CT-7` option (a) deletes the dead `convertChartLayoutToPlotly` — the exact function `CHT-006` requires to start working.** Deleting it would convert a HIGH into unimplementable. `CHTB-3` therefore lands **before** `CT-7` can delete anything. **Also re-derived for phase 13:** plan-13's `R-13-9` and the phase-16 brief both say the three `ChartRenderer.tsx` lint errors sit "in a function no finding names". **Wrong on the function** — `convertChartLayoutToPlotly` is named by `CHT-002` and `CHT-006`. **Right on the assertion**: what no finding names is the **redundant `as Partial<Layout>['title' \| 'xaxis' \| 'yaxis']` assertion**. Every fix that repopulates `layout` must decide those three deliberately. | **phase 13** (`CT-7`) · phase 16 delivers the read | **`CT-7` (read before design)** |
 | **C16-3** | **The frontend-coverage hand-over correction, recorded once.** Plan 13's `C13-8` and the phase-16 brief both claim `TST-004` and `TST-014` hand this phase **frontend** test coverage. **Both are backend `pytest` findings** — `TST-004` is 34 integration tests with `xfail` timeout markers they do not control (phase 09's `TCO-2`), and `TST-014` is `test_auth_service.py::test_register` asserting against its own input (phase 09's `TCO-8`). Plan 09's frontmatter **also** mislabels `TST-017` — a backend router/service/repository boundary list (`TCO-4`) — as having a frontend half. **What plan 09's OUT table actually hands over is "Frontend test coverage → phase 16" with no ID attached**, and the same unattached hand-over appears twice more in that plan. **Consequence for phase 13:** it must **not** use a coverage number as evidence (`R-13-14` holds) and it is correct that it owns none of this. **Consequence for this phase:** `H-4` is unnumbered, which is why it is a decision (`D-16-5`) rather than a finding. | **phase 09** (artefacts) · **phase 16** (the gate question) | — (recorded; `CT-15` owns the restoration) |
 | **C16-4** | **`CHT-003` collides with phase 12's `AZ-8`.** Both HIGH, one model, one endpoint, one contract suite. `AZ-8` holds `models/data.py`'s aggregated-response schema **read-only** and edits `get_aggregated_data_endpoint`'s two construction sites; `CHT-003`'s remedy edits the same model, the same two sites, and changes the shape that `tests/test_data_endpoint.py::TestAggregatedDataEndpointContract` — `AZ-8`'s critical pin — **must keep green unmodified**. This is the "two owners in one commit" hazard the phase-13 validator warned about, on the **server** side. **Phase 16 states its position on the facts, not the preference:** `AZ-8`'s read-only pin exists *because it is adding a check*, and the check is independent of the fields; therefore the read-only pin is a sequencing artefact, not a permanent ownership claim, and `D-16-6` is the Coordinator's call. **Phase 16 also notes that `CHT-003` is not phase 12's to absorb** — an authorization block growing a response-shape change makes it carry a presentation decision. | **Coordinator** (`D-16-6`) | **`CHTB-2` (hard)** · not phase 12's `AZ-8`, which is deliberately ungated on its side |
 | **C16-5** | **What the client does when a server `LIMIT` lands.** Phase 11's `PRF-4` adds the bound and `DP-11-B` decides what it means; phase 13's `C11-8`/`C13-4` own the query key and the render signal; **`tests/test_openapi.py` is the tripwire and phase 12's `AZ-8` holds the model read-only.** Today the read is **unbounded** — no `limit`, no `LIMIT`, no `head(`, no pagination parameter on `GET /data/aggregated`. **The boundary that would break, in order of arrival:** `PRF-4`'s `LIMIT` shortens the response and **`GraphDataResponse` declares no count field, so no client code path could detect it**; `DP-11-B(a)`'s `ORDER BY` changes row order, which today is **already nondeterministic** and which both the grouping loop and the `[0]` index depend on; `DP-11-B(c)`'s count field is a second addition to a model phase 12 already holds. **Phase 16's claim, narrow and precise:** the *presentation* of a bounded response is this phase's by plan 11's OUT row, **and no `CHT` finding names it.** `CHTB-5` builds the client-side capability; `H-3` in `D-16-5` decides whether this phase *owns* the presentation or merely prepares for it. **Today's behaviour at that call site is already that truncation** — the line branch's `[0]` drops N−1 series without a word. | **phase 11** (`PRF-4`, `DP-11-B`) · **phase 13** (`C11-8`, `C13-4`) | **`CHTB-5`'s truncation half** · `PRF-4` is hard-blocked on a client signal per phase 11's own `R-11-4` |
-| **C16-6** | **`GraphConfigDict` now has a third claimant.** Plan 15 has landed since the Phase-1 Auditor's snapshot. `SEC-004`'s backend half is `SECB-5`, which plans to make `GraphCreate`/`GraphUpdate` **refuse** undeclared chart-config keys, with `D-15-I` choosing whether the backend becomes the superset or the client becomes the authority, and `VAL-15-004` widening the consequence: **the shipped client reads `metrics`, `orientation` and `barmode` back on every render**, so a refusing validator turns today's silent mismatch into a **422 on a path the shipped client walks**. `C15-6` routes the client half to "phase 13 (`shared/types/**`, `shared/api/**`) · **phase 16 (`ChartRenderer.tsx`, the chart presentation contract)**". **Two consequences for this plan:** (i) `CHTB-1` is blocked on phase 15's `D-15-I`, not only on `D-16-1`, and the two decisions are **one decision seen from two ends**; (ii) `D-16-1` option (d) *is* `D-15-I` option (a) — if phase 15 picks it, this block's remedy is already decided and `CHTB-1` becomes the **presentation** consequence: charts begin honouring `orientation` and `barmode` instead of falling back to defaults, and **that rendering change is phase 16's**. Also re-derived from phase 15 and worth stating once: **a model-level `extra="forbid"` on `GraphCreate` does not catch this**, because Pydantic v2 does not descend into a `TypedDict`-typed value — so the obvious knob ships no fix and a green suite. | **phase 15** (`SECB-5`, `D-15-I`) · phase 16 owns the rendering consequence | **`CHTB-1` (hard, on `D-15-I`)** |
+| **C16-6** | **`GraphConfigDict` now has a third claimant, and the two claims turned out to be one decision.** Plan 15 has landed since the Phase-1 Auditor's snapshot. `SEC-004`'s backend half is `SECB-5`, which plans to make `GraphCreate`/`GraphUpdate` **refuse** undeclared chart-config keys, with `D-15-I` choosing whether the backend becomes the superset or the client becomes the authority, and `VAL-15-004` widening the consequence: **the shipped client reads `metrics`, `orientation` and `barmode` back on every render**, so a refusing validator turns today's silent mismatch into a **422 on a path the shipped client walks**. `C15-6` routes the client half to "phase 13 (`shared/types/**`, `shared/api/**`) · **phase 16 (`ChartRenderer.tsx`, the chart presentation contract)**". **Two consequences for this plan, and the first is now settled:** (i) **`D-16-1` and `D-15-I` were ruled as ONE decision seen from two ends — the backend becomes the SUPERSET, honouring `metrics`, `orientation`, `barmode`, `title`, `x`, `y`, `color` and refusing genuinely unknown keys with a message naming the key — so `CHTB-1` is RELEASED and its remedy is decided;** (ii) **`CHTB-1` becomes the PRESENTATION consequence**: charts begin honouring `orientation` and `barmode` instead of falling back to defaults, and **that rendering change is phase 16's** — intended, and it must be announced. Also re-derived from phase 15 and worth stating once: **a model-level `extra="forbid"` on `GraphCreate` does not catch this**, because Pydantic v2 does not descend into a `TypedDict`-typed value — so the obvious knob ships no fix and a green suite. | **phase 15** (`SECB-5`, `D-15-I` — **RULED 2026-10-03, same ruling**) · phase 16 owns the rendering consequence | **`CHTB-1` — RELEASED** |
 | **C16-7** | **`yoy` and `secondary_y`'s structural unusability.** Counted in `CHT-004`'s inventory only — two of the eight live unrendered keys. Phase 16 records them as declared-but-unread and does not repair or re-file them. | **phase 05** (`DP-009`) | — |
 | **C16-8** | **`VAL-13-003`'s roadmap amendment.** `VAL-16-002` rules `CHT-010` the finding of record and asks that phase 13's roadmap entry point at it instead of prescribing a second call site at `DashboardView`'s upload handler. **The correction is a write into `.ai/audit/99-validation/13-…`, which this phase must not make.** The realistic failure is both prescriptions landing and one cache key being invalidated from two sites with the redundancy unrecorded — which is why `CHTB-7`'s definition of done requires **exactly one** invalidation site naming the key, asserted by a re-count. | **phase 13** | — (phase 16 applies the ruling; phase 13 performs the edit) |
 | **C16-9** | **`fe-lint` is red on arrival and `fe-typecheck` does not exist.** Nine errors; `check` short-circuits at `fe-lint`. **Any claim in any plan that the frontend gates "stay green" is asserting something false**, and phase 08's `CQLT-4` requirement is unsatisfiable today. The `any`-ban is a **rule, not a gate**: `no-explicit-any` is enabled and `strict` is on, but no source writes a literal `any`, so the ban fails in substance while every observed violation is an **inferred** `any` the `no-unsafe-*` rules catch. **Enforcement is a lint-configuration change — phase 08's (`C13-9`).** Every type-changing block in this plan must run a build, and every build writes the untracked `frontend/dist`. | **phase 08** (`CQLT-*`, `C13-9`) · **phase 10** (`OPS-003`, `frontend/dist`) | — (recorded; every block states its own delta against the 9-error baseline) |
@@ -793,8 +859,8 @@ owner, a blocking direction, and — where the direction matters — what phase 
 | **Phase 11's server `LIMIT`** and `DP-11-B(c)`'s count field | **phase 11** (`PRF-4`) | `CHTB-5` builds the client capability and **must not invent the field** (phase 13's `R-13-4` says the same from the other side). `C16-5`. |
 | **Phase 11's `ORDER BY`** and `aggregated_data_repo.py`'s missing `ORDER BY` and `LIMIT` as *server* defects | **phase 11** (`C11-16`) | The read is unordered today, so series order is nondeterministic and feeds both the grouping loop and the `[0]` index. `CHTB-4` makes the *client* order-independent and asserts it by reversing the fixture; it does **not** order the read. No phase-16 finding names it as a server defect. |
 | **The graph-skip upstream** — `aggregate_for_dashboard` `continue`s when a metric matches no column | **nobody, by decision** | The consequence is `CHTB-5`'s question and `D-16-4`. The **skip itself** is phase 05's pipeline behaviour; this phase does not change it. |
-| **The six `errorMessages.ts` files**, `useAuth.ts`'s 429 branch, the four forced-password redirects, `adminApi.ts::retrieveTempPassword`, `UserManagement.tsx`, `RegistrationRequests.tsx` | **phase 16 via plan 04 `C04-4`** — *held, not claimed* | No `CHT` finding names any of them. `D-16-5`'s `H-1`. `C16-1`. |
-| **`errorHandler.ts`'s switch**, the admin code map, the 403 double render | **phase 13 / phase 16 via plan 12 `O-05`/`C12-1`** — *held, not claimed* | No `CHT` finding names them. `D-16-5`'s `H-2` — and **overlaps `H-1` on one file**. |
+| **The six `errorMessages.ts` files**, `useAuth.ts`'s 429 branch, the four forced-password redirects, `adminApi.ts::retrieveTempPassword`, `UserManagement.tsx`, `RegistrationRequests.tsx` | **phase 16 via plan 04 `C04-4`** — **HELD BY PHASE 16, DEFERRED BY DECISION** (`D-16-5`, RULED 2026-10-03). **Explicitly NOT "unowned"** — the distinction is the ruling's own wording, and an omission would have been described differently | No `CHT` finding names any of them; the reservation is held by plan 04's out-of-scope row. `D-16-5`'s `H-1`. `C16-1`. **And `D-16-5`'s ruling RELEASES phase 13's `CT-5` and `CT-10` against that reservation** |
+| **`errorHandler.ts`'s switch**, the admin code map, the 403 double render | **phase 13 / phase 16 via plan 12 `O-05`/`C12-1`** — **HELD BY PHASE 16, DEFERRED BY DECISION** (`D-16-5`, RULED 2026-10-03), **not "unowned"** | No `CHT` finding names them. `D-16-5`'s `H-2` — and **it overlaps `H-1` on one file**, which is part of why the ruling deferred rather than accepted |
 | **Frontend test coverage, and the coverage gate** | **phase 16 via plan 09's OUT row** — *unnumbered* | `D-16-5`'s `H-4` and `D-16-8`. The correction that `TST-004`/`TST-014` are **backend** is recorded once, in `C16-3`. |
 | **The `any`-ban enforcement and any lint-config change** | **phase 08** (`C13-9`) | `no-explicit-any` is on and `strict` is on; the ban fails because no source writes a literal `any`. `C16-9`. |
 | **`docs/07-frontend/pages.md`'s `graph_id`-optional claim** | **phase 13** (`C11-8`, `C13-5`, `C12-7`) | Phase 11 raised the truncation requirement there and said *do not edit*. `CHTB-8` records it and does not write it. |
@@ -841,26 +907,32 @@ solid edges are the subset that must hold.
 | # | Block | Gate before it starts | Depends on | Independent of every ruling? |
 | --- | --- | --- | --- | --- |
 | 1 | **`CHTB-0`** | none | — | **yes** |
-| 2 | **`CHTB-1`** | `D-16-1` **and** phase 15's `D-15-I` ruled · the phase-16 key census complete | `CHTB-0` | **no** |
-| 3 | **`CHTB-2`** | `D-16-6` ruled · `CHTB-1` landed (preferred) | `CHTB-0` | **no** |
-| 4 | **`CHTB-3`** | `D-16-3` ruled | `CHTB-0` | **yes** |
+| 2 | **`CHTB-1`** | **`RELEASED` — `D-16-1` RULED (2026-10-03): widen to `metrics`/`orientation`/`barmode`/`title`/`x`/`y`/`color`, refuse genuinely unknown keys naming the key, reclassify the seven as reserved and documented. `D-15-I` is the same ruling, also RULED.** Residual gate: the phase-16 key census complete | `CHTB-0` | **yes** |
+| 3 | **`CHTB-2`** | `D-16-6` **still OPEN** · `CHTB-1` landed (preferred) | `CHTB-0` | **no** |
+| 4 | **`CHTB-3`** | **`RELEASED` — `D-16-3` RULED (2026-10-03): `'category'` survives as the bar chart's default axis type unless a stored layout overrides it; the bar branch merges `xaxis` per `VAL-16-003`** | `CHTB-0` | **yes** |
 | 5 | **`CHTB-4`** | `CHTB-1` landed · phase 13's `CT-7` **read** this plan | `CHTB-1` (hard), `CHTB-3` (file) | **no** |
-| 6 | **`CHTB-5`** | `D-16-4` ruled | `CHTB-0`; soft on 2, 3, 6, 7 | **no** |
-| 7 | **`CHTB-6`** | `D-16-2` ruled **for the `range` half only** — the `multiselect` half may start without it | `CHTB-0` | **partly** |
-| 8 | **`CHTB-7`** | `D-16-7` ruled (framing only) | `CHTB-0` | **yes** |
-| 9 | **`CHTB-8`** | blocks 1–8 landed · `D-16-1`, `D-16-2` ruled | **`CHTB-1` … `CHTB-7`** | **no** |
-| 10 | **`CHTB-9`** | `D-16-5` and `D-16-8` ruled | `CHTB-0` | **no** |
+| 6 | **`CHTB-5`** | **`RELEASED` — `D-16-4` RULED (2026-10-03): this phase owns all four empty/absent states, distinguishes absent from zero on the wire, and adds the absent-graph card** | `CHTB-0`; soft on 2, 3, 6, 7 | **yes** |
+| 7 | **`CHTB-6`** | **`RANGE HALF RELEASED — `D-16-2` RULED (2026-10-03): `range` removed from the control and any stored `range` filter rejected with a message naming the reason. The `multiselect` half was never gated and MUST NOT WAIT** | `CHTB-0` | **yes** |
+| 8 | **`CHTB-7`** | `D-16-7` **still OPEN** (framing only) | `CHTB-0` | **yes** |
+| 9 | **`CHTB-8`** | blocks 1–8 landed · **`D-16-1` and `D-16-2` both RULED (2026-10-03)** | **`CHTB-1` … `CHTB-7`** | **no** |
+| 10 | **`CHTB-9`** | **`RELEASED` — `D-16-5` RULED (2026-10-03): defer all four hand-overs, "held by phase 16, deferred by decision", not "unowned". `D-16-8` RULED (2026-10-03): enforce the coverage thresholds AFTER this phase's blocks land tests** | `CHTB-0` | **no** |
 
-**Two blocks are executable today with no ruling at all: `CHTB-0` and `CHTB-3`.** That is deliberate
-and it is the phase's release valve — `CHT-006` and `CHT-002` are HIGH-band, they touch the
+**Seven of the ten blocks are executable today with no outstanding ruling: `CHTB-0`, `CHTB-1`,
+`CHTB-3`, `CHTB-4`, `CHTB-5`, `CHTB-6`, `CHTB-7`.** `CHTB-2` and `CHTB-8` remain gated — `CHTB-2` on
+the still-open `D-16-6`, `CHTB-8` on the other blocks landing. **`D-16-6` and `D-16-7` are the only two
+open records in this plan**, and both gate at most one block each.
+
+**Before the rulings, two blocks were executable with no ruling at all: `CHTB-0` and `CHTB-3`.** That
+was the phase's release valve — `CHT-006` and `CHT-002` are HIGH-band, they touch the
 product's most-visible surface, and they must not be held hostage to a decision about which chart
-config keys survive. **`CHTB-7`** is a third: its one-line invalidation is correct under every option
-of `D-16-7` and only its *framing* waits.
+config keys survive. **`CHTB-7`** was a third: its one-line invalidation is correct under every option
+of `D-16-7` and only its *framing* waits. **The 2026-10-03 rulings have since widened that valve to
+seven of ten blocks**, and `D-16-6` and `D-16-7` are the only two open records left.
 
-**What the phase looks like if no ruling ever arrives:** `CHTB-0`, `CHTB-3` and `CHTB-7` land, and
-`CHTB-8` is written against whatever landed. Three blocks of ten, including the phase's second and
-third HIGH findings. **That is the honest floor, and it is a floor the owner should be told about
-rather than discovering.**
+**What the phase looks like if no further ruling ever arrives:** `CHTB-2` does not start, `CHTB-8`
+waits on it, and `CHTB-7`'s framing stays unwritten while its one-line invalidation lands. **That is
+the honest floor, and it is much higher than it was before the rulings: seven of ten blocks are
+unblocked, including the phase's headline finding `CHTB-1`.**
 
 ---
 
@@ -947,14 +1019,26 @@ commit. Reverting the server half alone leaves the client half inert if the merg
 if it is absent. **The commit reverts whole or not at all** — and this is the *direct* consequence of
 `VAL-16-003`, applied as a hard edge rather than a paragraph.
 
-**`CHTB-1` is render-neutral for existing graphs and behaviour-changing for future ones.** Nothing
-backfills the newly-honoured keys on any stored graph, and the renderer's current defaults are what
-those graphs are already drawn with. But a `Literal` narrowing turns a previously **stripped-and-ignored**
-key into a **rejected** one: a **422** on a route that answered `201`. **The shipped UI cannot reach
-it** — there is no graph editor in `frontend/src` — so the tightening is currently unreachable from
-the product, and **that pre-check must be re-made and dated, and re-made again if a graph editor is
-ever added.** Under a narrowing `D-16-1`, the rollback story changes completely: any stored graph
-carrying one of the eight unrendered keys would start failing to update.
+**`CHTB-1` is NOT render-neutral for existing graphs, and the ruling says so.** `D-16-1` chose to
+**widen** the contract to what the product already uses — `metrics`, `orientation`, `barmode`,
+`title`, `x`, `y`, `color` — so the newly-honoured keys **change rendering for charts that have been
+storing values that were silently dropped**. Nothing backfills those keys on any stored graph, and the
+renderer's current defaults are what those graphs are already drawn with, so the change appears the
+moment a value is stored. **This is intended and it must be announced in the release note** — it is
+also phase 15's `D-15-I`, the same ruling from the backend end.
+
+**The refusal that remains is narrower than it was.** It targets **genuinely unknown keys** and its
+message **names the key**, so a client that sends the shipped vocabulary is no longer on the failure
+path. **The seven remaining declared-but-unread keys — `yoy`, `secondary_y`, `xaxis`, `yaxis`,
+`layout`, `sort_x`, `sort_color` — are RECLASSIFIED AS RESERVED AND DOCUMENTED AS SUCH**: reserved is
+a statement, silence is not, and this plan has already recorded that a silently-ignored key is how a
+future reader re-opens the question.
+
+**Standing constraint, carried by both rulings: the "no graph editor exists in the shipped UI"
+pre-check must be RE-MADE immediately before editing and its DATE RECORDED — and re-made again if a
+graph editor is ever added.** It was the assumption that made a narrowing answer safe to reach for;
+under a widening answer it is what bounds the reachability claim, and an undated pre-check is not
+evidence.
 
 **`CHTB-2` and `CHTB-6` both touch the endpoint that renders every chart.** `CHTB-2` is additive in
 JSON, but a client that starts reading `metrics` and finds a name that is not on any row reproduces
@@ -970,10 +1054,19 @@ entries and the picture gets busier**, which is a visible change to charts some 
 read as single-series. And the ordering is not a convention: **an all-zero pie is worse than an empty
 one**, because it looks like data. `CHTB-1` lands first.
 
-**`CHTB-5` may make a silent class of dashboards loud for the first time.** If the absent-measure
-state becomes visible, dashboards that have been quietly drawing flat zeros will start showing a
-warning or a placeholder, and **the number of affected dashboards is unknown to this plan** — that
-belongs in the release note.
+**`CHTB-5` will make a silent class of dashboards loud for the first time, and the release note must
+say the number is UNKNOWN.** If the absent-measure state becomes visible, dashboards that have been
+quietly drawing flat zeros will start showing a warning or a placeholder. **The number of affected
+dashboards is unknown to this plan and MUST BE STATED AS UNKNOWN, NOT ESTIMATED** — an estimate would
+be a figure nobody measured, and this plan has already recorded that its own `:8010` probe examined
+**zero** aggregate rows and reported clean.
+
+**The three acceptance criteria are the ruling's, and none of them is satisfied by a page load:** a
+`null` measure and a `0` measure must be distinguishable **on the wire** — not only after the client
+has computed a value; an empty `data` array **still reaches the empty branch**; and an absent graph
+is distinguishable from an empty one. **Phase 16 owns all four states under `D-16-4`** — the
+three-phase split is rejected, and the reason is the one this plan already recorded: **no block in
+either phase would have enforced mutual distinguishability**, which is the actual requirement.
 
 **Nothing in this plan writes, migrates or deletes a stored row.** `CHTB-1` and `CHTB-2` change what
 may be **stored** and what may be **read**; `CHTB-3`, `CHTB-6` and `CHTB-7` change what is **returned**,

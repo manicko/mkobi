@@ -28,14 +28,19 @@ coverage_hazard: >-
   done item on every such block and is checked once in CT-15. A coverage number must never be used
   as evidence for any block in this plan.
 status: >-
-  decomposed — 16 blocks (CT-0 … CT-15), 15 decision records unruled (DP-13-A … DP-13-O), 12
-  cross-phase seams (C13-1 … C13-12). No technical fork is chosen anywhere in this plan. Executable
-  today with no ruling at all: CT-0, CT-1, CT-2, CT-12, CT-15. CT-3 needs CT-1 and DP-11-A; CT-4
-  needs CT-3; CT-5 needs C13-1 and C13-2; CT-6 needs CT-5 and DP-13-D; CT-7 needs DP-13-A, DP-13-J,
-  DP-13-K and C13-6; CT-8 needs DP-13-G; CT-9 needs CT-8; CT-10 needs DP-13-E and C13-1; CT-11 needs
+  decomposed — 16 blocks (CT-0 … CT-15), 15 decision records of which FIVE are RULED
+  (DP-13-B, DP-13-C, DP-13-D, DP-13-H, DP-13-I — Product Owner, 2026-10-03,
+  ADJUDICATED-2026-10-03-product-owner-rulings.md, Clusters 4 and 5) and TEN remain unruled (DP-13-A, DP-13-E, DP-13-F,
+  DP-13-G, DP-13-J, DP-13-K, DP-13-L, DP-13-M, DP-13-N, DP-13-O), 12 cross-phase seams
+  (C13-1 … C13-12). No technical fork is chosen anywhere in this plan, and no owner ruling is
+  re-decided here. Executable today with no ruling at all: CT-0, CT-2, CT-12, CT-15. CT-1 + CT-3 are
+  ONE commit under the ruled DP-13-B(a) and span src/mkobi with frontend/src under phase 11's
+  DP-11-A(b); CT-4 needs CT-3; CT-5 needs C13-2 (its C13-1 hard block is RELEASED by D-16-5 — defer all four);
+  CT-6 needs CT-5 (DP-13-D ruled); CT-7 needs DP-13-A, DP-13-J, DP-13-K and C13-6; CT-8 needs DP-13-G;
+  CT-9 needs CT-8; CT-10 needs DP-13-E (its C13-1 hard block is RELEASED by D-16-5 — defer all four); CT-11 needs
   DP-13-F; CT-13 needs CT-11 and DP-13-L; CT-14 needs DP-13-N and DP-13-O.
 blocks: 16 (CT-0 … CT-15)
-decisions: 15 (DP-13-A … DP-13-N carried verbatim from the code context §6; DP-13-O raised by this Planner for PlaceholderPage.tsx) — none picked
+decisions: 15 (DP-13-A … DP-13-N carried verbatim from the code context §6; DP-13-O raised by this Planner for PlaceholderPage.tsx) — five ruled 2026-10-03 (B, C, D, H, I); the remaining ten picked by nobody
 id-namespace: >-
   Block IDs are CT-*, coordination IDs are C13-*, decision records are DP-13-*, and plan-level
   rulings are R-13-*. Taken and not reused: B0…B10 (phase 03), B0…B7 (phase 02), B0…B14 (phase 10),
@@ -64,8 +69,9 @@ findings_handed_over: >-
 prohibitions: >-
   This plan edits no production code, no audit file and no sibling plan. Its only writable artefact
   is itself. No block may edit `.ai/audit/**` or `.ai/plans/**` other than this file. No block may
-  edit a backend file from a client finding (see CT-2's boundary note). No block may commit the
-  absence of frontend/coverage/.
+  edit a backend file from a client finding (see CT-2's boundary note) — the one exception the owner
+  ruled is DP-13-I(a)'s server validator, which this plan STILL does not perform: it is recorded as
+  unowned under `X-13-R1`. No block may commit the absence of frontend/coverage/.
 sibling_plans:
   - .ai/plans/01-configuration-secrets-remediation-execution.md
   - .ai/plans/02-process-architecture-remediation-execution.md
@@ -78,6 +84,42 @@ sibling_plans:
   - .ai/plans/09-test-coverage-remediation-execution.md
   - .ai/plans/10-production-ops-remediation-execution.md
   - .ai/plans/11-performance-remediation-execution.md
+---
+
+## Owner rulings applied
+
+**`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` — Product Owner, adjudicated by the
+Tech Lead, 2026-10-03 — rules five of this plan's fifteen decision records.** That file is **the single
+authority**: it merges two parallel owner registers and adjudicates every disagreement, and neither input
+file may be cited as authority any more. **The clusters this plan consumes are Cluster 4 (cross-tier
+ordering — phase 11's `DP-11-A` and phase 16's `D-16-5` — and `CT-3`'s two findings) and Cluster 5
+(`DP-13-H` and `DP-13-I`).** **Option letters are not carried across:** the register's letters denote
+which *input register* won each decision, not which option in *this plan's* tables was taken — **implement
+the words**. Nothing below is this plan's choice, and no option was ruled by default.
+**The other ten — `DP-13-A`, `DP-13-E`, `DP-13-F`, `DP-13-G`, `DP-13-J`, `DP-13-K`, `DP-13-L`,
+`DP-13-M`, `DP-13-N`, `DP-13-O` — remain open by design and their choosers are untouched**, including
+`DP-13-F`, whose ruling sits in Cluster 5 and which this plan deliberately does not consume.
+
+| ID | Ruled | One-line rationale |
+| -- | ----- | ----------------- |
+| `DP-13-B` | **(a)** — the `queryKey` fix lands **WITH** the `graphId` threading, **in one commit** | Threading `graphId` without adding it to the cache key makes every per-graph fetch collide on one cache entry, and the dashboard then renders **one chart, silently**. **One commit also means the commit spans `src/mkobi` and `frontend/src`**, because phase 11's `DP-11-A` is **ruled atomic — one change spanning both tiers**, with no silent-truncation window |
+| `DP-13-C` | **(b)** — render the server's count as **"showing N of M"** | The server is authoritative and **the client must not invent the field** (`R-13-4` stands): `CT-3`'s render path consumes `DP-11-B(c)`'s field and **ships inert if that field does not land** |
+| `DP-13-D` | **(a)** — **one surface per context**: a persistent inline message for the main view, the **toast reserved for background refetches and mutations**, which have no inline surface | A user who currently gets both a toast and a banner gets **one**. The interceptor cannot see which surface is displaying a request, so the exemption is **per surface**, not per class |
+| `DP-13-H` | **(a)** — the **server is authoritative**; the client mirrors it exactly, and the client's uppercase-only rule is **dropped from the client and NOT added to the server** | The client's rule is stricter than the server's. **No backend file is edited by a client finding** — the option that would have tightened `validate_password_or_raise` for every caller including admin resets is **forbidden**, so `C13-2`'s "nobody owns the backend option" row is **closed** |
+| `DP-13-I` | **(a)** — align the client to the **create** rule **AND add a server validator** on the update path | No divergence survives the change. **This ruling's backend half collides with this plan's own `R-13-6` and has no owner** — recorded, not silently absorbed: see `CT-2` and **Conflicts requiring a Coordinator ruling** |
+
+**Two things this note changes beyond the five records.**
+
+1. **`C13-1` is RELEASED.** Plan 16's `D-16-5` (ruled: defer all four, held-by-decision) defers all four unnamed hand-overs, which releases
+   phase 13's `CT-5` and `CT-10` from the `errorMessages.ts` / `useAuth.ts` `RATE_LIMIT_EXCEEDED`
+   contention — because **there is no phase-16 work in those files for phase 13's work to be additive
+   to**. `C16-1` confirms phase 16 executed its ten `CHT` findings and **none names either symbol**.
+   **The register entry stays: the contention was real, it was resolved by ruling, and phase 13 must be
+   told directly rather than infer the release from silence.**
+2. **One cross-plan consistency requirement.** `DP-13-B`(a) and phase 11's `DP-11-A` (ruled: atomic — one change spanning both tiers) are **one
+   commit spanning two tiers**. This plan states it; plan 11 must state the same, and the ruling file
+   already binds it (*"hard requirement on phase 13's `CT-1` + `CT-3` as **one commit**"*).
+
 ---
 
 # Execution Plan — Phase 13: Client tier remediation
@@ -93,8 +135,10 @@ impact, its verification, and its definition of done.
 
 The plan fixes **order, isolation and risk containment**. It does **not** fix **implementation
 choices** where genuine technical uncertainty exists. Fifteen decision records — **DP-13-A** …
-**DP-13-O** — are carried undecided; every block that depends on one states what stays blocked
-while it is open and what may proceed under each option.
+**DP-13-O** — were carried undecided; every block that depends on one states what stays blocked
+while it is open and what may proceed under each option. **Five are now ruled by the Product Owner
+(2026-10-03 — `DP-13-B`, `DP-13-C`, `DP-13-D`, `DP-13-H`, `DP-13-I`; see `Owner rulings applied`). The
+other ten are still open and this plan still chooses none of them.**
 
 **Two constraints shape everything below.**
 
@@ -216,10 +260,10 @@ omission.
 | - | ------ |
 | **R-13-1** | **Neither frontend gate is a pass/fail gate.** `fe-lint` is a delta gate: the nine known errors must not change, and no block's own files may gain a new one. `fe-test` passes at **169 passed** and at **170/0** after CT-2; it is red on exactly one test until then. A green gate is never evidence for any block in this plan. |
 | **R-13-2** | **The audit corpus is an input, never a target.** No block edits `.ai/audit/**` or any sibling plan. `VAL-13-005`'s remedy, `VAL-13-001`'s recommendation to strike a row from the report, and `VAL-13-002`'s recommendation to restate a title are **documentation-phase work this plan does not perform**; this plan records the corrected scope so the implementor cannot execute the unsafe instruction. |
-| **R-13-3** | **The `queryKey` fix precedes any `graphId` threading, as two blocks and a hard dependency.** `C11-8` is the phase's highest-risk hand-in; the correctness trap is named in CT-1 and the ordering in CT-3. |
-| **R-13-4** | **No truncation signal is planned that presumes a server `LIMIT`.** `data.py` has **no `LIMIT` anywhere** at `ab76989`; a client-only "partial graph set" affordance today signals a truncation the server is not performing and masks the CRITICAL that is. CT-3 builds the *client capability*; the *signal* waits for phase 11's `PRF-4` and `DP-11-A`. |
+| **R-13-3** | **The `queryKey` fix and any `graphId` threading are inseparable — RULED as ONE COMMIT on 2026-10-03 (`DP-13-B`(a)), not two blocks.** `C11-8` is the phase's highest-risk hand-in; the correctness trap is named in CT-1 and the ruling removed the sequence that contained it. **What the ruling does not remove is the requirement itself: the key must carry the parameter the request carries, and the key-shape test must be shown failing before the fix.** |
+| **R-13-4** | **No truncation signal is planned that presumes a server `LIMIT`.** `data.py` has **no `LIMIT` anywhere** at `ab76989`; a client-only "partial graph set" affordance today signals a truncation the server is not performing and masks the CRITICAL that is. **RULED 2026-10-03: `DP-13-C` = (b) — the client renders the SERVER'S count as "showing N of M", and with phase 11's `DP-11-A` (ruled: atomic — one change spanning both tiers) the bound and the signal ship in the same commit. `R-13-4` is NOT relaxed by that: the count is `DP-11-B(c)`'s field, the client must not invent it, and if the field does not arrive the render path ships inert and says so.** |
 | **R-13-5** | **`FE-006`'s Roadmap Step 4 is narrowed to three rules before it is executed.** The name-character rule is enforced server-side; executing "drop or serverise" literally **inverts** a closed divergence into a reachable 422. CT-2 carries the narrowed scope verbatim. |
-| **R-13-6** | **No backend file is edited from a client finding.** `FE-006`'s `new_password` option (b) would edit `src/mkobi/utils/validators.py` and change `change_password` for every caller including admin-initiated resets. That is a backend change in another phase's territory; CT-2 records the boundary and takes the client-side options only. |
+| **R-13-6** | **No backend file is edited from a client finding.** `FE-006`'s `new_password` option (b) would edit `src/mkobi/utils/validators.py` and change `change_password` for every caller including admin-initiated resets. That is a backend change in another phase's territory; CT-2 records the boundary and takes the client-side options only. **RULED 2026-10-03: `DP-13-H` = (a), so this boundary is not crossed for `new_password` — the option is closed and needs no owner. `DP-13-I` = (a) does require a server validator, which is the one place the ruling crosses it; that half is recorded as unowned (`X-13-R1`) and this plan performs only the client half.** |
 | **R-13-7** | **`FE-008`'s verification is replaced, not kept.** "Confirm the intended chart appears" passes in the broken case (a one-point `scatter` is a chart appearing). CT-7's roll-out check is a **trace-count and axis-category** assertion. |
 | **R-13-8** | **Running `fe-test` wipes 15 tracked files and writes no replacement.** Restoring `frontend/coverage/` is a definition-of-done item on every block that runs the gate, and the phase's own close-out in CT-15 confirms it. **No block may commit the absence of the directory**, and no coverage percentage is admissible as evidence anywhere in this phase. |
 | **R-13-9** | **The three `ChartRenderer.tsx` lint errors are unowned.** They sit in `convertChartLayoutToPlotly`, a function **no finding names** — and that function can never run with input, because the server never populates `GraphDataResponse.layout`. CT-7 must state explicitly whether they are in or out of its scope; `DP-13-A` is the gate and this plan does not pick. |
@@ -235,8 +279,8 @@ omission.
 | ---- | ---- | ------------------- |
 | **`PERF-001`'s server `LIMIT`** — the unbounded aggregate read | **phase 11** `PRF-4` + `DP-11-A`/`DP-11-B`, `C13-3` | `data.py` has no `LIMIT` at `ab76989`. The server half and the client half are one change, ordered by `DP-11-A`; phase 11's own `R-11-4` states that no `LIMIT` lands before the client can signal truncation. |
 | **The truncation signal's data source** — a total-count field on the aggregated response | **phase 11** `PRF-4` under `DP-11-B(c)`, `C13-4` | `tests/test_openapi.py` and the response model are phase 11's. CT-3 builds the client's ability to render a signal; it must **not** invent a field. |
-| **`new_password` option (b)** — add the uppercase rule to `validate_password_or_raise` | **backend; no phase owns it today**, `C13-2` seam, `R-13-6` | Edits `src/mkobi/utils/validators.py` and changes `change_password` for every caller, including admin-initiated resets. A backend edit inside a client finding. If the Tech Lead wants the server to match, that is a **new backend finding** to be filed, not a phase-13 edit. |
-| **`updateDashboardSchema.name`** — the client is stricter than the server on the *update* path, which no finding names | `DP-13-I` | `.min(1).max(100)` with no regex against `DashboardUpdate.name`, which has no bound at all, and `update_dashboard` does not re-run `validate_name`. The direction is safe today (client refuses, server accepts). **No finding requires it**; it is in or out by decision. |
+| **`new_password` option (b)** — add the uppercase rule to `validate_password_or_raise` | **forbidden by ruling 2026-10-03** (ADJUDICATED register, Cluster 5) — `DP-13-H`(a); `C13-2` seam, `R-13-6` | Edits `src/mkobi/utils/validators.py` and changes `change_password` for every caller, including admin-initiated resets. **The owner ruled (a): the server's rule is correct as it stands and the client's stricter rule is NOT added to it.** No backend finding is to be filed for this — the option is closed, not unowned. |
+| **`updateDashboardSchema.name`** — the client is stricter than the server on the *update* path, which no finding names | **`DP-13-I`, ruled (a), 2026-10-03 — the client half is CT-2's; the server half is unowned** (`X-13-R1`) | `.min(1).max(100)` with no regex against `DashboardUpdate.name`, which has no bound at all, and `update_dashboard` does not re-run `validate_name`. **Ruled (a): align the client to `DashboardCreate`'s rule AND add the server validator.** The client half lands here; the server validator is a backend edit this plan may not make and no phase owns — **recorded as `X-13-R1`, not absorbed.** |
 | **The chart *presentation* contract** — `xCol`/`metricCols`/`orientation`/`barmode` defaults living in the adaptation layer, and the dead `convertChartLayoutToPlotly` | **phase 16**, `C13-6` | `VAL-13-002`'s ownership ruling hands phase 16 the *consequence* of deleting the sniff, not the fix. CT-7 must read phase 16's material before designing, because both halves are one function. |
 | **Generating `api.types.ts` from OpenAPI** (`DP-13-J` option (c)) | **nobody** | No generator exists, `AGENTS.md`'s "share types via OpenAPI" is aspirational, and adopting a generator is a build-surface change the project rules call overengineering for a MEDIUM finding. Recorded (`A-8`), not built. |
 | **Enforcing the `any` ban** — adding `no-explicit-any` to `eslint.config.js` | **phase 08** (`CQLT-*`), `C13-9` | The wording conflict between `AGENTS.md` §9 and `react-code-standards.md` is a documentation defect CT-14 records; the rule change is a lint-config change, which is phase 08's subject. |
@@ -308,19 +352,19 @@ Consequences, all binding:
 
 ```mermaid
 flowchart TD
-    DPA{{"DP-13-A fe-lint scope"}}
-    DPD{{"DP-13-D toast or inline"}}
-    DPE{{"DP-13-E where boot refresh lives"}}
-    DPF{{"DP-13-F publish up or demote store"}}
-    DPG{{"DP-13-G is the API base configurable"}}
-    DPH{{"DP-13-H which side moves on new_password"}}
-    DPI{{"DP-13-I update-name divergence"}}
-    DPJ{{"DP-13-J what replaces Data[]"}}
-    DPK{{"DP-13-K FE-008 rollout evidence"}}
-    DPL{{"DP-13-L adopt or delete barrels"}}
-    DPO{{"DP-13-O PlaceholderPage"}}
-    P11{{"phase-11 DP-11-A LIMIT ordering"}}
-    P16{{"phase-16 C04-4 message + 429 branch"}}
+    DPA{{"DP-13-A fe-lint scope — OPEN"}}
+    DPD["DP-13-D RULED (a) one surface per context"]
+    DPE{{"DP-13-E where boot refresh lives — OPEN"}}
+    DPF{{"DP-13-F publish up or demote store — OPEN"}}
+    DPG{{"DP-13-G is the API base configurable — OPEN"}}
+    DPH["DP-13-H RULED (a) server authoritative, client mirrors"]
+    DPI["DP-13-I RULED (a) align client + server validator"]
+    DPJ{{"DP-13-J what replaces Data[] — OPEN"}}
+    DPK{{"DP-13-K FE-008 rollout evidence — OPEN"}}
+    DPL{{"DP-13-L adopt or delete barrels — OPEN"}}
+    DPO{{"DP-13-O PlaceholderPage — OPEN"}}
+    P11["phase-11 DP-11-A RULED — atomic: one commit, both tiers"]
+    P16["phase-16 C04-4 — RELEASED by D-16-5 — defer all four"]
     P12{{"phase-12 AUTZ-006 notice"}}
     P09{{"phase-09 VAL-09-003 red test"}}
     P08{{"phase-08 CQLT-4 green-gate claim"}}
@@ -385,7 +429,14 @@ flowchart TD
 
 `solid` = hard dependency (a blocker). `double` = hard sequencing required by the report, by a
 ruling, or by file contention under `R-13-13`. `dotted` = recommended sequencing in the
-single-implementor queue, **not** a data dependency. Decision nodes are gates, not blocks.
+single-implementor queue, **not** a data dependency. Decision nodes are gates, not blocks. **A diamond
+means an OPEN decision: it is still a diamond on `DP-13-A`, `DP-13-E`, `DP-13-F`, `DP-13-G`,
+`DP-13-J`, `DP-13-K`, `DP-13-L` and `DP-13-O`, and on the three cross-plan seams that are not
+decisions.** **Five nodes lost their diamond on 2026-10-03** — `DP-13-D`, `DP-13-H`, `DP-13-I` and
+phase 11's `DP-11-A` (all ruled) and `P16`, whose contention is **released** by plan 16's
+`D-16-5` (ruled: defer all four, held-by-decision). **The edges are unchanged on purpose:** a ruled record is still a record that must exist
+before the block it gates starts, and a released contention is still a position that must be recorded
+in the commit body.
 
 ### Coverage ledger — all sixteen identifiers, both namespaces
 
@@ -487,7 +538,8 @@ re-derive:
    - **To phase 16 and plan-04, of the `C04-4` contention.** Phase 16 is handed
      `errorMessages.ts` and `useAuth.ts`'s `RATE_LIMIT_EXCEEDED` branch; those are **the exact two
      locations CT-5 and CT-10 must edit**. This plan does not resolve it and does not proceed past it
-     silently — see `C13-1`, which is currently a hard blocker on two blocks.
+     silently — see `C13-1`, **whose hard block on two blocks was RELEASED by plan 16's `D-16-5` (ruled: defer all four, held-by-decision) on
+     2026-10-03; the collision is recorded, not withdrawn.**
 6. **The dead-code policy application** (`R-13-11`): `PlaceholderPage.tsx` is specified in
    `docs/07-frontend/fsd-structure.md` with a usage-guidelines section, is absent from disk and from
    every import. The project's policy is that dead code is only dead when **not** documented and that
@@ -518,9 +570,30 @@ recipients named. No audit file, sibling plan, production file, or tracked file 
 
 ## CT-1 — The cache key includes `graphId` (VAL-13-006, the `C11-8` half that is a correctness defect)
 
-**Discharges:** VAL-13-006 (the key half), `C11-8`, `A-3` · **Blocked by:** nothing ·
-**Blocks:** CT-3 (hard), CT-4 (sequencing) · **Execution order:** 2 · **Risk:** **HIGH
-implementation**, LOW rollout, MEDIUM regression, MEDIUM compatibility · **Agents: all four**
+**Discharges:** VAL-13-006 (**both halves under the ruled `DP-13-B`(a)** — the key fix and the `graphId`
+threading, **in one commit**), `C11-8`, `A-3` · **Ruled by:** `DP-13-B` **(a), Product Owner 2026-10-03**
+· **Blocked by:** nothing · **Blocks:** CT-3 (**which is now the same commit**, not a later one), CT-4
+(sequencing) · **Execution order:** 2 · **Risk:** **HIGH implementation**, LOW rollout, MEDIUM
+regression, MEDIUM compatibility · **Agents: all four**
+
+> ### ⚠ RULED: `CT-1` and `CT-3` ARE ONE COMMIT — AND IT SPANS TWO TIERS.
+>
+> **`DP-13-B` is ruled (a) by the Product Owner on 2026-10-03: the `queryKey` fix lands WITH the
+> `graphId` threading, in the same commit.** Phase 11's **`DP-11-A` is ruled — atomic, one change spanning both tiers** — the server bound and
+> the client signal land **atomically, in one change**, with **no silent-truncation window and no
+> unbounded interim** — so **this single commit spans `src/mkobi` and `frontend/src`**: two review
+> surfaces, one revert taking both. **Neither implementor may assume a single-tier change**, and the
+> ruling file states the cross-tier requirement itself: *"hard requirement on phase 13's `CT-1` +
+> `CT-3` as **one commit**."*
+>
+> **`C11-8` — the `queryKey` omission — remains a hard requirement and is not softened by the merge.**
+> It is *why* the two halves are one commit: threading without the key is the silent one-chart defect,
+> and the key without the threading is inert. **Neither order is safe alone; together they are one
+> change.**
+>
+> **`CT-3` is retained below as the design and verification record for the half that lands here**, not
+> as a second step. Its three parts — the call site, the per-graph structure, and the `enabled` gate —
+> are in this commit, and the key test and the N-graphs-N-entries check are **one test deliverable**.
 
 **Semantic target.** `features/dashboards/api/dashboardApi.ts::useAggregatedData` — specifically its
 `queryKey`, which today is `['aggregatedData', dashboardId, filters]`. The sibling
@@ -529,7 +602,8 @@ implementation**, LOW rollout, MEDIUM regression, MEDIUM compatibility · **Agen
 entry key is wrong.** New test: a vitest test that asserts the key's shape, placed in the feature's
 existing test directory (`features/dashboards/__tests__/` — the hook has **no** test today, and
 `queryKey` is unreachable from any test in the repository, which is exactly `C11-8`'s "no test
-covers it").
+covers it"). **Plus, under the ruled `DP-13-B`(a), the threading half** named in `CT-3` below: the
+`DashboardView.tsx` call site, the per-graph structure, and the `enabled` gate.
 
 **Problem — named precisely, because it is the phase's highest-risk item.**
 `useAggregatedData(dashboardId, filters?, graphId?)` already accepts `graphId` and already serialises
@@ -546,44 +620,55 @@ and not an empty state. If phase 11's server `LIMIT` lands first, the symptom a 
 key. This is the case the report itself warns about — a frontend fix disguising a backend
 correctness bug — arriving in the direction nobody is looking.
 
-**What this block does, and nothing more.** It adds `graphId` to the key array. **Today every call
-site passes two arguments, so `graphId` is `undefined` and the new element is a stable `undefined`
-in the hash.** The change is therefore **behaviour-neutral at `ab76989`**: the same call site
-produces the same single cache entry, the invalidation prefix still covers it, and the only
-observable difference is the key's length. That is what makes it safe to land first and hard to
-land later.
+**What this block does.** **Two things, in one commit, under the ruled `DP-13-B`(a).** First: it adds
+`graphId` to the key array. Second — **newly in scope by ruling** — it threads `graphId` from the call
+site, together with the `enabled` gate and the per-graph structure that `CT-3` specifies.
+
+**The behaviour-neutrality argument that made the key fix landable on its own, and what survives it.**
+At `ab76989` every call site passes two arguments, so `graphId` is `undefined` and the new element is
+a stable `undefined` in the hash — which is why a key-only commit was provably safe and why
+`CT-1`'s Researcher task was to **measure** how `@tanstack/query-core@5.101.0` hashes an explicit
+`undefined` element. **Under (a) that interim state never exists**: the commit that changes the key
+also supplies the argument, so the key and its consumer land together and there is no window in which
+either is alone. **The measurement is still required and is now a precondition of the merged commit** —
+it establishes that the *key shape* is right, and it is what lets the commit body state that the merge
+introduced no silent behaviour change beyond the two declared hunks.
 
 **What this block explicitly does not do.**
 
-- It does **not** thread `graphId` from any call site. That is CT-3, and CT-3 is hard-blocked on
-  this block (`R-13-3`). Threading first is the exact defect.
+- It does **not** split the two halves across commits. That is not a preference under (a): it is the
+  ruling. **A revert that takes the threading back also takes the key back, and that is correct.**
 - It does **not** change the invalidation key, which is already a correct prefix.
 - It does **not** change what the request sends. The request already sends `graph_id`; the fix is
   cache identity, not transport.
-- It does **not** add a `LIMIT`, a count field, or a truncation affordance (`R-13-4`).
+- It does **not** add a `LIMIT`, a count field, or a truncation affordance (`R-13-4`). **The server
+  bound is phase 11's half of this same commit** (`DP-11-A` (ruled: atomic — one change spanning both tiers)) — it is not this plan's to write.
 - It does **not** reorder `filters` in the key or introduce a key factory. The structural note that
   `filters` is a JS object in the key while `JSON.stringify(filters)` is a second, non-canonical
   serialisation of the same value is recorded for the future; changing it here would invalidate every
   cached entry for reasons unrelated to this finding.
+- It does **not** ship a truncation signal. Under the ruled `DP-13-C`(b) the render path consumes
+  **`DP-11-B(c)`'s** field as **"showing N of M"**, and **`R-13-4` stands**: if that field does not
+  arrive, the capability renders nothing and the commit body says so.
 
 **Options — `DP-13-B` (does the key fix land with the threading, or before it).** Carried verbatim
-from the code context; **this plan picks none.** The *sequencing* constraint is nevertheless not in
-doubt, and `R-13-3` states it: option (a) — one commit, key and threading together — also satisfies
-the ordering, because in that shape neither half exists without the other. Options (b) and (c) are
-only safe in the order this plan gives.
+from the code context. **`DP-13-B` is RULED (a) by the Product Owner on 2026-10-03.** The *sequencing*
+constraint is not in doubt and was never the question: option (a) — one commit, key and threading
+together — also satisfies the ordering, because in that shape neither half exists without the other.
+Options (b) and (c) are only safe in the order this plan used to give, and **both are now rejected**.
 
 | Option | Shape | Trade-off |
 | ------ | ----- | --------- |
-| **(a) One commit: `graphKey = ['aggregatedData', dashboardId, graphId, filters]` and thread `graphId` together** | The two halves never exist apart | The only shape with no window at all. Cost: the two changes are unrelated in review — one is a cache-identity fix, one is a request-shape change — and a revert takes the threading back too, which is correct but larger. **CT-1 and CT-3 may be executed as one commit under this option; this plan does not authorise that, because `DP-13-B` is unruled.** |
-| **(b) Key-only first, threading second** | CT-1 lands, then CT-3 | The smallest first commit; the key fix is provably behaviour-neutral before anything depends on it. Cost: two commits, and the intermediate state — a hook whose key carries a parameter no caller supplies — is correct but looks redundant to the next reader. **This is the shape CT-1 and CT-3 are written for.** |
-| **(c) Abandon per-graph fetching for a total-count signal** | No per-graph key at all | Removes the class of defect. Cost: a server response-shape change (`DP-11-B(c)`), a new field, and a client that cannot render any single graph on demand — a **presentation** decision that `C13-6` records as phase 16's territory. Not phase 13's to take alone. |
+| **(a) One commit: `graphKey = ['aggregatedData', dashboardId, graphId, filters]` and thread `graphId` together** — **CHOSEN, RULED 2026-10-03** | The two halves never exist apart | The only shape with no window at all, and with phase 11's `DP-11-A` (ruled: atomic — one change spanning both tiers) it is the only shape with no **silent-truncation** window either. **Accepted costs, recorded:** the two changes are unrelated in review — one is a cache-identity fix, one is a request-shape change — the commit spans **`src/mkobi` and `frontend/src`** (two review surfaces), and **a revert takes the threading back too, which is correct but larger.** |
+| **(b) Key-only first, threading second** — rejected | CT-1 lands, then CT-3 | The smallest first commit; the key fix is provably behaviour-neutral before anything depends on it. Cost: two commits, and the intermediate state — a hook whose key carries a parameter no caller supplies — is correct but looks redundant to the next reader. **Rejected because the intermediate state is the one a reader would "clean up", and a key element dropped in that cleanup is a silent one-chart defect nobody detects.** |
+| **(c) Abandon per-graph fetching for a total-count signal** — rejected | No per-graph key at all | Removes the class of defect. Cost: a server response-shape change (`DP-11-B(c)`), a new field, and a client that cannot render any single graph on demand — a **presentation** decision that `C13-6` records as phase 16's territory, and not phase 13's to take alone. **Rejected: the client still needs the key, because per-graph fetching is what the option abandons only on the server's side of a shared contract.** |
 
 **Risk assessment.**
 
 | Kind | Assessment |
 | ---- | ---------- |
-| Implementation | **HIGH — and the risk is entirely in the wrong fix.** The edit is one array element. The hazard is that an implementor reads "PERF-001's client half" and threads `graphId` in the same commit **without** the key, which is a silent correctness defect. CT-1's own test is the only thing in the repository that will ever catch it, so the test must land **with** the fix and must be shown to **fail** against the un-fixed key first. |
-| Rollout | LOW. No user-visible change at `ab76989` under option (b): one call site, `graphId` `undefined`, same entry, same invalidation. Under option (a) the change is not separately revertible, which is the real cost. |
+| Implementation | **HIGH — and the hazard MOVED with the ruling of 2026-10-03.** Before it, the hazard was threading `graphId` in the same commit **without** the key, which is a silent correctness defect. Under `DP-13-B`(a) that specific hazard is designed out: the key and the threading are one commit, and the two tests that can catch the collision — the key-shape test and the N-graphs-N-entries check — are **one test deliverable**. **The hazard now is the mirror image: splitting the commit back apart.** Two commits reintroduce the inert-key intermediate state; one commit with a forgotten `enabled` gate turns "every graph in one response" into **a 422 on the first render**. The Researcher's hash measurement and the Validator's per-state assertions are what settle both. |
+| Rollout | LOW, **and now lower, and the reason is the ruling.** Under option (b) the key change was separately revertible and the interim state was inert. Under **(a)** there is no interim state at all, so the change is atomic — **and the accepted cost is that it is not separately revertible**: a revert takes phase 11's server bound and the client threading together. That is the trade `DP-11-A` (ruled: atomic — one change spanning both tiers) and `DP-13-B`(a) both make deliberately: **no silent-truncation window, no unbounded interim, one revert taking both.** |
 | Regression | MEDIUM. **No test reaches `queryKey` today** — `DashboardView.test.tsx` and `filter-persistence.test.tsx` both `vi.mock` the module, so the hook is unreachable from the suite. A key change with no test is unpinned: a later "cleanup" that drops the element reintroduces the defect invisibly. CT-1 must add the assertion and CT-3 must keep it. |
 | Compatibility | MEDIUM. Cache identity is not observable across a page load (the `QueryClient` is per session), so no user sees a stale entry. The compatibility surface is the *documented* key shape: a key that contains a parameter the request also contains is a contract a future reader will rely on, and it must be written down in the hook, not inferred. |
 
@@ -606,10 +691,14 @@ only safe in the order this plan gives.
   `!!graphId`? If it does not, a first render with an empty id sends `graph_id=''` to a
   `UUID | None` query parameter. **This decision belongs to CT-3's design and must be made there,
   with CT-1's key shape as its input.**
-- **Validator** — that the new test **fails before the fix and passes after**; that no call site
-  supplies `graphId` yet; that the invalidation prefix still matches; and — the one that matters —
-  that **the diff contains no threading of `graphId` into any call site**. If it does, CT-1 has
-  become CT-3 without its blocker and the phase has its highest-risk defect live.
+- **Validator** — that the new test **fails before the fix and passes after**; that the invalidation
+  prefix still matches; and — the one that matters — that **the commit contains BOTH halves and only
+  these two halves**: the key carries `graphId`, and the call site supplies it, and the `enabled` gate
+  cannot fire with an empty id. **The check that under the ruling reverses is the old one:** this block
+  used to fail if the diff threaded `graphId` into any call site; under `DP-13-B`(a) the *absence* of
+  threading is the failure, and a commit carrying only the key half is the defect `C11-8` exists to
+  prevent. **The test must still be shown failing against the un-fixed key first — a test that never
+  failed proves nothing.**
 
 **Documentation impact.** `docs/07-frontend/pages.md` (`GET /data/aggregated` and its optional
 `graph_id` parameter) — this is **phase 13's file** per plan 11's hand-over, and the truncation
@@ -633,20 +722,34 @@ backend document moves: no contract changed.
 
 **Definition of done.** `graphId` is in `useAggregatedData`'s key array, positioned by a stated
 convention · the hook's docstring or comment states that the key must carry every parameter the
-request carries, with this finding as the reason · the new key-shape test exists, **failed before the
-fix and passes after** · the invalidation prefix still matches, asserted · `fe-lint` delta unchanged
-· `fe-test` at 169/1 · `npm run build` clean · **no call site supplies `graphId`** · coverage tree
-intact · no backend file touched.
+request carries, with this finding as the reason · **the threading half lands in the SAME commit**
+(call site, per-graph structure, `enabled` gate — `CT-3`'s three parts) · **the commit spans
+`src/mkobi` and `frontend/src`** under phase 11's `DP-11-A` (ruled: atomic — one change spanning both tiers), and its body says so · the new
+key-shape test exists, **failed before the fix and passes after** · the invalidation prefix still
+matches, asserted · **the N-graphs-N-entries-N-cards check is recorded** · `fe-lint` delta unchanged ·
+`fe-test` at the figure this commit produces, stated · `npm run build` clean · **no truncation signal
+renders unless `DP-11-B`(c)'s field arrived** (`R-13-4`) · coverage tree intact.
 
 ---
 
 ## CT-2 — The three rules that really diverge, in the direction the server enforces
 
 **Discharges:** FE-006 (three of four rows), VAL-13-001, `VAL-09-003`'s *consequence* (not its test)
-· **Ruled by:** `DP-13-H`, `DP-13-I` · **Blocked by:** `DP-13-H` (for the `new_password` row only),
-`C13-7` (a notification, not a gate) · **Blocks:** CT-15 (hard) · **Execution order:** 3 ·
+· **Ruled by:** `DP-13-H` **(a)**, `DP-13-I` **(a)** — Product Owner, 2026-10-03 · **Blocked by:**
+nothing (`C13-7` is a notification, not a gate) · **Blocks:** CT-15 (hard) · **Execution order:** 3 ·
 **Risk:** MEDIUM implementation, LOW rollout, MEDIUM regression, **LOW compatibility** · **Agents:**
 Auditor, Planner, Validator
+
+> ### ⚠ RULED 2026-10-03 — `(a)` on both records, and they rule opposite halves of the boundary.
+> **`DP-13-H` = (a): the server is authoritative and the client mirrors it exactly. The client's
+> uppercase-only rule is DROPPED FROM THE CLIENT and is NOT added to the server. No backend file is
+> edited by this row.** **`DP-13-I` = (a): align the client to `DashboardCreate`'s rule AND add a
+> server validator on the update path — which IS a backend edit.**
+> **The two rulings are not in tension; they split cleanly.** `DP-13-H` refuses to move the server
+> *toward a stricter client rule*; `DP-13-I` moves the server *toward the client's create-path rule*,
+> where the server enforces **nothing** today. **But `DP-13-I`'s backend half collides with this plan's
+> own `R-13-6` and has no owning phase** — recorded in the boundary note below and in **Conflicts
+> requiring a Coordinator ruling**, and **not** absorbed silently.
 
 **Semantic target.** `shared/types/formSchemas.ts` — three schema members, and the test file
 `shared/types/__tests__/formSchemas.test.ts` outside one specific block of it:
@@ -682,33 +785,50 @@ in this plan's reading and is a documentation-phase edit, not a code edit.
 | # | Target | Client today | Server (the enforced side) | Direction | Ruled by |
 | - | ------ | ------------ | -------------------------- | --------- | ------- |
 | **1** | `updateDashboardSchema.description` | `.max(500)` | `DashboardUpdate.description` is `max_length=200` | **Client moves to the server's bound.** The server is the enforced one; the client is currently *looser*, so a user can compose 500 characters and be refused by a 422 with no field-level affordance. Tightening to the server's bound is the direction that makes the client a faithful mirror. | none — this is the one row with no genuine fork; it is a bug fix |
-| **2** | `changePasswordSchema.new_password` | `.min(8).regex(/[A-Z]/).regex(/[0-9]/)` | `validate_password_or_raise` requires a **digit** and a **letter of any case**; **no uppercase rule** | **The fork is real and is `DP-13-H`.** See the boundary note below. | `DP-13-H` |
+| **2** | `changePasswordSchema.new_password` | `.min(8).regex(/[A-Z]/).regex(/[0-9]/)` | `validate_password_or_raise` requires a **digit** and a **letter of any case**; **no uppercase rule** | **RULED (a) — the server is the enforced side; the client mirrors it exactly.** The client's uppercase regex is dropped, and it is **not** added to the server. See the boundary note below. | `DP-13-H` **(a), 2026-10-03** |
 | **3** | `BLOCKED_DOMAINS` membership | a two-entry list, tested with a **case-sensitive** `includes` | the configured list, with the submitted domain **lower-cased** on input | **Client moves to the server's case handling.** The client is stricter-by-accident: `Foo@TempMail.com` passes the client's test and is refused by the server. Two readings — normalise the input before the membership test, or lower-case the list at declaration — and the second is a one-line change the first is not; that is a Planner detail, not an owner decision. | none |
 
-**The `new_password` boundary — a backend edit inside a client finding, recorded not taken.**
-`FE-006` offers two remedies: drop the client's uppercase rule, or **add the uppercase rule to
+**The `new_password` boundary — CLOSED by ruling, and closed on the client side only.**
+`FE-006` offered two remedies: drop the client's uppercase rule, or **add the uppercase rule to
 `validate_password_or_raise`**. **They are not equivalent.** The second edits
 `src/mkobi/utils/validators.py` — a **backend** file — and it changes `change_password` for **every**
-caller, including admin-initiated temporary-password resets, in a client-tier finding. `R-13-6`. This
-plan records the boundary and takes no backend option. If the Tech Lead wants the server to match, the
-correct move is to **file a new backend finding**, not to edit `validators.py` from here.
+caller, including admin-initiated temporary-password resets, in a client-tier finding. `R-13-6`.
+
+**`DP-13-H` is ruled (a): the server is authoritative and the client mirrors it exactly.** The client's
+uppercase rule is **dropped from the client**, and it is **NOT added to the server**. So this row edits
+`formSchemas.ts` and **no backend file**, and `R-13-6` holds.
+
+**What that closes, stated precisely because it is easy to over-read.** `C13-2`'s register row says the
+backend option *"has no phase owner today"*. **Under (a) that concern is CLOSED and needs no new
+backend finding — because the backend is not being changed.** The alternative the ruling refused would
+have required exactly that finding; refusing it removes the need. **A later reader must not file a
+"tighten the password validator" finding on the strength of the old register row: the owner has
+decided the server's rule is correct as it stands.**
 
 | Option (`DP-13-H`) | Shape | Trade-off |
 | ------------------ | ----- | --------- |
-| **(a) Drop `.regex(/[A-Z]/)` from the client** | The client mirrors the server exactly | The one rule in the file that is currently *stricter* than the server disappears, and the suite's single red test goes green as a side effect. Cost: a user who typed a password the client used to reject is now refused by the server instead — a **different** error surface (a 422 from `change_password`, not a Zod message), which is a message-quality regression the CT-5 work does not reach. |
-| **(b) Add the uppercase rule to `validate_password_or_raise`** | The server tightens to match the client | **Out of this plan's scope** (`R-13-6`): a backend file, every caller including admin resets, and no backend phase owns it. Recorded for completeness only. |
-| **(c) Leave it and re-grade** | No edit | The divergence stands and the suite's one red test stays red, which makes every other block's `fe-test` verification read `1 failed` for a reason unrelated to that block. Honest, and expensive for the rest of the phase. |
+| **(a) Drop `.regex(/[A-Z]/)` from the client** — **CHOSEN, RULED 2026-10-03** | The client mirrors the server exactly | The one rule in the file that is currently *stricter* than the server disappears, and the suite's single red test goes green as a side effect. Cost, **accepted by the owner**: a user who typed a password the client used to reject is now refused by the server instead — a **different** error surface (a 422 from `change_password`, not a Zod message), which is a message-quality regression the CT-5 work does not reach. **The message-quality cost is real and is recorded, not argued away.** |
+| **(b) Add the uppercase rule to `validate_password_or_raise`** — **FORBIDDEN by the ruling** | The server tightens to match the client | **Out of this plan's scope** (`R-13-6`): a backend file, every caller including admin resets, and no backend phase owns it. **The owner has now ruled it out explicitly** — and specifically has ruled that the stricter client rule is **not** added to the server. **This is the option `C13-2` recorded as unowned; it is no longer a possibility, so it needs no owner.** |
+| **(c) Leave it and re-grade** — rejected | No edit | The divergence stands and the suite's one red test stays red, which makes every other block's `fe-test` verification read `1 failed` for a reason unrelated to that block. Honest, and expensive for the rest of the phase. |
 
-**The unnamed fifth divergence — recorded, and gated on a decision.** `updateDashboardSchema.name` is
-`.min(1).max(100)` with **no regex and no minimum of 3**, against `DashboardUpdate.name`, which has
-**no bound at all**, and `update_dashboard` which does not re-run `validate_name`. The client is
-stricter in two ways on a path where the server enforces nothing. The direction is safe today — the
-client refuses, the server accepts — and it is the same class as the `new_password` row.
-**No finding requires it and neither report names it**, so it is `DP-13-I`: (a) align the client to
-`DashboardCreate`'s rule *and* add the server-side validator to the update path (a backend edit,
-`R-13-6`); (b) align the client down to the server (drop the minimum and the regex, so the update path
-really has no rule); (c) leave it and record it. **This plan does not choose**, and CT-2's completion
-does not require `DP-13-I`.
+**The unnamed fifth divergence — RULED (a), and its backend half has no owner.**
+`updateDashboardSchema.name` is `.min(1).max(100)` with **no regex and no minimum of 3**, against
+`DashboardUpdate.name`, which has **no bound at all**, and `update_dashboard` which does not re-run
+`validate_name`. The client is stricter in two ways on a path where the server enforces nothing.
+
+**`DP-13-I` is ruled (a): align the client to `DashboardCreate`'s rule AND add the server-side validator
+to the update path.** Rationale: no divergence survives the change — the client becomes a faithful
+mirror **and** the server stops being the side that enforces nothing. **CT-2's client half therefore
+completes the way rows 1–3 do, and `DP-13-I` is no longer merely additive: it is in scope.**
+
+**The collision, recorded and not silently absorbed.** The server half is a **backend edit inside a
+client-tier plan**, which is precisely what `R-13-6` forbids and what `C13-2` records as having **no
+owning phase**. **This plan does not perform that edit and does not pretend the row is finished without
+it.** The owner has ruled the direction; the *implementation* needs an owner. The correct move, per
+`R-13-6`, is a **new backend finding** — and it is filed as a conflict item below rather than created
+here, because **this plan may not create findings and may not edit `src/mkobi/`.** What CT-2 does with
+the ruling: the **client half lands**, and the commit body names the server half as **required by
+`DP-13-I`(a), unowned, and blocked on that hand-over.**
 
 **Test-file boundary — precise, because two owners share this file.** Phase 09 owns
 `VAL-09-003`/`TST-015`, whose remedy is in the **test**: the `changePasswordSchema` block of
@@ -736,7 +856,7 @@ sibling report's finding, which is why the boundary above is stated in symbols.
 
 | Kind | Assessment |
 | ---- | ---------- |
-| Implementation | MEDIUM and *asymmetric*. Targets 1 and 3 are one-line changes with no fork. Target 2 is gated on `DP-13-H` and, under option (a), is also the change that turns the suite green — which makes it the most likely to be argued about in review and the least likely to be wrong. The real implementation risk is the **test file's** shared ownership, not the schema. |
+| Implementation | MEDIUM and *asymmetric*. Targets 1 and 3 are one-line changes with no fork. **Target 2 is ruled** — `DP-13-H`(a), 2026-10-03 — and under (a) it is also the change that turns the suite green, which makes it the most likely to be argued about in review and, because the ruling is not this plan's, the most likely to be argued about **wrongly**. The real implementation risk is the **test file's** shared ownership, not the schema. **The second implementation risk is new: `DP-13-I`(a)'s server half cannot be performed here, and a commit that quietly omits it leaves a ruled requirement unbuilt while the client half looks complete.** |
 | Rollout | LOW. Row 1 tightens a client-side bound: a user composing 201–500 characters of description now sees a Zod message instead of a server 422. That is the intended outcome and it is strictly more helpful. Row 3 stops accepting a mixed-case blocked domain locally. Row 2, under option (a), turns a local rejection into a server rejection — the only row whose user-visible direction gets *worse*, in message quality only, and it is the row that is decided by `DP-13-H`, not by the implementor. |
 | Regression | MEDIUM. The suite is red before this block, so "the suite is green afterwards" is a **baseline change**, not evidence, and the block must say so. Conversely, a suite that is *still* red after this block under `DP-13-H(a)` means the rule change did not land. The corrected description test must be shown failing against the old bound first. |
 | Compatibility | **LOW, and this is the one compatibility fact the report gets right by accident:** none of the three directions is a server change, so no response, status code, or API contract moves. The `new_password` row's *reported* consequence — the client accepting something the server refuses — is a client-only mismatch with no wire change, which is exactly why option (b) is a backend project rather than a compatibility concern. |
@@ -765,9 +885,9 @@ contract changed. `docs/SPEC.md` one version row.
 
 **Verification.**
 
-- `.\Makefile.ps1 fe-test` — expect **170 / 0** under `DP-13-H(a)`; under `DP-13-H(c)` expect
-  **169 / 1** with the failure still `formSchemas.test.ts`'s `changePasswordSchema` case. **State
-  which of the two the block achieved, and which ruling produced it.**
+- `.\Makefile.ps1 fe-test` — expect **170 / 0**; the ruled `DP-13-H`(a) is the only shape that produces
+  it, and **170 / 0 is this block's proof that the ruling was applied** rather than assumed. A 169/1
+  figure means row 2 did not land.
 - Targeted, coverage-free, so the tree is not wiped for a two-file change:
   `npm --prefix frontend exec -- vitest run shared/types/__tests__/formSchemas.test.ts`.
 - `.\Makefile.ps1 fe-lint` — delta only; `formSchemas.ts` and its test are in neither the nine nor a
@@ -778,41 +898,57 @@ contract changed. `docs/SPEC.md` one version row.
   where a diff is itself the deliverable's proof.
 - `git status --porcelain -- frontend/coverage` unchanged.
 
-**Definition of done.** The three targets land in the direction stated, or the block records that
-`DP-13-H` is open and which rows it blocked · `createDashboardSchema`'s name rule is **byte-unchanged**
+**Definition of done.** All three targets land in the direction stated — `DP-13-H`(a) and `DP-13-I`(a)
+are ruled (2026-10-03) and this plan states neither · `createDashboardSchema`'s name rule is **byte-unchanged**
 and that fact is in the commit message · the description test is corrected to exercise the schema it
 names and asserts the real bound · the `updateDashboardSchema` description test **exists, failed
-before the fix, and passes after** · the `changePasswordSchema` test block is untouched · the
-resulting `fe-test` figure is stated with the ruling that produced it · `fe-lint` delta unchanged ·
-coverage tree intact · **no file under `src/mkobi/` was edited** · one `docs/SPEC.md` version row.
+before the fix, and passes after** · **the client's `updateDashboardSchema.name` matches
+`DashboardCreate`'s rule, and the commit body names the server-side validator that `DP-13-I`(a)
+requires as unowned** · the `changePasswordSchema` test block is untouched ·
+`fe-test` at **170 / 0** · `fe-lint` delta unchanged ·
+coverage tree intact · **no file under `src/mkobi/` was edited by this plan** — with the single,
+explicit exception that **`DP-13-I`(a) requires one and this plan cannot perform it**, so the
+commit body names it as a hand-over rather than pretending the row is complete · one `docs/SPEC.md`
+version row.
 
 ---
 
 ## CT-3 — Per-graph fetching, and the capability to signal truncation without pretending to
 
-**Discharges:** VAL-13-006 (the threading half), `DP-11-A(c)`'s client obligation, `A-3` ·
-**Ruled by:** `DP-11-B`, `DP-11-C`, `DP-13-B` · **Blocked by:** **CT-1 (hard)**, `DP-11-A`
-(phase 11's ordering ruling), `DP-11-B` · **Blocks:** CT-4 (sequencing), CT-11 (sequencing) ·
-**Execution order:** 4 · **Risk:** **HIGH implementation**, **HIGH rollout**, MEDIUM regression,
-HIGH compatibility · **Agents: all four**
+**Discharges:** the threading half of `VAL-13-006` — **which lands in `CT-1`'s commit under the ruled
+`DP-13-B`(a)**, not as a step of its own · phase 11's client obligation under **`DP-11-A` (ruled: atomic — one change spanning both tiers)** ·
+`A-3` · **Ruled by:** `DP-11-B`, `DP-11-A` (ruled: atomic — one change spanning both tiers), `DP-13-B`(a), `DP-13-C`(b) · **Blocked by:** nothing
+independent — **`CT-1` is this commit** (`DP-13-B`(a)) · **Blocks:** CT-4 (sequencing), CT-11
+(sequencing) · **Execution order:** **4 → executes with CT-1 at order 2** · **Risk:** **HIGH
+implementation**, **HIGH rollout**, MEDIUM regression, HIGH compatibility · **Agents: all four**
+
+> ### ⚠ `CT-3` IS EXECUTED WITH `CT-1`, IN ONE COMMIT — RULED 2026-10-03.
+> **`DP-13-B` is ruled (a): the `queryKey` fix lands WITH the `graphId` threading, in one commit.**
+> Phase 11's **`DP-11-A` is ruled — atomic, one change spanning both tiers**: the server bound and the client signal land **atomically, in
+> one change**, so the commit **spans `src/mkobi` and `frontend/src`**. **`CT-1`'s block record is the
+> governing one**; this section is the design and verification record for the half that lands in it.
+> Nothing here is scheduled as a later step, and **`C11-8` stays a hard requirement** — it is the
+> reason the two halves are inseparable rather than merely convenient.
 
 **Semantic target.** The call site in `features/dashboards/ui/DashboardView.tsx` that invokes
 `useAggregatedData` with **two** arguments against a **three**-parameter signature, and the hook's
 `enabled` gate in `features/dashboards/api/dashboardApi.ts::useAggregatedData`. Plus
 `docs/07-frontend/pages.md`'s `graph_id` documentation (phase 13's file, `C13-5`).
 
-**The problem, and why the two halves are not one commit.** Phase 11's validator assigned the client
+**The correctness trap, and why the two halves are one commit.** Phase 11's validator assigned the client
 half of `PERF-001` to phase 13 and it was never filed (`VAL-13-006`). The hook already accepts
-`graphId` and already serialises `graph_id`; the call site does not supply it; so **one response
-carries every graph** — a response measured at 31.82 MB in the report, and phase 11's CRITICAL is
-about that read. FE-002 is **not** this: FE-002 is what the client does when the request *fails*;
-this is what it does when the request *succeeds and returns more than one graph*.
+`graphId` and already serialises `graph_id`; before this change the call site did not supply it; so
+**one response carried every graph** — a response measured at 31.82 MB in the report, and phase 11's
+CRITICAL is about that read. FE-002 is **not** this: FE-002 is what the client does when the request
+*fails*; this is what it does when the request *succeeds and returns more than one graph*.
 
-**The correctness trap, and why CT-1 is a hard blocker.** Threading `graphId` **without** CT-1
-landed makes every per-graph fetch collide on one cache entry; the dashboard then renders **one
-chart, silently**, with no error and no console message, and `invalidateQueries` keeps working
-throughout because its key is a prefix. `R-13-3`. **This block does not start until CT-1's key-shape
-test is green.**
+Threading `graphId` **without** the key change makes every per-graph fetch collide on one cache entry;
+the dashboard then renders **one chart, silently**, with no error and no console message, and
+`invalidateQueries` keeps working throughout because its key is a prefix. `R-13-3`. **Under the ruled
+`DP-13-B`(a) the trap is designed out by construction: the key and the threading are one commit, so
+there is no order in which either exists alone.** The trap that remains is the reverse one — a commit
+that carries the threading and forgets the key — and `CT-1`'s key-shape test, which **must be shown
+failing before the fix**, is the only thing in the repository that catches it.
 
 **The `enabled` gate — a hazard neither report names (`A-3`).** The gate today is
 `!!dashboardId && !!accessToken`. A per-graph strategy means a render in which the graph id is not
@@ -822,14 +958,26 @@ returns 422. So the per-graph design is **three** changes, not one: the key (CT-
 and the gate. **Missing the third turns "every graph in one response" into "a 422 on the first
 render"**, which is a louder failure and therefore a better one, but it is still a defect.
 
-**Options — `DP-13-B` / `DP-11-B` (how the client asks, and what truncation means).** Carried
-verbatim; **this plan picks none**, because both are cross-phase or product calls.
+**Options — `DP-13-B` / `DP-13-C` / `DP-11-B` (how the client asks, and what truncation means).**
+Carried verbatim. **Two of these three are ruled, and they answer two different questions — (a) for how
+the client asks (`DP-13-B`), (b) for how truncation is signalled (`DP-13-C`). Both by the Product
+Owner, 2026-10-03.** The table rows below are therefore marked against the question each answers, and
+**the shape the ruling produces is a combination the table never had as a single row**: per-graph
+fetching **and** a server-supplied total rendered as "showing N of M".
 
 | Option | Shape | Trade-off |
 | ------ | ----- | --------- |
-| **(a) One hook call per graph in the render path** | The graph list drives N `useAggregatedData` calls, each with a `graphId`, keyed distinctly (CT-1) | Directly matches what the server already supports (`graph_id: UUID \| None`, and a single-graph branch that exists and is populated). Cost: N requests instead of one, N cache entries, and a per-card loading and error state that must be designed — which is a **presentation** decision `C13-6` records as phase 16's. React's rules-of-hooks make this a *component-per-graph* or a `useQueries` shape, not a loop in one component. |
-| **(b) One request, the client slices** | Keep the all-graphs call; have the client pick one graph's rows out of the payload | No new requests and no per-card state, but the **31.82 MB response is still fetched**, so `PERF-001`'s exposure is unchanged and the CRITICAL is not addressed. It is a rendering optimisation, not a performance fix. |
-| **(c) Abandon per-graph fetching; the server sends a count and a bound** | A bounded response plus a total, rendered as "showing N of M" | The only shape in which truncation is **visible** rather than silent, which is what phase 11's `R-11-4` requires. Cost: a new field in a published response model (`tests/test_openapi.py` is the tripwire, `C13-4`), a second query for the count, and a **presentation** change. **Phase 11 owns the field; phase 13 owns the rendering.** |
+| **(a) One hook call per graph in the render path** — **CHOSEN for *how the client asks*: `DP-13-B`(a)** | The graph list drives N `useAggregatedData` calls, each with a `graphId`, keyed distinctly (`CT-1`, same commit) | Directly matches what the server already supports (`graph_id: UUID \| None`, and a single-graph branch that exists and is populated). Cost: N requests instead of one, N cache entries, and a per-card loading and error state that must be designed — which is a **presentation** decision `C13-6` records as phase 16's. React's rules-of-hooks make this a *component-per-graph* or a `useQueries` shape, not a loop in one component. **The `C13-6` cost is accepted and does not move the ruling.** |
+| **(b) One request, the client slices** — rejected | Keep the all-graphs call; have the client pick one graph's rows out of the payload | No new requests and no per-card state, but the **31.82 MB response is still fetched**, so `PERF-001`'s exposure is unchanged and the CRITICAL is not addressed. It is a rendering optimisation, not a performance fix. |
+| **(c) Abandon per-graph fetching; the server sends a count and a bound** — **ADOPTED for *how truncation is signalled*, i.e. `DP-13-C`(b), and NOT for abandoning per-graph fetching** | A bounded response plus a total, rendered as **"showing N of M"** | The only shape in which truncation is **visible** rather than silent, which is what phase 11's `R-11-4` requires. Cost: a new field in a published response model (`tests/test_openapi.py` is the tripwire, `C13-4`), a second query for the count, and a **presentation** change. **Phase 11 owns the field; phase 13 owns the rendering.** **The owner took the *signal* from this row and the *fetching* from row (a)** — the two are separable questions and were ruled separately |
+
+**The signal the ruling fixes — "showing N of M", rendered from the server's count.** `DP-13-C` is
+ruled **(b)**: the client renders **the server's** count as **"showing N of M"**. **`R-13-4` stands and
+is not relaxed by the ruling: the client MUST NOT INVENT THE FIELD.** The count is `DP-11-B(c)`'s
+output in phase 11's `PRF-4` response; `tests/test_openapi.py` is the tripwire. **If that field does not
+arrive, `CT-3`'s render path ships INERT** — the capability is present, nothing renders, and the commit
+message says exactly that. **A client that computes the total by counting rows is not this ruling; it is
+`R-13-4`'s violation with a user-facing label attached.**
 
 **`R-13-4` — the signal this block must not build, and the capability it must.**
 `data.py` has **no `LIMIT` anywhere** at `ab76989`; the all-graphs loop iterates every graph
@@ -845,9 +993,9 @@ to render. That is the correct interim state and it is stated in the commit mess
 | Kind | Assessment |
 | ---- | ---------- |
 | Implementation | **HIGH.** Three coordinated changes (key-adjacent call site, per-graph structure, `enabled` gate) under a hook whose signature already implies a design its call site does not use. The hook-rules constraint turns option (a) into a component-structure change, not a one-line change, which is a larger diff than the finding's "one-line change" framing suggests. |
-| Rollout | **HIGH, and asymmetric across the options.** Under (a) the dashboard makes N requests; on a dashboard with many graphs that is a visible change in network activity and in perceived load, and a per-card error state is a new user-visible surface that must be designed before it ships. Under (b) nothing changes for the user and the CRITICAL is untouched. Under (c) the client is inert until phase 11 lands. **Stage this block** — the report already identifies per-graph fetching as the one step to stage. |
+| Rollout | **HIGH, and now settled rather than spread across options — the ruling removes the branch.** Under the ruled combination the dashboard makes **N requests** (from `DP-13-B`(a)); on a dashboard with many graphs that is a visible change in network activity and in perceived load, and a per-card error state is a new user-visible surface that must be designed before it ships. **Under `DP-11-A` (ruled: atomic — one change spanning both tiers) the server bound ships in the same commit**, so there is **no unbounded interim**: `DP-11-B`(b) silent truncation and `(d)` server-side aggregation are both rejected — `(d)` is a semantic change to what a dashboard shows, not a performance fix. **The residual risk is therefore singular and it is the per-card surface**, and the report's instruction to stage per-graph fetching stands unchanged. |
 | Regression | MEDIUM-HIGH. `DashboardView.test.tsx` and `filter-persistence.test.tsx` both `vi.mock` the API module, so **the call site's argument list is currently unpinned by any test** — a change to it is invisible to the suite. This block must add the assertion that the call site supplies the graph id, and must keep CT-1's key test green, because the two together are the only pair in the repository that can catch the collision. |
-| Compatibility | HIGH under (c) — a response-model change is a published contract, and `C13-4` records that phase 11 owns it. MEDIUM under (a) — the request shape changes from one call to N, which is observable to the server's access log and to anyone counting requests. LOW under (b). **No option changes a response the client must parse today.** |
+| Compatibility | **HIGH, and now the widest surface in the merged commit.** Under the ruled `DP-13-C`(b) the *signal* is a response-model change — a published contract, and `C13-4` records that **phase 11 owns the field** — and under the ruled `DP-13-B`(a) the *request* shape changes from one call to N, which is observable to the server's access log and to anyone counting requests. **Both land in one commit, so both are reviewed and reverted together.** That is the accepted cost of atomicity, and it is why `tests/test_openapi.py` is named in this block's verification even though the model it pins is phase 11's. |
 
 **Agents required — all four.**
 
@@ -869,36 +1017,44 @@ to render. That is the correct interim state and it is stated in the commit mess
   that is a genuine ordering question (which query runs first).
 - **Validator** — that the call site supplies the graph id **and** the key carries it **and** the
   gate does not fire with an empty id; that a dashboard with N graphs issues N distinct cache entries
-  and renders N cards; that **no truncation affordance renders while the server sends no bound**; and
-  that the interim state — capability present, signal absent — is what shipped.
+  and renders N cards; that **"showing N of M" renders the server's count and never a client-computed
+  one** (`DP-13-C`(b) and `R-13-4`); that **no truncation affordance renders while the server sends no
+  bound**; and that the interim state — capability present, signal absent — is what shipped.
 
 **Documentation impact.** `docs/07-frontend/pages.md` — this is **phase 13's file** and it already
-documents `graph_id (optional)`. This block makes that true rather than aspirational, and **raises**
-the truncation requirement for phase 11 rather than writing it (`C13-5`). `docs/SPEC.md` one version
-row. No backend document: no server behaviour changed by this block.
+documents `graph_id (optional)`. This block makes that true rather than aspirational, and states the
+**"showing N of M"** affordance **and** that its total comes from the server's field (`C13-5`).
+`docs/SPEC.md` one version row. **One backend document does move in this commit, and it is phase 11's:**
+the published aggregated-response contract, because the server bound and the count field ship in the
+same change under `DP-11-A` (ruled: atomic — one change spanning both tiers).
 
 **Verification.**
 
-- CT-1's key-shape test green, and **the collision is demonstrated to be caught**: a temporary
-  negative check that the key distinguishes two graph ids is recorded in the block's notes (not
-  committed as a test if it would be a tautology).
+- CT-1's key-shape test green — **in the same commit**, and **shown failing before the fix**: a
+  temporary negative check that the key distinguishes two graph ids is recorded in the block's notes
+  (not committed as a test if it would be a tautology).
 - `.\Makefile.ps1 fe-test` — **170 / 0**, or 169/1 if CT-2 has not run. Both figures are acceptable
   here; which one is expected is stated.
 - Targeted, coverage-free: `npm --prefix frontend exec -- vitest run features/dashboards`.
 - `.\Makefile.ps1 fe-lint` — delta only. `DashboardView.tsx` carries **two pre-existing
-  `no-unsafe-member-access` and one `set-state-in-effect`**; CT-3's edit must not add a fourth.
-- `npm --prefix frontend run build` (`R-13-12`).
+  `no-unsafe-member-access` and one `set-state-in-effect`**; this commit's edit must not add a fourth.
+- `npm --prefix frontend run build` (`R-13-12`) — for a two-tier commit this is the check that the
+  client's read of the widened response type still compiles against the server's change.
+- **`tests/test_openapi.py`** (`.\Makefile.ps1 test-select -k "test_openapi" -v`) — the tripwire on the
+  response model phase 11 edits in this same commit. It is a backend gate, run because this commit is
+  cross-tier; **it is not this plan's target** and a failure there is phase 11's to fix.
 - **The negative check that matters:** with a dashboard seeded to N ≥ 2 graphs, the number of distinct
   `aggregatedData` cache entries is N, and the rendered chart count is N. A rendered count of 1 with a
   response of N graphs is the defect, and it is visible only in this check — every other signal is
   green in that state.
 - `git status --porcelain -- frontend/coverage` unchanged.
 
-**Definition of done.** CT-1 landed and green · `DP-11-A` and `DP-11-B` ruled, or the block records
-which option it is written to survive and what stays blocked · the call site supplies the graph id ·
-the `enabled` gate cannot fire with an empty graph id · the render path has **one** place that can
-express a bounded response and a total · **nothing renders a truncation signal while the server sends
-no bound** · the N-graphs-N-entries-N-cards check is recorded · the fixture census from CT-1 is
+**Definition of done.** **Landed with `CT-1`, in one commit spanning `src/mkobi` and `frontend/src`**
+(`DP-13-B`(a) with `DP-11-A` (ruled: atomic — one change spanning both tiers)) · `DP-11-A`, `DP-11-B` and `DP-13-C` are ruled (2026-10-03), and the
+commit names them · the call site supplies the graph id · the `enabled` gate cannot fire with an empty
+graph id · the render path has **one** place that can express a bounded response and a total, and it
+reads the **server's** count · **nothing renders a truncation signal while the server sends no bound** ·
+the N-graphs-N-entries-N-cards check is recorded · the fixture census from CT-1 is
 carried forward, not re-derived · `fe-lint` delta unchanged · coverage tree intact · one
 `docs/SPEC.md` version row · `docs/07-frontend/pages.md` states what is true today and raises the
 rest.
@@ -1007,8 +1163,10 @@ coverage tree intact · no documentation file edited.
 
 ## CT-5 — Make the error message real: the hard-coded strings become the extraction chain
 
-**Discharges:** FE-002 (the message half), `A-5` · **Blocked by:** `C13-1` (the `C04-4`
-contention on `errorMessages.ts`) and `C13-2` (the phase-12 `AUTZ-006` notification) ·
+**Discharges:** FE-002 (the message half), `A-5` · **Blocked by:** **`C13-1` RELEASED** — the `C04-4`
+contention on `errorMessages.ts` was resolved by plan 16's `D-16-5` (ruled: defer all four, held-by-decision) on 2026-10-03, and this block's
+commit body must name that ruling — and `C13-2` (the phase-12 `AUTZ-006` notification, **still owed and
+unaffected by any ruling**) ·
 **Blocks:** CT-6 (hard) · **Execution order:** 6 · **Risk:** MEDIUM implementation, MEDIUM rollout,
 MEDIUM regression, MEDIUM compatibility · **Agents: Auditor, Planner**
 
@@ -1048,13 +1206,27 @@ on the path a user ever sees. Six files are in the family (`shared/api/errorMess
 per feature); this block does not rewrite six message maps, and the option that would is
 `DP-13-D`'s to frame.
 
-**The phase-16 contention, stated as a blocker rather than noted (`C13-1`).** Phase 16 is handed
-`errorMessages.ts` — the exact file this block's decision lands in — under plan-04's `C04-4`, and
-plan 04 explicitly reserves it. **This plan does not proceed past that silently.** CT-5 is blocked
-until either (i) phase 16 confirms this is additive and lands nothing in these files, or (ii) the
-owner rules on the shared ownership, or (iii) the block is deferred to phase 16 and CT-6 waits with
-it. **No Implementor edits these files on the strength of a sibling plan's reservation being
-probably fine.**
+**The phase-16 contention — RESOLVED BY RULING on 2026-10-03, and the resolution is recorded here
+rather than deleted (`C13-1`).** Phase 16 was handed `errorMessages.ts` — the exact file this block's
+decision lands in — under plan-04's `C04-4`, and plan 04 explicitly reserved it. **This plan did not
+proceed past that silently while it stood, and it does not proceed past it silently now.** The
+contention was real; it is resolved by **plan 16's `D-16-5` (ruled: defer all four, held-by-decision)**, which **defers all four unnamed
+hand-overs** — recorded as *"held by phase 16, deferred by decision"*, explicitly **not** "unowned" —
+and phase 16's `C16-1` records that its ten `CHT` findings **name neither `errorMessages.ts` nor
+`useAuth.ts`'s `RATE_LIMIT_EXCEEDED` branch**. **There is therefore no phase-16 work in these files
+for this block's work to be additive to, and the contention has no subject left.**
+
+**Two things follow, and both are obligations on this block.**
+
+1. **Phase 13 must be told this directly.** The release is a ruling, not a silence, and **an implementor
+   must not infer it from phase 16's not mentioning the files.** `CT-5`'s commit body names the ruling
+   (`D-16-5` (ruled: defer all four, held-by-decision)), the date, and the fact that `C16-1` confirms the collision was empty — and the same
+   for `CT-10`.
+2. **The register entry stays.** `C13-1` is not withdrawn and must not be deleted: it records that the
+   collision existed, how it was resolved, and who ruled. The three outcomes this block used to wait
+   for are now: **(i) the deferral decision, taken by the owner**; **(ii) phase 16's confirmation,
+   which `C16-1` supplies retroactively**; **(iii) the deferral-to-phase-16 outcome, which did not
+   happen and is not available** — the work is phase 13's.
 
 **The phase-12 one-way notice, discharged here (`C13-2`).** Phase 12 requires phase 13 to be told
 **before** `AUTZ-006`'s error-code mapping moves, because `errorHandler.ts` switches on `code` and
@@ -1066,7 +1238,8 @@ a user.
 
 **What this block explicitly does not do.**
 
-- It does **not** remove, keep, or re-scope the toast. That is CT-6, and `DP-13-D` is unruled.
+- It does **not** remove, keep, or re-scope the toast. That is CT-6. **`DP-13-D` is ruled (a) — one
+  surface per context** — and CT-6 executes it; this block still does not pre-empt it.
 - It does **not** make the three rendering conditions in `DashboardView` exclusive. CT-6.
 - It does **not** invent a new error message. Every string it renders comes from the existing
   `getErrorMessage` resolution; the block's job is to route the UI **through** that resolution, not
@@ -1121,9 +1294,11 @@ exactly this reason. `docs/SPEC.md` one version row.
   mock the API module, so this assertion has to be written deliberately.
 - `git status --porcelain -- frontend/coverage` unchanged.
 
-**Definition of done.** `C13-1` resolved in writing (phase 16's confirmation, an owner ruling, or a
-deferral to phase 16) · the phase-12 `AUTZ-006` notification is sent and its dependency recorded in
-the commit message · every hard-coded message literal in the block's declared scope now resolves
+**Definition of done.** **`C13-1` resolved in writing — resolved by plan 16's `D-16-5` (ruled: defer all four, held-by-decision) on 2026-10-03,
+and the commit body names that ruling, its date, and `C16-1`'s confirmation that phase 16 lands nothing
+in these files** · the phase-12 `AUTZ-006` notification is sent and its dependency recorded in
+the commit message (**the notice is still owed and the ruling did not change its ordering**) ·
+every hard-coded message literal in the block's declared scope now resolves
 through `getErrorMessage` · the two dashboard messages render the extracted text · the feature tier's
 availability at the toast path is stated, and either wired or recorded as a deliberate non-goal with
 a reason · the two 401 literals are either in scope and fixed, or recorded as out with a reason ·
@@ -1134,9 +1309,11 @@ intact · one `docs/SPEC.md` version row.
 
 ## CT-6 — One error class, one surface
 
-**Discharges:** FE-002 (the surfacing half), `A-9` (by decision) · **Ruled by:** `DP-13-D` ·
-**Blocked by:** **CT-5 (hard)** — the report's "do both or neither" rule · `DP-13-D` ·
-**Blocks:** CT-11 (sequencing), CT-14 (sequencing) · **Execution order:** 7 · **Risk:** MEDIUM
+**Discharges:** FE-002 (the surfacing half), `A-9` (by decision) · **Ruled by:** `DP-13-D` **(a),
+Product Owner 2026-10-03 — ONE SURFACE PER CONTEXT** ·
+**Blocked by:** **CT-5 (hard)** — the report's "do both or neither" rule. **The `DP-13-D` gate is
+released** · **Blocks:** CT-11 (sequencing), CT-14 (sequencing) · **Execution order:** 7 · **Risk:**
+MEDIUM
 implementation, **HIGH rollout**, MEDIUM regression, **HIGH compatibility** · **Agents: all four**
 
 **Semantic target.** Three independent rendering conditions that must become one, per surface:
@@ -1161,19 +1338,21 @@ precise and is the finding: **one failed fetch produces a toast, an inline banne
 charts, simultaneously**, and nothing on the page says which of the three is current.
 
 **There is a correct pattern in the repository, and it is four lines away.** The dashboard list
-replaces its grid on error rather than annotating it. This block's job is to make the other three
-surfaces behave like that one — or, if `DP-13-D` says otherwise, to make the coexistence coherent.
+replaces its grid on error rather than annotating it. **This block's job is to make the other three
+surfaces behave like that one. `DP-13-D` is ruled (a), so the coexistence is not the outcome: the
+ruling makes the pattern the rule.**
 
-**Options — `DP-13-D` (which surface survives the class).** Carried verbatim; **this plan picks
-none.** The report calls it a judgement call and is right: the answer changes `errorMessages.ts` — a
-six-file surface, `C13-1` — and it changes what a user sees, which is a product decision, not a
-Planner's.
+**Options — `DP-13-D` (which surface survives the class).** Carried verbatim. **RULED (a) by the
+Product Owner on 2026-10-03 — one surface per context.** The answer changes `errorMessages.ts` — a
+six-file surface, **`C13-1`, whose collision is released** — and it changes what a user sees, which is
+why it was a product decision and not a Planner's. **The rejected options are retained below as
+records; the trade-off the ruling accepts is stated in the chosen row and repeated nowhere else.**
 
 | Option | Shape | Trade-off |
 | ------ | ----- | --------- |
-| **(a) Drop the interceptor's toast for codes a surface renders inline** | One surface per class; the toast is reserved for classes nothing renders (background refetches, mutations) | The most coherent outcome and the one the report's Rollout Safety reaches for. Cost: the toast is the interceptor's only generic channel; dropping it for a code class means a **background** refetch of the same code has **no** surface at all, so the exemption list must be per-surface, not per-class — which the interceptor cannot see. This is the hardest option and the honest one. |
-| **(b) Drop the inline alerts and keep the toast** | One surface, and it is the one the interceptor owns | Smallest diff, one place to change, and the message is already the real one after CT-5. Cost: the toast is **transient and out of context** — a user who looks away misses the error entirely, and a dashboard that fails to load shows a toast over an empty frame with no persistent explanation. It also removes the one surface a screen-reader user can reach on demand, in a phase whose other block (CT-12) is adding accessible names. |
-| **(c) Keep both, and label the stale frame** | Both surface; the retained data is marked as stale with a visible, persistent affordance | Preserves information and both channels, and is the only option that does not lose a failure. Cost: the user is told about one problem twice, which is the finding's original complaint — it makes the duplication *coherent* rather than *absent*, and "coherent duplication" is a claim a usability pass has to accept. |
+| **(a) Drop the interceptor's toast for codes a surface renders inline — CHOSEN, RULED 2026-10-03. The ruling's wording is "one surface per context": a persistent inline message carries the main view's errors, and the toast is RESERVED for background refetches and mutations, which have no inline surface.** | One surface per context; the toast survives only where nothing renders inline | The most coherent outcome and the one the report's Rollout Safety reaches for. Cost, **accepted**: the toast is the interceptor's only generic channel; dropping it for a code class means a **background** refetch of the same code would have **no** surface at all unless exempted — so **the exemption list must be per-surface, not per-class**, which the interceptor cannot see. **That design work is the block's deliverable and it is not a new decision.** A user who currently gets both a toast and a banner gets **one**. |
+| **(b) Drop the inline alerts and keep the toast** — rejected | One surface, and it is the one the interceptor owns | Smallest diff, one place to change, and the message is already the real one after CT-5. Cost: the toast is **transient and out of context** — a user who looks away misses the error entirely, and a dashboard that fails to load shows a toast over an empty frame with no persistent explanation. It also removes the one surface a screen-reader user can reach on demand, in a phase whose other block (CT-12) is adding accessible names. |
+| **(c) Keep both, and label the stale frame** — rejected | Both surface; the retained data is marked as stale with a visible, persistent affordance | Preserves information and both channels, and is the only option that does not lose a failure. Cost: the user is told about one problem twice, which is the finding's original complaint — it makes the duplication *coherent* rather than *absent*, and "coherent duplication" is a claim a usability pass has to accept. |
 
 **`A-9` — the unnamed item this block touches, offered rather than adopted.** `LogViewer`'s query
 carries **no `enabled` gate and no token check**; it is the one query in the client that will fire
@@ -1229,11 +1408,14 @@ CT-14 (last) owns the correction and this block **raises** it. `docs/SPEC.md` on
 - `npm --prefix frontend run build` (`R-13-12`).
 - `git status --porcelain -- frontend/coverage` unchanged.
 
-**Definition of done.** `DP-13-D` ruled and the ruling named in the commit message · CT-5 landed and
+**Definition of done.** `DP-13-D` ruled — **(a), one surface per context, 2026-10-03** — and the ruling
+named in the commit message · CT-5 landed and
 green, so every surviving surface carries the real message · the four-state characterisation written
-before and after · each of the three surfaces renders **one** surface per class, with no
-contradictory pair · no failure state is silent that was not silent before, unless option (a) was
-ruled, in which case the exemption list is written down · the fixtures carry the state the code now
+before and after · each of the three surfaces renders **one** surface for its context, with no
+contradictory pair, and the toast is **reserved for background refetches and mutations** · **the
+exemption list is written down**, because under the ruled (a) a background failure with no inline
+surface must still reach the user somewhere · no failure state is silent that was not silent before,
+**except where the written exemption list says so** · the fixtures carry the state the code now
 reads · `A-9` recorded in the block's notes · `fe-lint` delta unchanged · coverage tree intact · the
 documentation correction raised for CT-14 · one `docs/SPEC.md` version row.
 
@@ -1603,8 +1785,10 @@ the documentation correction raised for CT-14 · one `docs/SPEC.md` version row.
 ## CT-10 — One boot refresh, and a rate limit the user is told about
 
 **Discharges:** FE-001, VAL-13-004 (mechanism note), `A-1`, `A-2`, `A-4` · **Ruled by:** `DP-13-E`
-· **Blocked by:** `DP-13-E`, **`C13-1` — the `C04-4` contention on this exact branch** ·
-**Blocks:** CT-11 (sequencing), CT-14 (sequencing) · **Execution order:** 11 · **Risk:** MEDIUM-HIGH
+**— still open** · **Blocked by:** `DP-13-E` only. **`C13-1` is RELEASED** — the `C04-4` contention on
+this exact branch was resolved by plan 16's `D-16-5` (ruled: defer all four, held-by-decision) on 2026-10-03, and this block's commit body
+must name that ruling rather than assume it · **Blocks:** CT-11 (sequencing), CT-14 (sequencing) ·
+**Execution order:** 11 · **Risk:** MEDIUM-HIGH
 implementation, MEDIUM rollout, MEDIUM regression, LOW compatibility · **Agents: Auditor, Planner,
 Validator**
 
@@ -1665,8 +1849,11 @@ one without the other leaves the credential store in two homes.
 its key — the budget is phase 07/02's configuration surface, and raising it would treat the symptom.
 It does not change the interceptor's 429 bypass, which is deliberate and commented. It does not make
 the 429 arm and the `else` arm differ in anything other than messaging unless `DP-13-E` requires it.
-**It does not touch `errorMessages.ts`** — which is exactly the contention `C13-1` records, and the
-reason this block is blocked.
+**It does not touch `errorMessages.ts`** — which was the collision `C13-1` recorded and the reason this
+block was blocked. **That collision is resolved by ruling** (`D-16-5` (ruled: defer all four, held-by-decision), 2026-10-03: all four
+hand-overs deferred, and `C16-1` confirms phase 16's ten findings name neither this branch nor that
+file), **so the branch is now phase 13's to work in.** **The release must be stated in this block's
+commit body — it is a ruling, not a silence, and an implementor must not infer it.**
 
 **Risk assessment.**
 
@@ -1721,8 +1908,9 @@ with it, and the doc is phase 13's. `docs/SPEC.md` one version row.
 - `git status --porcelain -- frontend/coverage` unchanged.
 
 **Definition of done.** `DP-13-E` ruled and the ruling named in the commit message · **`C13-1`
-resolved in writing** — phase 16's confirmation, an owner ruling, or deferral to phase 16, since the
-429 branch is the contended location · one boot refresh per page load, with the **call count**
+resolved in writing — by plan 16's `D-16-5` (ruled: defer all four, held-by-decision) on 2026-10-03, named in the commit body together with
+`C16-1`'s confirmation; the 429 branch is phase 13's and no longer a contended location** · one boot
+refresh per page load, with the **call count**
 asserted · the 429 path produces a user-visible message and no interceptor toast · the attempt
 arithmetic is written down per route and matches the code · the server's limiter untouched ·
 `A-1` and `A-2` either fixed or recorded with a reason · `docs/07-frontend/auth-flow.md` updated if
@@ -2259,13 +2447,15 @@ close-out.
 
 ---
 
-## Decision records — none picked
+## Decision records — five ruled, ten unpicked
 
 Fifteen records. `DP-13-A` … `DP-13-N` are carried **verbatim** from the Phase-1 code context's §6
 and keep their identity so a reader can move between the two documents without translating. Each
 one's options and trade-offs are stated in full inside the block that is gated by it; this section
 is the index, the chooser, and the statement of what stays blocked. **`DP-13-O` is this Planner's**
-and is the only new record. **No option is chosen anywhere in this plan.**
+and is the only new record. **Five records are ruled by the Product Owner on 2026-10-03 —
+`DP-13-B`, `DP-13-C`, `DP-13-D`, `DP-13-H`, `DP-13-I` — and the remaining ten are picked by nobody.
+This plan chooses none of the ten, and re-decides none of the five.**
 
 > **A note on `DP-13-M`'s identity.** The code context's `DP-13-M` is the question "does
 > `VAL-13-005` get a phase-13 block?". That question has an answer — no, by the report's own ruling
@@ -2278,14 +2468,14 @@ and is the only new record. **No option is chosen anywhere in this plan.**
 | # | Question | Chooser | Blocks | What stays blocked while it is open |
 | - | -------- | ------- | ------ | ------------------------------------ |
 | **DP-13-A** | Is `fe-lint` in scope for phase 13? It is red before any phase-13 edit, and **three of the nine errors are in a function no finding names**. (a) delta-gate only; (b) own the `ChartRenderer` three and land `fe-lint` green; (c) own all nine; (d) declare it not-a-gate and rely on `fe-test` | **Tech Lead** — it collides with plan-08 `CQLT-4`'s "must stay green" | **CT-7** (the only block whose file holds the three), and the *form* of every other block's lint verification | Nothing else. Every other block proceeds under the **delta reading**, which is the only option requiring no ruling, and states its own delta in both directions. **CT-0, CT-2 and CT-12 are executable today under any of the four options.** |
-| **DP-13-B** | Does the `queryKey` fix land with the `graphId` threading, or before it? (a) one commit; (b) key-only first; (c) abandon per-graph fetching for a total-count signal | **Planner**, hard-ordered against plan-11 `DP-11-A` | **CT-1** (as the option that decides whether CT-1 and CT-3 may be one commit) | **CT-1 is executable today under (b)**, which is the shape it is written for. CT-3 needs (b) or (a). Under (c) CT-3 does not run at all and the work moves to phase 11's response-shape change. |
-| **DP-13-C** | How does the client signal truncation? (a) a fixed alert when the graph count is short; (b) a count field from the server, rendered as "showing N of M"; (c) a per-graph query with a per-card error state | **Planner + plan-11's `DP-11-A`** | **CT-3** | **CT-3's threading half is executable today.** Only the *signal* waits — and `R-13-4` forbids building a signal that presumes a bound the server does not send, so nothing is blocked by refusing to decide this. |
-| **DP-13-D** | `FE-002`: which surface survives the error class? (a) drop the interceptor toast for codes a surface renders inline; (b) drop the inline alerts and keep the toast; (c) keep both and label the stale frame | **Tech Lead** — the answer changes `errorMessages.ts` (six files) and what a user sees | **CT-6** | **CT-5 is executable today** and is correct under all three, which is exactly why it is a separate block. CT-6 does not start until this is ruled. |
-| **DP-13-E** | `FE-001`: where does the single boot refresh live? (a) a module-scope guard in the auth model; (b) a single effect in the providers; (c) demote the credential store to shared and own the session there | **Planner** — and (c) is `DP-13-F`'s alternative, so the two interact | **CT-10** | CT-10 does not start. **The `C13-1` contention blocks it independently**, so even a fast ruling leaves it waiting on phase 16. |
+| **DP-13-B** | Does the `queryKey` fix land with the `graphId` threading, or before it? (a) one commit; (b) key-only first; (c) abandon per-graph fetching for a total-count signal | **Product Owner, 2026-10-03** — RULED **(a)**: one commit, and with phase 11's `DP-11-A` (ruled: atomic — one change spanning both tiers) that commit spans `src/mkobi` and `frontend/src` | **CT-1 + CT-3 as ONE commit** — **neither block is separately gated any more** | **Nothing.** `C11-8` remains a hard requirement inside the merged commit, and the key-shape test must still be shown failing before the fix. |
+| **DP-13-C** | How does the client signal truncation? (a) a fixed alert when the graph count is short; (b) a count field from the server, rendered as "showing N of M"; (c) a per-graph query with a per-card error state | **Product Owner, 2026-10-03** — RULED **(b)**: render **the server's** count as **"showing N of M"** | **CT-3**'s signal half — **released to build; it consumes `DP-11-B(c)`'s field** | **Nothing is blocked.** `R-13-4` stands and is **not** relaxed: the client must not invent the field, and **CT-3's render path ships inert if `PRF-4`'s field does not arrive** — stated in the commit message. |
+| **DP-13-D** | `FE-002`: which surface survives the error class? (a) drop the interceptor toast for codes a surface renders inline; (b) drop the inline alerts and keep the toast; (c) keep both and label the stale frame | **Product Owner, 2026-10-03** — RULED **(a)**: **one surface per context** — a persistent inline message for the main view, the **toast reserved for background refetches and mutations**, which have no inline surface | **CT-6** — **released to start once CT-5 has landed** (that predecessor is unchanged) | **Nothing beyond CT-5.** A user who currently gets both a toast and a banner gets **one**. The exemption is **per surface, not per class**, because the interceptor cannot see which surface is displaying a request — that design question is the block's work, not a new decision. |
+| **DP-13-E** | `FE-001`: where does the single boot refresh live? (a) a module-scope guard in the auth model; (b) a single effect in the providers; (c) demote the credential store to shared and own the session there | **Planner** — and (c) is `DP-13-F`'s alternative, so the two interact | **CT-10** | CT-10 does not start. **The `C13-1` contention no longer blocks it independently — it was released by `D-16-5` (ruled: defer all four, held-by-decision) on 2026-10-03 — so this record is now the block's only gate.** |
 | **DP-13-F** | `FE-004`: publish upward, or demote the credential store? (a) add the six missing symbols to the barrels and repoint four consumers; (b) move the store to a shared location; (c) both, plus the structure document rewritten | **Tech Lead** — (b) is smaller and is the only option that removes the class | **CT-11** | CT-11 does not start. **CT-13 is hard-blocked on CT-11**, so the whole layering half of the phase queues behind this one decision. That is the phase's widest single point of contention and it should be scheduled deliberately. |
 | **DP-13-G** | `FE-005` + `FE-003`: is the API base configurable? (a) delete the declaration, keep the literal, delete the second literal; (b) wire `VITE_API_URL` through and set it in the Docker frontend build | **Tech Lead + phase 10** (`OPS-003`) — (b) makes the Docker frontend build a phase-13 dependency | **CT-8**, and **CT-9** transitively | **CT-9's independent half is arguably executable**, but it cannot read a base that CT-8 has not decided the source of, so in practice the pair waits. Both are otherwise ready. |
-| **DP-13-H** | `FE-006`'s `new_password`: which side moves? (a) drop the client's uppercase rule; (b) add it to the server's validator; (c) leave it and re-grade | **Tech Lead** — (b) is a backend file inside a client finding and touches admin resets | **CT-2**, the `new_password` row only | **CT-2's other two rows are executable today** and need no ruling. What is blocked is the row that takes the suite from 169/1 to 170/0 — and therefore every later block's cleanest `fe-test` figure. **This is the cheapest ruling in the phase and the one that unblocks the most.** |
-| **DP-13-I** | `FE-006`'s update-`name` divergence, which no finding names: align the client to the create rule and add a server validator; align the client down; or leave and record | **Planner** | **CT-2**, additively | Nothing. CT-2 completes without it; the divergence is recorded either way. |
+| **DP-13-H** | `FE-006`'s `new_password`: which side moves? (a) drop the client's uppercase rule; (b) add it to the server's validator; (c) leave it and re-grade | **Product Owner, 2026-10-03** — RULED **(a)**: the server is authoritative, the client mirrors it exactly, and the client's uppercase rule is **dropped from the client and NOT added to the server** | **CT-2**, the `new_password` row — **released; the whole block is unblocked** | **Nothing.** **This closes the concern in `C13-2`'s "nobody owns the backend option" row: no new backend finding is needed, because the backend is not being changed.** The suite's red count resolves, and every later block's cleanest `fe-test` figure is available. |
+| **DP-13-I** | `FE-006`'s update-`name` divergence, which no finding names: align the client to the create rule and add a server validator; align the client down; or leave and record | **Product Owner, 2026-10-03** — RULED **(a)**: align the client to `DashboardCreate`'s rule **AND add the server validator** | **CT-2**, additively — **no longer additive: the client half is now in CT-2's scope** | **The client half is executable now.** **The server half is a backend edit this plan may not make (`R-13-6`) and no phase owns — recorded as a conflict item, not absorbed.** A commit that lands only the client half must say so in its body. |
 | **DP-13-J** | `FE-007`: what replaces the trace type, and what happens to the dead layout converter? (a) row dictionaries, delete both casts, delete the dead converter; (b) as (a) but keep the converter; (c) generate the types from OpenAPI | **Planner + phase 16** — (a) touches phase 16's material | **CT-7** | CT-7 does not start. It is the phase's second-highest-risk block and the one with the least tolerance for an improvised shape. |
 | **DP-13-K** | `FE-008`'s roll-out evidence, given no browser run exists. (a) a vitest assertion on trace count and axis categories; (b) a browser render check; (c) rely on (a) and label the pixel artefact unsettled | **Planner** | **CT-7** | **Executable today under (a) or (c)** — they are the same work with a different label on the residual. (b) is not executable at all: there is no browser-render harness in this repository. |
 | **DP-13-L** | `FE-010`: adopt the unreferenced barrels, delete them, or delete all barrels and rewrite the contract? | **Planner** | **CT-13** | CT-13 does not start, and it is already hard-blocked on CT-11, so this ruling can be taken in parallel with `DP-13-F`. |
@@ -2293,10 +2483,13 @@ and is the only new record. **No option is chosen anywhere in this plan.**
 | **DP-13-N** | Does phase 13 fix `docs/07-frontend/` — the dead `PlaceholderPage` specification, the missing files, and the `:105` interceptor description — or leave it to phase 16? (a) phase 13 corrects `fsd-structure.md` and `architecture.md:105` as part of FE-004's and FE-010's documentation impact; (b) hand the question to phase 16 | **Tech Lead** — `doc-maintenance-rules.md` requires documentation to follow the code | **CT-14** | **CT-14's own per-block documentation corrections are executable today**, because they follow from CT-5 through CT-13's landed behaviour whatever the ruling. What waits is the **structural** question — whether the structural document's component tree, its missing entries and the interceptor paragraph are this phase's to correct, or phase 16's. Under (b) CT-14 becomes a recording block and the corrections queue behind phase 16. |
 | **DP-13-O** | *(raised by this Planner)* `PlaceholderPage.tsx` is specified in the structure document with a full usage-guidelines section and is absent from disk and from every import. (a) create it as specified; (b) strike the documentation; (c) record the gap and leave both standing | **Tech Lead**, on CT-14's investigation | **CT-14** | **CT-14's documentation corrections are executable today.** Only the component's fate waits, and the project's dead-code policy makes **deletion the non-default**, which is why the record rather than a ruling is the honest state. |
 
-**What is executable today, with no ruling at all:** CT-0, CT-1, CT-2 (rows 1 and 3), CT-4 after
-CT-3, CT-5 after `C13-1`, CT-12, CT-14's documentation corrections, CT-15's accounting. **Six of
-sixteen blocks need no decision to start**, which is the most that can honestly be said in a phase
-whose decisions are cross-phase and ownership-contested.
+**What is executable today, with no ruling at all:** CT-0, CT-2 (all rows, `DP-13-H` and `DP-13-I`
+ruled), CT-1 + CT-3 (ruled, as one two-tier commit), CT-5 after `C13-2`, CT-12, CT-14's documentation
+corrections, CT-15's accounting. **Six of
+sixteen blocks need no decision to start** — the five owner rulings of 2026-10-03 and the release of
+`C13-1` are what moved that number from six to ten — **and what remains gated is now concentrated:
+`CT-6` on CT-5 only, and CT-7, CT-8, CT-9, CT-11, CT-13 and CT-14 on the ten records the owner did not
+rule.**
 
 ---
 
@@ -2308,8 +2501,8 @@ another.**
 
 | # | Item | Owner | Blocking |
 | - | ---- | ----- | -------- |
-| **C13-1** | **Phase 16 / plan-04 `C04-4` — the two exact locations `FE-001` and `FE-002` need.** Phase 16 is handed `errorMessages.ts` and `useAuth.ts`'s `RATE_LIMIT_EXCEEDED` branch; plan 04 explicitly reserves both. Those are **precisely** the two locations CT-5 and CT-10 must edit: CT-5's decision lands in the message surface, and CT-10's 429 branch is the finding's own target. The report's *adjacency* between `FE-001` and phase 04's refresh-cookie finding is real and distinct; the **hand-over collision is real too**, and the code context records it as unresolved. **This plan does not resolve it and does not proceed past it silently.** | phase 16 (with plan 04) | **CT-5 and CT-10 (hard)** — until phase 16 confirms the work is additive, the owner rules on shared ownership, or the work defers to phase 16 |
-| **C13-2** | **Phase 12's one-way notice, and the backend boundary.** Phase 12's code context requires phase 13 to be told **before** `AUTZ-006`'s error-code mapping moves, because the shared error handler switches on the code and the admin feature's message map is the consuming side of `PERMISSION_DENIED` and `VALIDATION_ERROR`. **Phase 13 owns no edit there; it owns the notification** — sent in CT-0. CT-5 must record which codes its rendering depends on. Separately: `FE-006`'s option (b) would edit `src/mkobi/utils/validators.py` and change `change_password` for every caller including admin resets. That is a backend change from a client finding, **no phase owns it today**, and the correct move if wanted is a new backend finding, not a phase-13 edit (`R-13-6`). | phase 12 (notification) · **nobody** (the backend option) | **CT-5** (the notification half) |
+| **C13-1** | **Phase 16 / plan-04 `C04-4` — the two exact locations `FE-001` and `FE-002` need.** Phase 16 is handed `errorMessages.ts` and `useAuth.ts`'s `RATE_LIMIT_EXCEEDED` branch; plan 04 explicitly reserves both. Those are **precisely** the two locations CT-5 and CT-10 must edit: CT-5's decision lands in the message surface, and CT-10's 429 branch is the finding's own target. The report's *adjacency* between `FE-001` and phase 04's refresh-cookie finding is real and distinct; the **hand-over collision was real too**, and the code context recorded it as unresolved. **It was resolved by ruling, on 2026-10-03. —** | phase 16 (with plan 04) | **RELEASED — 2026-10-03. `CT-5` and `CT-10` are no longer blocked on it.** Plan 16's `D-16-5` (ruled: defer all four, held-by-decision) **defers all four unnamed hand-overs** (`H-1` … `H-4`), recorded as *"held by phase 16, deferred by decision"* and explicitly **not** "unowned"; `C16-1` states that phase 16 **executed its ten `CHT` findings and none of them names `errorMessages.ts` or `useAuth.ts`'s `RATE_LIMIT_EXCEEDED` branch**. **There is therefore no phase-16 work in these two files for phase 13's work to be additive to, and the contention has no subject.** **This entry is NOT withdrawn: it records that the collision existed, how it was resolved, and that phase 13 must be told directly** — it must **not** infer the release from silence, and CT-5's and CT-10's commit bodies must each name the ruling that released them |
+| **C13-2** | **Phase 12's one-way notice, and the backend boundary.** Phase 12's code context requires phase 13 to be told **before** `AUTZ-006`'s error-code mapping moves, because the shared error handler switches on the code and the admin feature's message map is the consuming side of `PERMISSION_DENIED` and `VALIDATION_ERROR`. **Phase 13 owns no edit there; it owns the notification** — sent in CT-0. CT-5 must record which codes its rendering depends on. **The notification is still owed and is not affected by any ruling** — phase 12's `DP-12-C` was ruled (a) on 2026-10-03, and its own record keeps the ordering: *the notice must be issued before the mapping moves.* Separately: `FE-006`'s option (b) would edit `src/mkobi/utils/validators.py` and change `change_password` for every caller including admin resets. **That option is now FORBIDDEN**: `DP-13-H` is ruled (a), so the server is not changed and **no new backend finding is needed — the concern this row recorded is closed by the backend staying as it is.** (`R-13-6`) | phase 12 (notification) · **the backend option is CLOSED, not unowned** | **CT-5** (the notification half) — **the collision half is released** |
 | **C13-3** | **Phase 11's `PERF-001` client half, and the ordering that makes it safe.** Phase 13 owns the client; phase 11 owns the server `LIMIT`, which **does not exist at `ab76989`** — the aggregate read is unbounded. Phase 11's own `R-11-4` states that no `LIMIT` lands before the client can signal truncation, and its `C11-8` names the `queryKey` omission as a correctness defect introduced by a fix that skips it. **Phase 13's answer is CT-1 then CT-3, in that order and in separate blocks.** | phase 11 (`DP-11-A`, `PRF-4`) | **CT-3 (hard) on CT-1 and on `DP-11-A`** |
 | **C13-4** | **The response-shape change is phase 11's.** A count field on the aggregated response is `DP-11-B(c)`'s output, and `tests/test_openapi.py` is its tripwire. CT-3 builds the client's capability to render a signal and **must not invent the field** (`R-13-4`). If the field lands, CT-3's render path consumes it; if it does not, CT-3 ships inert and says so. | phase 11 (`PRF-4`) | CT-3's signal half |
 | **C13-5** | **`docs/07-frontend/pages.md` is phase 13's file, and the truncation requirement is raised, not written.** Phase 11's plan states explicitly: raise the truncation-signal requirement in the frontend pages document, do not edit it. The document already describes an optional `graph_id` parameter the client never sent. | phase 13 (CT-3, CT-14) | — |
@@ -2334,26 +2527,29 @@ CT-11 and CT-12.
 | # | Block | Gate before it starts | Depends on |
 | - | ----- | ---------------------- | ---------- |
 | 1 | **CT-0** | none | — |
-| 2 | **CT-1** | none. `DP-13-B(b)` is the shape it is written for; if the owner rules `DP-13-B(a)`, CT-1 and CT-3 become one commit and **CT-3's row moves up** | CT-0 |
-| 3 | **CT-2** | `DP-13-H` for the `new_password` row (rows 1 and 3 need nothing) · `C13-7` notified | CT-0 |
-| 4 | **CT-3** | CT-1 landed and green · `DP-11-A` and `DP-11-B` ruled · `DP-13-C` only if a signal is in scope | **CT-1 (hard)** |
-| 5 | **CT-4** | CT-3 landed (same file, one review) | CT-3 (sequencing) |
-| 6 | **CT-5** | **`C13-1` resolved in writing** · `C13-2` notification sent | CT-0 |
-| 7 | **CT-6** | `DP-13-D` ruled · CT-5 landed and green | **CT-5 (hard)** |
-| 8 | **CT-7** | `DP-13-A` ruled or the delta declared · `DP-13-J` and `DP-13-K` ruled · **phase 16's presentation contract read** | CT-0 |
-| 9 | **CT-8** | `DP-13-G` ruled | CT-0 |
-| 10 | **CT-9** | CT-8 landed and its base shape known | **CT-8 (hard)** |
-| 11 | **CT-10** | `DP-13-E` ruled · **`C13-1` resolved in writing** | CT-0 |
-| 12 | **CT-11** | `DP-13-F` ruled · and if `DP-13-E(c)` was ruled, the two must be decided **together** | CT-4, CT-6, CT-10 (sequencing) |
-| 13 | **CT-12** | none | CT-0 |
-| 14 | **CT-13** | CT-11 landed and its outcome read · `DP-13-L` ruled | **CT-11 (hard)** |
-| 15 | **CT-14** | CT-5 … CT-13 landed · `DP-13-N` and `DP-13-O` ruled | CT-6, CT-7, CT-10, CT-11, CT-13 (sequencing) |
-| 16 | **CT-15** | CT-2 landed, or the reason the suite is still red is recorded | **CT-2 (hard)** · CT-1, CT-5, CT-9, CT-12 |
+| 2 | **CT-1 + CT-3** | **`DP-13-B` RULED (a), 2026-10-03 — they are ONE commit.** `DP-11-A` RULED — atomic — the same commit spans `src/mkobi` and `frontend/src`. `DP-13-C` RULED (b) — the signal consumes `DP-11-B(c)`'s field and ships inert without it | CT-0 |
+| 3 | **CT-2** | **`DP-13-H` RULED (a)** and **`DP-13-I` RULED (a)** — no gate remains · `C13-7` notified | CT-0 |
+| 4 | **CT-4** | CT-1 + CT-3 landed (same file, one review) | CT-1/CT-3 (sequencing) |
+| 5 | **CT-5** | **`C13-1` RESOLVED IN WRITING — released by `D-16-5` (ruled: defer all four, held-by-decision), 2026-10-03** · `C13-2` notification sent (**still owed**) | CT-0 |
+| 6 | **CT-6** | **`DP-13-D` RULED (a)** — one surface per context · CT-5 landed and green | **CT-5 (hard)** |
+| 7 | **CT-7** | `DP-13-A` ruled or the delta declared · `DP-13-J` and `DP-13-K` ruled · **phase 16's presentation contract read** | CT-0 |
+| 8 | **CT-8** | `DP-13-G` ruled | CT-0 |
+| 9 | **CT-9** | CT-8 landed and its base shape known | **CT-8 (hard)** |
+| 10 | **CT-10** | `DP-13-E` ruled · **`C13-1` RESOLVED IN WRITING — released by `D-16-5` (ruled: defer all four, held-by-decision), 2026-10-03** | CT-0 |
+| 11 | **CT-11** | `DP-13-F` ruled · and if `DP-13-E(c)` was ruled, the two must be decided **together** | CT-4, CT-6, CT-10 (sequencing) |
+| 12 | **CT-12** | none | CT-0 |
+| 13 | **CT-13** | CT-11 landed and its outcome read · `DP-13-L` ruled | **CT-11 (hard)** |
+| 14 | **CT-14** | CT-5 … CT-13 landed · `DP-13-N` and `DP-13-O` ruled | CT-6, CT-7, CT-10, CT-11, CT-13 (sequencing) |
+| 15 | **CT-15** | CT-2 landed, or the reason the suite is still red is recorded | **CT-2 (hard)** · CT-1/CT-3, CT-5, CT-9, CT-12 |
 
-**Blocks 2, 3, 8, 9 and 13 are the critical path to a schedule**: CT-2 is the only block that changes
+**Blocks 3, 8, 9 and 13 are the critical path to a schedule**: CT-2 is the only block that changes
 the gate baseline, CT-7 and CT-11 are the two heaviest in the phase, and CT-11 is behind a single
-Tech Lead decision that also blocks CT-13. **CT-1, CT-2, CT-7, CT-8 and CT-12 need no prior block at
-all** and are the right things to schedule first if the contested decisions are still open.
+Tech Lead decision that also blocks CT-13. **CT-2, CT-7, CT-8 and CT-12 need no prior block at
+all** and are the right things to schedule first if the contested decisions are still open. **What the
+2026-10-03 rulings changed in this queue:** `CT-5` and `CT-10` no longer wait on a cross-phase
+reservation (**`C13-1` released**), `CT-2` waits on nothing (**`DP-13-H`, `DP-13-I` ruled**), and
+`CT-1` + `CT-3` collapse into one two-tier commit instead of a sequence. **CT-7's three open decisions
+and `DP-13-F` are untouched.**
 
 ---
 
@@ -2472,16 +2668,23 @@ correctness is citing the wrong thing.
   170/0 and proves one thing. `fe-lint` stays at nine errors unless `DP-13-A` moves it, and three of
   the nine are in a function no finding names. **The honest end state of a phase whose gates are red
   on arrival is a recorded, attributed delta — not a green board.**
-- **`C13-1` is the phase's widest contention and it is not technical.** Two blocks — the ones that
-  discharge the phase's two HIGH findings — are blocked on a reservation held by two other plans
-  over two specific locations. If it is not resolved, this phase delivers its two MEDIUMs, its
-  LOWs, and both halves of `VAL-13-006`, and leaves the two HIGHs where they are.
+- **`C13-1` was the phase's widest contention and it is not technical — and it is RESOLVED, by ruling,
+  on 2026-10-03.** Two blocks — the ones that discharge the phase's two HIGH findings — were blocked on
+  a reservation held by two other plans over two specific locations. **Plan 16's `D-16-5` (ruled: defer all four, held-by-decision) defers all
+  four unnamed hand-overs and `C16-1` confirms phase 16's ten `CHT` findings name neither symbol, so the
+  collision had no subject.** `CT-5` and `CT-10` are released. **What replaces the residual is a
+  discipline one: the release is a ruling, not a silence**, so both blocks' commit bodies must name
+  `D-16-5` (ruled: defer all four, held-by-decision) and its date. An implementor who reads "phase 16 did not mention it" as permission has
+  inverted the burden the ruling created.
 - **`DP-13-F` is a single decision that blocks two blocks and a third indirectly.** It is the widest
   point of contention in the schedule, it interacts with `DP-13-E` (option (c) of each is the same
   move), and choosing "publish upward" leaves the class in place behind a sanctioned door.
 - **The phase's own largest hand-in was never filed anywhere.** `VAL-13-006` is a real ownership gap
   in the audit set, not a defect in either report. Naming it was the work; the fix is CT-1 plus CT-3,
-  and the server half is still phase 11's and still unlanded.
+  and **under the ruled `DP-13-B`(a) those two are one commit that also spans `src/mkobi`** — so the
+  server half is no longer "still phase 11's and still unlanded" as a separate future step but the
+  **other tier of a commit phase 13 must not execute alone.** The residual is coordination, not scope:
+  **one commit, two owners' files, and `tests/test_openapi.py` on the backend side as its tripwire.**
 - **A green suite is not a regression guard for eight of the ten findings.** Only CT-1, CT-7 and
   CT-10 add assertions that can fail. CT-4's and CT-2's are new, so five of ten have a real guard at
   the end; `FE-003`, `FE-005`, `FE-009` and `FE-010` have **none**, and their verification is a
@@ -2511,3 +2714,16 @@ correctness is citing the wrong thing.
   next phase's gate run from destroying them again, and the configuration that does it is phase 09's
   (`TST-004`, `TST-014`) with the gate question handed to phase 16 (`C13-8`). **This plan mitigates
   the hazard; it does not remove it.**
+
+---
+
+## Conflicts requiring a Coordinator ruling
+
+Recorded, not fixed. **In each case the required change lands in a file or a phase this plan does not
+own, and this plan may not edit `src/mkobi/**` or create findings.**
+
+| # | Conflict | File and anchor | What phase 13 did |
+| - | -------- | -------------- | ----------------- |
+| **X-13-R1** | **`DP-13-I`(a) requires a backend edit that `R-13-6` forbids and no phase owns.** The ruling says *align the client to the create rule **and add a server validator***. The server validator is `src/mkobi/`'s — on the `DashboardUpdate` path, which today enforces **no** name rule at all. This plan's own scope ruling (`R-13-6`, and `prohibitions` in the frontmatter) forbids editing a backend file from a client finding, and `C13-2` records that no phase owns the backend option. **Note the contrast with `DP-13-H`(a)**, which was chosen precisely so that *no* backend change is needed: the two rulings split cleanly, and only `DP-13-I` creates the orphan. | `src/mkobi/models/dashboard.py::DashboardUpdate` / the `update_dashboard` validator path · plan 13's `R-13-6` and `C13-2` | Recorded the ruling in `CT-2` and in the decision index; **performed the client half**; **named the server half in the commit body as required, unowned and blocked on a hand-over.** **No backend file was edited and no finding was created.** The Coordinator assigns the server half, or rules that the client's alignment alone discharges `DP-13-I`. |
+| **X-13-R2** | **Plan 11 must state the same cross-tier commit requirement this plan now carries.** `DP-13-B`(a) + phase 11's `DP-11-A` (ruled: atomic — one change spanning both tiers) make `CT-1` + `CT-3` one commit spanning `src/mkobi` and `frontend/src`. The ruling file states it (*"hard requirement on phase 13's `CT-1` + `CT-3` as **one commit**"*), and this plan records it — **but this plan may not edit plan 11**, and a plan-11 implementor who reads only plan 11 could still stage the two tiers separately. | `.ai/plans/11-performance-remediation-execution.md` — `DP-11-A`, `PRF-4`, `R-11-4` | Recorded the requirement here in `CT-1`, `CT-3` and the execution-order table, and added `tests/test_openapi.py` to the merged commit's verification. **The corresponding edit to plan 11 is its owner's; the Coordinator should ensure it lands before either tier is scheduled.** |
+| **X-13-R3** | **`DP-13-B` and `DP-13-C` are recorded as answers to questions this plan's text conflates.** `CT-3`'s option table carries `DP-13-B` (*how the client asks*) and `DP-11-B`/`DP-13-C` (*what truncation means*) in one three-row table, so the ruling `(a)`-for-asking and `(b)`-for-signalling reads as though two rows had been chosen, and the combination — per-graph fetching **and** a server total rendered as "showing N of M" — appears in **no row of the table**. | plan 13 `CT-3`'s option table · `ADJUDICATED-2026-10-03-product-owner-rulings.md`, **Cluster 4** (this row's "Cluster E" was the superseded input register's label; the adjudicated file renumbers the clusters) | Kept every row and annotated which question each answers, and stated the produced combination explicitly above the table. **The table's shape was not restructured.** If the Coordinator prefers two separate tables, that is a documentation change, not a ruling. |

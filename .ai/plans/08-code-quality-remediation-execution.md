@@ -27,6 +27,33 @@ status: planned
 
 # Phase 08 — Code quality remediation execution plan
 
+## Owner rulings applied — 2026-10-03
+
+One decision record in this file is now **answered**. The authoritative source is
+**`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md`** — the single authority, which merges
+the two input registers of 2026-10-03 and adjudicates every disagreement; **its option letters are not
+this file's option letters**, so the ruling below is recorded **by description**. This table is a pointer
+to it, not a substitute for it. **This plan consumes register cluster 1 (Authorization)** — the section
+`C12-2` / `D-08-4`.
+
+| ID | Answered by | Chooser | Blocks released |
+| -- | ----------- | ------- | --------------- |
+| **`D-08-4`** | **`DP-12-A`, ruled (a), and the `C12-2` collision resolution, in register cluster 1** — owner **or** administrator on all four write surfaces, **plus an explicit rule that an administrator who is neither owner nor grantee may still manage access**; `AZ-3` **must** correct — or explicitly account for — `require_dashboard_admin_access`'s asymmetry, which currently 403s such an administrator where `check_dashboard_access` grants access; and the **enforcement point is the shared dependency `api/deps.py::require_dashboard_admin_access`**, with the **create path in scope** | **Product Owner (2026-10-03)** | **`CQLT-2` entirely** — both halves, audience and enforcement point |
+
+**The two-owner collision is resolved in favour of plan 12.** Plan 12 **installs** (`AZ-3`); plan 08's
+`CQLT-2` is the **co-signature, not a second install**. The register settles this in favour of the
+shared dependency for three stated reasons: it names one enforcement point, it settles the two-owner
+collision, and **a shared dependency is the only option a new call site cannot bypass**.
+
+**Release note, and it is part of the ruling.** **200 → 403 on three documented endpoints.**
+Wrongly-created `dashboard_access` rows **and filter bindings persist and require operator
+reconciliation** — the fix rewrites no stored row.
+
+**`D-08-1`, `D-08-2`, `D-08-3`, `D-08-5`,
+`D-08-6`, `D-08-7`, `D-08-8`, `D-08-9`, `D-08-10` and `D-08-11` are **untouched**, with their named
+choosers unchanged** — cluster 10 of the adjudicated register lists them as Planner or Coordinator
+technical authority and explicitly not owner business decisions.
+
 ## Purpose
 
 This plan decomposes the phase-08 code-quality findings into dependency-safe execution blocks. It fixes
@@ -34,6 +61,14 @@ This plan decomposes the phase-08 code-quality findings into dependency-safe exe
 technical uncertainty exists: `D-08-1` … `D-08-9` are carried verbatim from the code context's §6 — which
 states "leave open — I pick none" — and `D-08-10`, `D-08-11` are raised here because two forks appear where
 the code context's list is silent.
+
+**One of them is answered, and not by this plan.** `D-08-4` is **answered by the adjudicated Product
+Owner register's cluster 1** — `DP-12-A` for the audience, and the `C12-2` resolution for the
+**enforcement point**, which is the shared dependency `api/deps.py::require_dashboard_admin_access`
+with the create path in scope; see **Owner rulings applied** above and
+`.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md`, the single authority. It is recorded
+here as answered-by, **not re-ruled**, and the collision it settles resolves in favour of plan 12:
+**plan 12 installs (`AZ-3`), `CQLT-2` co-signs.** The other ten records are unchanged.
 
 Every block names a **semantic** target (symbol · module · function · class · config key · file), the
 `QLT-*` and `VAL-08-*` identifiers it discharges, its `blocked_by`, its place in the single-implementor
@@ -181,7 +216,7 @@ Every item this phase does not own is named here. An item absent from this table
 | ---- | ---- | ------------------- |
 | **`QLT-003`'s gate-wiring half** — `Makefile.ps1::Invoke-Check`'s first-failure-wins aggregation and the missing `Invoke-Test` invocation | **phase 09 `TST-002`**, per `VAL-08-007` | The report's *own* merge ruling says phase 09 owns the remediation of the entry-point half. Phase 08 records it, does not schedule it. **The ordering constraint `VAL-08-007` adds — "clear the diagnostics before rewiring, or the gate is introduced red" — is already satisfied by history** (`8953bf7`), so it is a *note* to phase 09, not a phase-08 blocker. See `D-08-1`. |
 | **`QLT-003`'s "no automated path" half** — the absence of `.github`, `.pre-commit-config.yaml`, `.gitlab-ci.yml`, `azure-pipelines.yml`, `.circleci` | **phase 09** (`TST-002`) | Phase 08 records the `Test-Path` inventory and does not create a CI file. Creating automation is a deployment-topology decision with named owners this phase does not have. |
-| **`QLT-002`'s rule decision** — whether owner-or-admin is the *correct* audience, and what a refusal discloses | **phase 12** | Phase 08 owns the declaration-versus-enforcement contradiction and the *enforcement point*; phase 12 owns the rule. The report's ownership ruling is upheld verbatim. `D-08-4` must be ruled with phase 12 informed, and no block in this plan may restate what the correct audience is. |
+| **`QLT-002`'s rule decision** — whether owner-or-admin is the *correct* audience, and what a refusal discloses | **phase 12** | Phase 08 owns the declaration-versus-enforcement contradiction and **co-signs** the *enforcement point*, now ruled as the shared dependency `api/deps.py::require_dashboard_admin_access`; phase 12 **owns the rule and installs `AZ-3`**. The report's ownership ruling is upheld verbatim, and the 2026-10-03 ruling resolved the two-prospective-owner collision in favour of plan 12. No block in this plan may restate what the correct audience is. |
 | **The `httpx` tier mismatch** | **phase 07 `EB-6`** (gate) → **phase 01** (manifest, `HO-7`) | Confirmed in the code today: `httpx` has **0** imports in `src/` and is imported by `tests/conftest.py` (as `ASGITransport`) and `tests/test_temp_password_retrieval.py`. Phase 07 declined the manifest residue. **No block in this plan edits `pyproject.toml`'s `[project].dependencies`.** |
 | **The `pyproject.toml` dependency residue** — `requests`, `pyjwt` alongside `python-jose`, `asgiref` in a Django-free stack | **phase 01** via phase 07's **`HO-7`** | Confirmed as manifest residue with zero `src/` imports. Whether phase 08's toolchain block widens to cover it is **`D-08-6`** — and widening collides with phase 07's hand-over. |
 | **`models/types.py::ProcessingSettingsModel`** | **phase 05 `DP-014`** | Confirmed: exactly **1** occurrence repo-wide, its own declaration. Phase 05 names it as an artefact for its own ruling. **Phase 08 has no target.** Under the dead-code policy the recommendation there is to establish intent, not delete. |
@@ -209,7 +244,7 @@ Every item this phase does not own is named here. An item absent from this table
 | **X-08-07** | `QLT-009`'s label | LOW: "two exported StrEnum families referenced by nothing" — the rubric clause is "an unreferenced definition **nobody has explained**" | `docs/SPEC.md`'s decision row and `docs/09-database/enums.md`'s two rows **both** state the intended use | **Code context wins, and the label changes.** Documented intent with no implementation is **future-proofing / a missing integration**, not dead code. `VAL-08-006`'s collapse holds: implement the declared validation, or amend two documents. **Deletion is off the table.** See `D-08-3`. |
 | **X-08-08** | `VAL-08-001` — the coverage floor | The input discharged it as *live*; the validation rated the discharge CRITICAL wrong | Substantiated **with a nuance the report does not have**: the floor is **live on `test-all`** and **inert on `test`** — `Makefile.ps1::Invoke-TestAll` passes `--cov=src/mkobi`, `addopts` does not | **Both agree the discharge is refuted; the defect is per-entry-point, not universal.** Any block claiming "the coverage floor is dead" is half-wrong. `CQLT-10` records the nuance and hands the remedy to phase 09 (`TST-003`). |
 | **X-08-09** | `VAL-08-002` / `VAL-08-003` — two re-grades | `QLT-004` MEDIUM, `QLT-001` CRITICAL | `QLT-004` **HIGH** (the rubric assigns "schema drift no gate would notice" verbatim); `QLT-001` **HIGH** (the native PostgreSQL enum refutes the storage anchor) | **Code context wins; the report already applied both re-grades.** This plan schedules on the post-re-grade bands: **HIGH 4 · MEDIUM 4 · LOW 2, CRITICAL 0.** |
-| **X-08-10** | `VAL-08-005` — the "only caller" premise | "It is the only caller of `AccessRepository.grant_access`" | **Two** production callers: `DashboardService.grant_access` and `DashboardService.create_dashboard`'s owner-grant | **Report's premise is refuted; the conclusion survives.** `CQLT-2`'s check must cover the create path or name it as a deliberate exemption. `D-08-4`. |
+| **X-08-10** | `VAL-08-005` — the "only caller" premise | "It is the only caller of `AccessRepository.grant_access`" | **Two** production callers: `DashboardService.grant_access` and `DashboardService.create_dashboard`'s owner-grant | **Report's premise is refuted; the conclusion survives.** The 2026-10-03 ruling puts the **create path in scope** for the check, as a co-signature and not a deliberate exemption. `D-08-4`. |
 
 ### VERIFICATION FINDING — the report's `VAL-08-*` records
 
@@ -223,7 +258,7 @@ rulings inside this plan, following phase 04's `VAL-04-001` precedent (an audit 
 | **`VAL-08-002`** | HIGH | `QLT-004` banded MEDIUM where the rubric assigns HIGH verbatim | **Substantiated; documentation-only.** The report already re-graded. `CQLT-6` is scheduled as a HIGH-band block and is **not** sequenced behind `CQLT-7`'s deletions. |
 | **`VAL-08-003`** | MEDIUM | `QLT-001`'s CRITICAL band rests on a storage claim the schema refutes | **Substantiated; documentation-only, and already applied.** The native enum column is why `CQLT-1` is a **typing and write-path** change rather than a data-integrity repair — no stored row is rewritten and no migration is involved. |
 | **`VAL-08-004`** | MEDIUM | `QLT-010`'s second claim is refuted by the framework, and its recommendation's second half would change nothing | **Substantiated and understated: twelve declarations, not two.** `CQLT-8` records that `APIRouter`-level `redirect_slashes` cannot reach the behaviour and that `app.py::create_app`'s `FastAPI(...)` constructor is the only decision site. `D-08-7` decides whether this plan touches the twelve at all. |
-| **`VAL-08-005`** | MEDIUM | `QLT-002`'s recommendation selects its enforcement site on a false premise | **Substantiated; premise refuted, conclusion intact.** Two production callers exist. `CQLT-2` must cover the create path or name it as a deliberate exemption. `D-08-4`. |
+| **`VAL-08-005`** | MEDIUM | `QLT-002`'s recommendation selects its enforcement site on a false premise | **Substantiated; premise refuted, conclusion intact.** Two production callers exist. `CQLT-2` covers the create path — as the ruling requires, in scope and not exempt. `D-08-4`. |
 | **`VAL-08-006`** | MEDIUM | `QLT-009` asserts two families nobody has explained; the specification explains both | **Substantiated.** `CQLT-9` is scoped to *implement the declared validation* or *amend two documents*. **"Delete the enums" is not an option** — they are documented as intended, which makes them future-proofing under the project's dead-code policy. `D-08-3`. |
 | **`VAL-08-007`** | MEDIUM | `QLT-003` and `TST-002` claim one concern with no merge ruling on either side | **Substantiated; the ordering constraint it adds is already satisfied.** `VAL-08-007`'s merge ruling is **upheld**: phase 09 owns the entry-point remediation, phase 08 records. `CQLT-10` carries the residue. `D-08-1`. |
 | **`VAL-08-008`** | MEDIUM | `QLT-001`'s evidence records a storage-rejected value as "accepted", and the 200/500 divergence reaches no finding | **Substantiated; both paths still live in code.** Folded into `CQLT-1` as a third element — same boundary, same root cause, no new identifier. The binding correction: **the 200 is the no-op branch, not acceptance.** |
@@ -249,7 +284,7 @@ flowchart TD
     D08_1{{"D-08-1 · QLT-003 target"}}
     D08_2{{"D-08-2 · deps.py annotation form"}}
     D08_3{{"D-08-3 · layout validation or amend docs"}}
-    D08_4{{"D-08-4 · grant enforcement point"}}
+    D08_4["D-08-4 · grant enforcement point — RULED, Product Owner 2026-10-03 (cluster 1)"]
     D08_5{{"D-08-5 · write path then typing, or together"}}
     D08_6{{"D-08-6 · widen QLT-005 to the manifest residue"}}
     D08_7{{"D-08-7 · tags only, or the twelve flags too"}}
@@ -307,7 +342,8 @@ flowchart TD
 sequencing in the single-implementor queue, **not** a data dependency — the project permits one
 implementor at a time, so these are ordered for review coherence, and a diff touching one file is
 ordered against the other block that touches the same file. `D-*` diamonds are owner rulings, not
-phase-08 work.
+phase-08 work. **`D-08-4` is drawn as a rectangle because it is decided** — both halves answered by the
+Product Owner on 2026-10-03 (register cluster 1) — while every undecided record keeps its diamond.
 
 ### Coverage ledger
 
@@ -315,7 +351,7 @@ phase-08 work.
 | ----- | -------------------- | -------------------- | ------ |
 | **CQLT-0** | every `VAL-08-*` as a ruling · both dead paths · both corrected censuses · `VAL-08-001`'s nuance | — | **Planner** (owns the note) · **Auditor** (confirms the registers at `cea2d06`) |
 | **CQLT-1** | **QLT-001** · `VAL-08-008` (folded) · `VAL-08-003` (applied) | `D-08-5`, `D-08-9` | **Auditor, Researcher, Planner, Validator — all four** |
-| **CQLT-2** | **QLT-002** · `VAL-08-005` (applied) | `D-08-4`, `D-08-9` | **Auditor, Researcher, Planner, Validator — all four** |
+| **CQLT-2** | **QLT-002** · `VAL-08-005` (applied) | `D-08-4` (**both halves ruled** by the Product Owner on 2026-10-03, register cluster 1 — audience via `DP-12-A`, enforcement point via the `C12-2` resolution; `CQLT-2` is the **co-signature** of plan 12's `AZ-3` install, not a second install), `D-08-9` | **Auditor, Researcher, Planner, Validator — all four** |
 | **CQLT-3** | **QLT-008** | — | **Auditor, Researcher, Planner, Validator — all four** |
 | **CQLT-4** | **QLT-006** | `D-08-2` | **Auditor, Planner, Validator** |
 | **CQLT-5** | **QLT-007** | `D-08-11` | **Auditor, Planner, Validator** |
@@ -416,22 +452,25 @@ which is exactly what `R-11` warns against.
 | ----- | ----- |
 | **Semantic target** | `api/routes/dashboards_access.py` — the module docstring ("All operations require admin role."), all three handlers (`grant_dashboard_access_endpoint`, `get_dashboard_access_endpoint`, `revoke_dashboard_access_endpoint`), the `current_user` parameter on each, and the three OpenAPI `description` strings · `api/deps.py::require_dashboard_admin_access` (the shared dependency that already exists) · `services/dashboard_service.py::DashboardService.grant_access` and `::DashboardService.create_dashboard` (the alternative enforcement site and the second caller the report says does not exist) · `core/permissions.py::check_dashboard_access` (read-only: phase 12's decision surface) |
 | **Discharges** | **`QLT-002`** · `VAL-08-005` applied (two callers, not one) · the report's Block-6 ownership ruling upheld verbatim: **phase 08 owns the declaration-versus-enforcement contradiction; phase 12 owns the rule and the refusal shape.** |
-| **blocked_by** | **`D-08-4`** (hard — enforcement point) and **`D-08-9`** (hard — ordering against `CQLT-1`). Soft: `CQLT-0`. Cross-phase: **`C08-2`** (phase 12 must be informed before the rule is fixed). |
+| **blocked_by** | **`D-08-4`** (**released** — both halves ruled by the Product Owner on 2026-10-03, register cluster 1: the audience via `DP-12-A`, and the **enforcement point** as the shared dependency `api/deps.py::require_dashboard_admin_access` with the **create path in scope**; `CQLT-2` is the **co-signature** of plan 12's `AZ-3` install, not a second install) and **`D-08-9`** (hard — ordering against `CQLT-1`). Soft: `CQLT-0`. Cross-phase: **`C08-2`** (plan 12 installs `AZ-3`; this block co-signs and must not fork the rule). |
 | **Execution order** | **3**, immediately after `CQLT-1` — `R11` makes these two blocks a **merge point** in one file, and `D-08-9` decides which lands first. |
-| **Risk — implementation** | **HIGH, and inverted: the correct fix looks like a scope expansion.** The three declarations say *admin role* (module docstring, GET and DELETE descriptions) and *dashboard owner* (the grant description and its docstring). **Those are two different rules and the repository documents both.** `docs/SPEC.md` states the **admin bypass for dashboards** as a design decision, and `docs/08-security/access-control.md` is the named enforcement model. An implementor who reads only the route will encode the wrong rule; one who reads the spec and concludes "admins only" will contradict the grant description. **Phase 08 owns making the enforcement point; it does not own choosing the audience** — that is phase 12's. `D-08-4` must therefore be ruled *with phase 12*, and the commit body must name what the code now enforces and which document states it. |
-| **Risk — rollout** | **HIGH and the only genuinely user-visible change in the plan.** Any authenticated account of any role currently can insert an `admin` grant for itself on any dashboard, and it is immediately effective on every read path that consults `check_dashboard_access`. The fix turns **200 into 403** for every caller that is neither owner nor administrator — and it now covers **one call site more than phase 08 originally assumed**, because `DashboardService.create_dashboard` also calls `grant_access`. **Treat any such caller as a defect to fix, not a client to accommodate.** No stored row is rewritten by the fix; grants that were wrongly created persist and must be reconciled by an operator. |
+| **Risk — implementation** | **HIGH, and inverted: the correct fix looks like a scope expansion.** The three declarations say *admin role* (module docstring, GET and DELETE descriptions) and *dashboard owner* (the grant description and its docstring). **Those are two different rules and the repository documents both.** `docs/SPEC.md` states the **admin bypass for dashboards** as a design decision, and `docs/08-security/access-control.md` is the named enforcement model. An implementor who reads only the route will encode the wrong rule; one who reads the spec and concludes "admins only" will contradict the grant description. **Phase 08 co-signs the enforcement point; it does not own choosing the audience** — that is phase 12's, and the commit body must name what the code now enforces and which document states it. **The enforcement point is now fixed**: `api/deps.py::require_dashboard_admin_access`, the shared dependency — chosen by the ruling because it names one point, settles the two-owner collision, and is the only option a new call site cannot bypass. |
+| **Risk — rollout** | **HIGH and the only genuinely user-visible change in the plan.** Any authenticated account of any role currently can insert an `admin` grant for itself on any dashboard, and it is immediately effective on every read path that consults `check_dashboard_access`. The fix turns **200 into 403** for every caller that is neither owner nor administrator — and the create path is **in scope for the check**, because `DashboardService.create_dashboard` also calls `grant_access`. **Treat any such caller as a defect to fix, not a client to accommodate.** **The fix rewrites no stored row: wrongly-created `dashboard_access` rows and filter bindings persist and require operator reconciliation.** |
 | **Risk — regression** | **MEDIUM, and the asymmetry is the point.** **Zero route-level tests exist for any of the three endpoints** — nothing pins current behaviour, and nothing currently enforces the declared rule either. `tests/test_resource_access_control.py` covers dashboard **CRUD** access (update, delete, owner, list) and **must stay green unmodified**: it is the only shipped proof that the admin bypass still works after this change. A new route-level test module for the three endpoints is the block's deliverable, and its most important case is the negative one: **a `viewer` token's grant must return 403 and `dashboard_access` must gain no row.** |
-| **Risk — compatibility** | **HIGH.** 200 → 403 is a wire-visible change on three documented endpoints, in both directions of the published contract (the `description` strings are part of the OpenAPI document and are currently narrower than the audience the path admits — which is the finding). The report's own conclusion: **any working client flow relying on the unenforced rule is a defect, not a client to accommodate.** |
-| **Agents** | **Auditor, Researcher, Planner, Validator — all four.** **Auditor:** the complete inventory of callers and consumers of the three endpoints — `frontend/src/**` (which access-management surfaces exist and which roles the SPA can present), `tests/`, `docs/`, and the `docs/SPEC.md` admin-bypass row — plus a re-read of the three handler bodies to confirm `current_user` is referenced in **none** of them. **Researcher** (narrow): FastAPI `Depends` ordering against path/body parameters and a body-model validator, when the dependency must see a value the body also carries — i.e. whether an access dependency can be attached to `grant_dashboard_access_endpoint` without the body being parsed first, and what a `Security`-scoped dependency does differently. **Planner:** the enforcement point and the create-path handling under `D-08-4`, the exact reconciliation of the **three declarations** (two say admin, one says owner) against the ruled rule, and the `current_user` removal-or-use decision for all three handlers. **Validator:** that the enforced rule matches the documentation **in the same commit**, that a non-owner/non-admin caller gets 403 with **no** row written, that an administrator still succeeds, that the owner still succeeds, and that `TestResourceAccessControl*` stayed green unmodified. |
+| **Risk — compatibility** | **HIGH.** 200 → 403 is a wire-visible change on **three documented endpoints**, in both directions of the published contract (the `description` strings are part of the OpenAPI document and are currently narrower than the audience the path admits — which is the finding). The report's own conclusion: **any working client flow relying on the unenforced rule is a defect, not a client to accommodate.** |
+| **Agents** | **Auditor, Researcher, Planner, Validator — all four.** **Auditor:** the complete inventory of callers and consumers of the three endpoints — `frontend/src/**` (which access-management surfaces exist and which roles the SPA can present), `tests/`, `docs/`, and the `docs/SPEC.md` admin-bypass row — plus a re-read of the three handler bodies to confirm `current_user` is referenced in **none** of them. **Researcher** (narrow): FastAPI `Depends` ordering against path/body parameters and a body-model validator, when the dependency must see a value the body also carries — i.e. whether an access dependency can be attached to `grant_dashboard_access_endpoint` without the body being parsed first, and what a `Security`-scoped dependency does differently. **Planner:** the enforcement point — **now fixed by the ruling at `api/deps.py::require_dashboard_admin_access`** — the create-path handling (**in scope for the check**, a co-signature of `DashboardService.create_dashboard`'s owner-grant, not an exemption), the exact reconciliation of the **three declarations** (two say admin, one says owner) against the ruled rule, and the `current_user` removal-or-use decision for all three handlers. **Validator:** that the enforced rule matches the documentation **in the same commit**, that a non-owner/non-admin caller gets 403 with **no** row written, that an administrator still succeeds, that the owner still succeeds, and that `TestResourceAccessControl*` stayed green unmodified. |
 | **Documentation impact** | **Required and inseparable from the code.** `api/routes/dashboards_access.py`'s module docstring and all three `description` strings must be reconciled with what the code enforces — a route whose prose and behaviour disagree is the defect, so a fix that changes behaviour without changing prose has only half-closed it. `docs/02-dashboards/dashboards-api.md` §"Dashboard Access Management" (grant/list/revoke) gains the **403** row and the corrected auth level. `docs/08-security/access-control.md` states the enforcement model and must agree. `docs/SPEC.md`'s **admin-bypass** decision row is read-only for this block — **the rule is phase 12's**; if the ruling contradicts it, that is `C08-2`, not an edit made here. `docs/SPEC.md` gains a version row. |
 | **Verification** | **New** `tests/test_dashboards_access_api.py` — these three endpoints have **no** test module: grant as **owner** → success; grant as **administrator** → success; grant as a non-owner non-admin → **403** and **`dashboard_access` gains no row** (**the acceptance criterion**); grant as a `viewer` on a dashboard they cannot see → **403**, not 404 (**`docs/SPEC.md`'s 403/404 dual-signal rule must survive this block**); list and revoke under the same three roles; the path/body `dashboard_id` mismatch case still returns **422**; an out-of-vocabulary `permission` still returns **422** (`CQLT-1`'s behaviour must not regress here) · `.\Makefile.ps1 test-select -k "TestResourceAccessControlUpdate" -v` · `.\Makefile.ps1 test-select -k "TestResourceAccessControlDelete" -v` · `.\Makefile.ps1 test-select -k "TestDashboardOwnerAccess" -v` · `.\Makefile.ps1 test-select -k "TestAccessControlListChecked" -v` — **all four must stay green unmodified; they are the only shipped proof the admin bypass survives** · `.\Makefile.ps1 test-select -k "TestDashboardServiceIntegration" -v` (**the create path** — `DashboardService.create_dashboard`'s owner-grant must still write) · `.\Makefile.ps1 test-select -k "TestAccessRepository" -v` · `.\Makefile.ps1 test-select -k "test_openapi" -v` · `uv run ruff check src/mkobi/api/routes/dashboards_access.py src/mkobi/api/deps.py` · `uv run mypy src/` — **precondition, not evidence.** |
-| **Definition of done** | `D-08-4` and `D-08-9` recorded with their options, and the commit body names **phase 12** as the owner of the rule and of the refusal shape · the enforced rule is stated in the commit body in one sentence, and **the same sentence appears in the module docstring, in the three `description` strings, and in `docs/02-dashboards/dashboards-api.md`** — one rule, one home, three surfaces reconciled in the same commit · a non-owner/non-admin caller receives **403** and `dashboard_access` gains **no** row, asserted by test · the `dashboard_id`-mismatch `422` and the out-of-vocabulary-permission `422` both survive · the **403/404 dual-signal** documented in `docs/SPEC.md` is unchanged and tested · `DashboardService.create_dashboard`'s owner-grant is either covered by the same rule or named as a **deliberate exemption with the reason stated** — `VAL-08-005`'s correction, in the commit body · all four `TestResourceAccessControl*` classes stayed green **unmodified** · the 200 → 403 change is in the release note, together with the statement that pre-existing grants are **not** rewritten. |
+| **Definition of done** | `D-08-4` and `D-08-9` recorded with their options, and the commit body names **plan 12** as the **installer** of `AZ-3` and this block as the **co-signature** · the enforcement point is the **shared dependency `api/deps.py::require_dashboard_admin_access`**, not a per-route or per-service check, and the commit body says so · the enforced rule is stated in the commit body in one sentence, and **the same sentence appears in the module docstring, in the three `description` strings, and in `docs/02-dashboards/dashboards-api.md`** — one rule, one home, three surfaces reconciled in the same commit · a non-owner/non-admin caller receives **403** and `dashboard_access` gains **no** row, asserted by test · the **administrator who is neither owner nor grantee** is covered by an **explicit rule**, and the `require_dashboard_admin_access` / `check_dashboard_access` asymmetry is corrected or explicitly accounted for — implementing the audience while leaving the asymmetry in place is option (c) wearing this option's name · the `dashboard_id`-mismatch `422` and the out-of-vocabulary-permission `422` both survive · the **403/404 dual-signal** documented in `docs/SPEC.md` is unchanged and tested · **`DashboardService.create_dashboard`'s owner-grant is covered by the same rule** — the create path is in scope for the check, per `VAL-08-005`'s correction and the ruling; it is **not** named an exemption · all four `TestResourceAccessControl*` classes stayed green **unmodified** · the release note states the **200 → 403 change on three documented endpoints**, and that **wrongly-created `dashboard_access` rows and filter bindings persist and require operator reconciliation because the fix rewrites no stored row**. |
 
 **What this block must not do.** It must not restate what the correct audience *is*. The report's Block-6
 ruling is explicit and this plan inherits it: **phase 12 owns whether owner-or-admin is correct and what
-a refusal discloses.** Phase 08 owns that a declared audience nothing enforces is a defect, and fixes it
-by making **some** declared audience executable. If `D-08-4` cannot be ruled without phase 12, the block
-**stops** rather than encoding a rule it has no authority to choose.
+a refusal discloses**, and on 2026-10-03 the Product Owner ruled it — **plan 12 installs `AZ-3`, and
+this block co-signs rather than installing a second copy.** Phase 08 owns that a declared audience
+nothing enforces is a defect, and fixes it by making **the ruled** audience executable at **the ruled**
+enforcement point. What this block must equally not do is fork the rule: a second enforcement site is
+the two-owner collision the ruling settled, and `D-08-4` no longer waits on anything, so there is no
+question left here to answer before the block stops.
 
 ---
 
@@ -631,11 +670,14 @@ depending on which module owns the route — is **refuted**, and `VAL-08-004`'s 
 
 ## Open decisions — owner rulings required
 
-**This plan chooses none of them.** `D-08-1` … `D-08-9` are carried verbatim from the code context §6, including
-its own instruction "leave open — I pick none"; each record below states **only** its options, its
-chooser, and what it gates. Options already priced inside a block are **not repeated** — they are
-pointed at. `D-08-10` and `D-08-11` are **raised by this Planner**, marked as such, following phase 04's
-`D-04-I` … `D-04-L` and phase 07's `DP-11`/`DP-12` precedent.
+**This plan chooses none of the ones still open, and has answered exactly one.** `D-08-1` … `D-08-9` are
+carried verbatim from the code context §6, including its own instruction "leave open — I pick none"; each
+record below states **only** its options, its chooser, and what it gates. Options already priced inside a
+block are **not repeated** — they are pointed at. `D-08-10` and `D-08-11` are **raised by this Planner**,
+marked as such, following phase 04's `D-04-I` … `D-04-L` and phase 07's `DP-11`/`DP-12` precedent.
+
+**`D-08-4` is RULED by the Product Owner (2026-10-03, adjudicated register cluster 1)** and is marked
+**ruled / answered-by**, not re-ruled — see its record below and **Owner rulings applied** above.
 
 **Decision numbering note.** The code context numbers these `D1` … `D9`; this plan writes them
 `D-08-1` … `D-08-9` — the **phase-qualified** form, because bare `D-1` … `D-7` are already taken by
@@ -647,7 +689,7 @@ the prefix stops a later author from reusing the bare token against a different 
 | **`D-08-1`** | `QLT-003`'s target: verification/register scope here, or whole hand-over to phase 09? | **Coordinator**, with **phase 09** as the owner of the merge | `CQLT-10` |
 | **`D-08-2`** | `QLT-006`: what does a `deps.py` repository factory get annotated with, and **what evidence substitutes for the checker**? | **Tech Lead** | `CQLT-4` |
 | **`D-08-3`** | `QLT-009`: implement the declared layout validation, or amend the two documents? | **Tech Lead**, with whoever owns layout semantics | `CQLT-9` |
-| **`D-08-4`** | `QLT-002`: which layer enforces the declared audience, and how is the create path handled? | **phase 12** owns the rule; **phase 08** owns the enforcement point | `CQLT-2` |
+| **`D-08-4`** | `QLT-002`: which layer enforces the declared audience, and how is the create path handled? | **RULED by the Product Owner, 2026-10-03** (adjudicated register cluster 1): audience via `DP-12-A`; **enforcement point** via the `C12-2` resolution — the shared dependency `api/deps.py::require_dashboard_admin_access`, **create path in scope**. **Phase 12 installs `AZ-3`; `CQLT-2` is the co-signature** | `CQLT-2` — **both halves ruled; the gate is released** |
 | **`D-08-5`** | `QLT-001`: do the write path and the typing land as two commits or one? | **Tech Lead** | `CQLT-1` |
 | **`D-08-6`** | `QLT-005`: widen to the manifest residue, or stay inside the declared toolchain? | **Tech Lead**, with **phase 01** informed | `CQLT-7` |
 | **`D-08-7`** | `QLT-010`: tags only, or also the twelve inert `redirect_slashes` declarations? | **Tech Lead**, with **phase 07** (`EB-4`/`DP-7`) informed | `CQLT-8` |
@@ -706,7 +748,11 @@ documents state the same intent; correcting one leaves the finding standing in t
 
 ### D-08-4 — `QLT-002`: which layer enforces the declared audience?
 
-**Gating:** `CQLT-2`. **Chooser:** **phase 12 owns the rule**, phase 08 owns the enforcement point.
+**Status: RULED — Product Owner, 2026-10-03 (adjudicated register cluster 1). Not re-ruled here.**
+**Gating:** `CQLT-2` — **released**. **Chooser:** **Product Owner**. The audience is answered by
+`DP-12-A`; the enforcement point and the ownership of the install are answered by the register's
+`C12-2` section. **Plan 12 installs `AZ-3`; phase 08's `CQLT-2` co-signs it and does not install a
+second copy.**
 
 Three declarations disagree with each other — the module docstring says *admin role*, the GET and
 DELETE descriptions say *admin*, the grant description and its docstring say *dashboard owner* — and
@@ -714,8 +760,31 @@ DELETE descriptions say *admin*, the grant description and its docstring say *da
 `docs/08-security/access-control.md`. The report's Block-6 ruling is upheld: phase 12 owns whether
 owner-or-admin is correct and what a refusal discloses; phase 08 owns that a declared audience
 nothing enforces is a defect. `VAL-08-005` applies — the repository has **two** production callers
-(`DashboardService.grant_access` and `::create_dashboard`'s owner-grant), not one, and the ruling must
-say which is covered and which is a deliberate exemption.
+(`DashboardService.grant_access` and `::create_dashboard`'s owner-grant), not one.
+
+**The ruling, in words, because the register's letters are not this record's letters.**
+
+1. **The audience** (`DP-12-A`): owner **or** administrator on all four write surfaces, **plus an
+   explicit rule that an administrator who is neither owner nor grantee may still manage access.**
+   `AZ-3` **must correct — or explicitly account for — `require_dashboard_admin_access`'s asymmetry**,
+   which currently 403s such an administrator where `check_dashboard_access` grants access.
+   **Not negotiable:** implementing the audience while leaving the asymmetry in place is option (c)
+   wearing this option's name.
+2. **The enforcement point** (`C12-2`): **the shared dependency `api/deps.py::require_dashboard_admin_access`.**
+   The register names three reasons: it names **one** point; it settles the two-prospective-owner
+   collision; and **a shared dependency is the only option a new call site cannot bypass.**
+3. **The create path is in scope** for the check. `DashboardService.create_dashboard`'s owner-grant is
+   **covered — a co-signature, not an exemption.**
+4. **Ownership**: the collision resolves **in favour of plan 12** — plan 12 installs `AZ-3`, plan 08
+   **co-signs**.
+
+**Release note, and it is part of the ruling, not of the block's discretion.** **200 → 403 on three
+documented endpoints. Wrongly-created `dashboard_access` rows and filter bindings persist and require
+operator reconciliation — the fix rewrites no stored row.**
+
+**What `D-08-4` no longer waits on.** Nothing. Both halves are answered, so `CQLT-2`'s decision gate is
+**released**; only `D-08-9`'s ordering against `CQLT-1` remains a gate, and that is a commit-shape
+question about one file, not this record. **A plan may not re-open this record.**
 
 ### D-08-5 — `QLT-001`: two commits, or one?
 
@@ -828,7 +897,7 @@ report raised and items other phases already own.
 | - | ---- | ---------------- | ---- | --------------------------- |
 | **O-01** | **`QLT-003`'s gate-wiring half** — `Makefile.ps1::Invoke-Check`'s first-failure-wins aggregation, the missing `Invoke-Test` invocation, the "runs everything" wording | `VAL-08-007`'s merge ruling says the remediation is phase 09's; the report's own Baseline-Dependencies lists `TST-002` as the merge | **phase 09 `TST-002`** | Record the merge ruling; record that `VAL-08-007`'s ordering constraint is **already satisfied** by `8953bf7` |
 | **O-02** | **`QLT-003`'s automation half** — the absence of `.github`, `.pre-commit-config.yaml`, `.gitlab-ci.yml`, `azure-pipelines.yml`, `.circleci` | Creating automation is a deployment-topology decision with owners this phase does not have | **phase 09 `TST-002`** | Record the `Test-Path` inventory in `CQLT-0` |
-| **O-03** | **`QLT-002`'s rule decision** — whether owner-or-admin is correct; what a refusal discloses | The report's Block-6 ruling assigns the rule to phase 12 verbatim | **phase 12** (`C08-2`) | Own the declaration-versus-enforcement contradiction and the enforcement point; refuse to restate what the correct audience is |
+| **O-03** | **`QLT-002`'s rule decision** — whether owner-or-admin is correct; what a refusal discloses | The report's Block-6 ruling assigns the rule to phase 12 verbatim | **phase 12** (`C08-2`) | Own the declaration-versus-enforcement contradiction; co-sign the ruled enforcement point; refuse to restate what the correct audience is |
 | **O-04** | **The `httpx` tier mismatch** — a test-tier contract declared as a runtime dependency, with **0** imports in `src/` | Phase 07 named it and declined the manifest residue; `pyproject.toml`'s `[project].dependencies` is not this phase's file | **phase 07 `EB-6`** (gate) → **phase 01** (`HO-7`, manifest) | Confirm the classification in `CQLT-0`; edit `[project].dependencies` **only** under `D-08-6`(b) |
 | **O-05** | **The manifest residue** — `requests`, `pyjwt` alongside `python-jose`, `asgiref` in a Django-free stack, `plotly`, `tenacity`, all with zero `src/` imports | Phase 07's `HO-7` already handed the manifest to phase 01 | **phase 01** | Widen `CQLT-7` **only** under `D-08-6`, and discharge `C08-6` in that commit |
 | **O-06** | **`models/types.py::ProcessingSettingsModel`** — a TypedDict referenced once, by its own declaration | Phase 05 named it as an artefact for its own ruling; a different class in a different module with a different disposition | **phase 05 `DP-014`** | State in `CQLT-9`'s definition of done that this block does **not** edit it (`C08-8`) |
@@ -861,8 +930,8 @@ phase 08's files, and **defers** to phase 05's `D-05-*` residue where phase 08's
 
 | # | Seam | Symbols | Phase 08's half | Owner | What phase 08 owes | What phase 08 must not do |
 | - | ---- | ------- | --------------- | ----- | -------------------- | -------------------------- |
-| **C08-1** | **`api/deps.py` is a shared file** (`QLT-006`, and `QLT-002`'s candidate shared dependency) | `api/deps.py`'s ten `-> Any` repository factories · `::require_dashboard_admin_access` · `::get_current_user_dependency` · the `-> Any` on `get_dashboard_permissions`'s `access_repo` | **The ten factories' annotations** (`CQLT-4`); **nothing** in the dependency chain | **phase 04** — `AB-5`, `AB-6`, `AB-7` touch `get_current_user_dependency` · **phase 07** `EB-3`/`EB-6` read the same module | Name phase 04 as a co-owner in `CQLT-4`'s commit body; state that `require_dashboard_admin_access` is the **candidate** site `D-08-4` weighs, not a chosen one; record the two out-of-finding `-> Any` sites as `O-12` | Do **not** edit `get_current_user_dependency`, the revocation reads, or the Redis dependency. Do **not** edit `pyproject.toml`'s `[[tool.mypy.overrides]]` — phase 09 owns the shadowed `tests.*` block (`O-11`, `D-08-8`) |
-| **C08-2** | **The grant audience is a rule, not an implementation detail** (`QLT-002`) | `api/routes/dashboards_access.py`'s three handlers · `core/permissions.py::check_dashboard_access` (read-only) · `docs/SPEC.md`'s admin-bypass row · `docs/08-security/access-control.md` | **The enforcement point** (`CQLT-2`) | **phase 12** — the rule and the refusal shape | Inherit the report's Block-6 ruling verbatim; make `phase 12` the **co-signer of `D-08-4`**; state that this plan **does not** restate what the correct audience is; record `VAL-08-005`'s correction (two production callers, not one) | Do **not** decide the audience. Do **not** edit the admin-bypass decision row. Do **not** treat `check_dashboard_access` as phase 08's file |
+| **C08-1** | **`api/deps.py` is a shared file** (`QLT-006`, and `QLT-002`'s candidate shared dependency) | `api/deps.py`'s ten `-> Any` repository factories · `::require_dashboard_admin_access` · `::get_current_user_dependency` · the `-> Any` on `get_dashboard_permissions`'s `access_repo` | **The ten factories' annotations** (`CQLT-4`); **nothing** in the dependency chain | **phase 04** — `AB-5`, `AB-6`, `AB-7` touch `get_current_user_dependency` · **phase 07** `EB-3`/`EB-6` read the same module | Name phase 04 as a co-owner in `CQLT-4`'s commit body; state that `require_dashboard_admin_access` is the **ruled** enforcement site `D-08-4` names, not a candidate; record the two out-of-finding `-> Any` sites as `O-12` | Do **not** edit `get_current_user_dependency`, the revocation reads, or the Redis dependency. Do **not** edit `pyproject.toml`'s `[[tool.mypy.overrides]]` — phase 09 owns the shadowed `tests.*` block (`O-11`, `D-08-8`) |
+| **C08-2** | **The grant audience is a rule, not an implementation detail** (`QLT-002`) | `api/routes/dashboards_access.py`'s three handlers · `core/permissions.py::check_dashboard_access` (read-only) · `docs/SPEC.md`'s admin-bypass row · `docs/08-security/access-control.md` | **The co-signature of the enforcement point** (`CQLT-2`) | **phase 12 installs `AZ-3`; phase 08 co-signs** — the collision resolves in favour of plan 12 | Inherit the report's Block-6 ruling verbatim; make **phase 12 the installer** of the enforcement change; state that this plan **does not** restate what the correct audience is; record `VAL-08-005`'s correction (two production callers, not one, and the create path is in scope) | Do **not** decide the audience. Do **not** edit the admin-bypass decision row. Do **not** treat `check_dashboard_access` as phase 08's file. Do **not** install a second enforcement point — `api/deps.py::require_dashboard_admin_access` is the ruled single site |
 | **C08-3** | **`barmode` has two owners** (`QLT-007`) | `frontend/src/features/dashboards/ui/charts/ChartRenderer.tsx` · `src/mkobi/models/enums.py::BarmodeEnum` · `models/data.py`'s `barmode` | **The client literal union** (`CQLT-5`) | **phase 16** — the presentation contract | State in `CQLT-5`'s commit body that narrowing a type is not a presentation ruling; list which families are deliberately not mirrored | Do **not** edit `docs/16-chart-presentation-contract/` |
 | **C08-4** | **Schema drift has a question and now a gate** (`QLT-004`) | `Makefile.ps1` (new target) · `alembic/env.py` (read-only) · `db/starter.py` (option (c) only) · `docs/14-schema-migrations/*` | **The gate** (`CQLT-6`) | **phase 14** — the drift question | State in `CQLT-6`'s commit body that the block gives the question something that would notice it and does not answer it | Do **not** widen the `alembic/` directory; do **not** answer the drift question |
 | **C08-5** | **`db/starter.py` is under active remediation** (`QLT-004` option (c)) | `db/starter.py::DatabaseStarter.startup` and `::DatabaseStarter._apply_migrations` | **Nothing, unless `D-08-10`(c) is ruled** (`CQLT-6`) | **phase 03 `B10`** and the phase 03/04 remediation series | Make the sequencing constraint explicit in `CQLT-6`'s `blocked_by`; require a re-read for concurrent modification immediately before any edit | Do **not** edit `db/starter.py` while that series is in flight; do **not** edit `tests/test_starter.py` |
@@ -871,7 +940,7 @@ phase 08's files, and **defers** to phase 05's `D-05-*` residue where phase 08's
 | **C08-8** | **Two "unused constant" findings, two phases, two symbols** (`QLT-009`) | `models/enums.py::ButtonVariant` / `::ComponentSize` (**phase 08**) · `models/types.py::ProcessingSettingsModel` (**phase 05**) | **The two documented enums only** (`CQLT-9`) | **phase 05** — `DP-014` owns `ProcessingSettingsModel` | State in `CQLT-9`'s definition of done that this block does **not** edit `models/types.py`; apply the dead-code policy to **both** symbols the same way — documented intent means *investigate purpose*, never delete | Do **not** edit `models/types.py`. Do **not** offer deletion for either symbol |
 | **C08-9** | **The rules file is shared infrastructure** (`C06-15`) | `AGENTS.md` §5 step 2 (**phase 08**) · `AGENTS.md` §3's language paragraph (**recorded, not acted on**) · the broken `.ai/structure/map.md` link (**worktree state**) | **§5 step 2 only** (`CQLT-11`) | **phase 12** — the rules-file question; **phase 06** `C06-13` and **phase 04** `C04-11` | Record the §3 language observation and act on nothing; record that the `map.md` link is worktree state, not a contract defect | Do **not** normalise `AGENTS.md`'s language. Do **not** touch the `map.md` link |
 | **C08-10** | **The aggregate gate is phase 09's** (`QLT-003`, and `D-08-10` option (b)) | `Makefile.ps1::Invoke-Check` · `::Invoke-Lint` · `::Invoke-Typecheck` | **Nothing in the script**; `CQLT-6` may add **membership** only (`CQLT-10` edits no script) | **phase 09 `TST-002`** | Carry `VAL-08-007`'s merge ruling forward and its **already-satisfied** ordering constraint | Do **not** rewire `Invoke-Check`. Do **not** widen `ruff`/`mypy`'s paths — `alembic/env.py` stays in both, and `alembic/` stays unwidened |
-| **C08-11** | **`AccessRepository.grant_access` has two callers** (`QLT-001`, `QLT-002`) | `services/dashboard_service.py::DashboardService.grant_access` · `::DashboardService.create_dashboard`'s owner-grant · `interfaces/repository_interfaces.py::IAccessRepository` | **Both call sites** (`CQLT-1`); the create path's enforcement under `D-08-4` (`CQLT-2`) | **phase 08**, co-owned between `CQLT-1` and `CQLT-2` | Record `VAL-08-005`'s correction in both commit bodies; state which path `D-08-4` covers and which is a deliberate exemption | Do **not** assume one caller. Do **not** change `IAccessRepository`'s contract so that it stops describing what the implementation returns |
+| **C08-11** | **`AccessRepository.grant_access` has two callers** (`QLT-001`, `QLT-002`) | `services/dashboard_service.py::DashboardService.grant_access` · `::DashboardService.create_dashboard`'s owner-grant · `interfaces/repository_interfaces.py::IAccessRepository` | **Both call sites** (`CQLT-1`); the create path's enforcement under `D-08-4` (`CQLT-2`) | **phase 08**, co-owned between `CQLT-1` and `CQLT-2` | Record `VAL-08-005`'s correction in both commit bodies; state that `D-08-4`'s ruling puts the **create path in scope** as a co-signature, not an exemption | Do **not** assume one caller. Do **not** change `IAccessRepository`'s contract so that it stops describing what the implementation returns |
 
 **Reconciliation with phase 07's `HO-*` register — what phase 08 inherits and does not reopen.**
 
@@ -905,7 +974,7 @@ Every `QLT-*` and `VAL-08-*` identifier in the report, and where this plan accou
 | ID | Disposition in this plan | Block / home |
 | -- | ------------------------ | ------------- |
 | **`QLT-001`** | **Owned whole.** Re-derived at `cea2d06`: the no-op branch, the discarded normalisation, the native-enum rejection and the four bare-`str` homes are one defect at one boundary. `VAL-08-008`'s 200/500 divergence is folded in as a third element — the 200 is the **no-op**, not acceptance. **HIGH** band, all four agents. | **CQLT-1** |
-| **`QLT-002`** | **Owned whole.** Declaration-versus-enforcement; the **enforcement point** is phase 08's, the **rule** is phase 12's (`C08-2`). `VAL-08-005` applied: **two** production callers, not one. **HIGH** band, all four agents. | **CQLT-2** · **C08-2** |
+| **`QLT-002`** | **Owned whole.** Declaration-versus-enforcement; the **enforcement point** is phase 08's — **now ruled as the shared dependency `api/deps.py::require_dashboard_admin_access`, with the create path in scope** — and the **rule** is phase 12's, which **installs** `AZ-3` while phase 08 **co-signs** (`C08-2`). `VAL-08-005` applied: **two** production callers, not one. **HIGH** band, all four agents. | **CQLT-2** · **C08-2** |
 | **`QLT-003`** | **Two-thirds discharged by history; register + configuration residue only.** `8953bf7` restored both baselines and is an ancestor of HEAD; all four gate spellings are green at `cea2d06`. **A block premised on red gates is unfounded** and `VAL-08-007`'s ordering constraint is **already satisfied**. The aggregate shape and the automation gap are **phase 09's** under `VAL-08-007`'s merge ruling. | **CQLT-10** · **CQLT-0** · `O-01`, `O-02`, `O-23` · `C08-10` |
 | **`QLT-004`** | **Owned whole, as a HIGH-band block** (`VAL-08-002` applied). The drift **question** is phase 14's; this plan gives it a gate. The positive half is **unverified** — `alembic check` has never been run — so the block's first execution is itself a deliverable. | **CQLT-6** · `D-08-10` · `C08-4` |
 | **`QLT-005`** | **Owned whole, bounded to the declared toolchain.** `.ai/builders/**`'s tracked-but-uncommitted deletion is a hard sequencing constraint. The manifest residue stays phase 01's (`C08-6`); widening is `D-08-6`. | **CQLT-7** · `D-08-6` · `O-04`, `O-05` |
@@ -926,7 +995,7 @@ precedent and the "audit corpus is not an implementation target" convention.
 | **`VAL-08-002`** | HIGH | **Substantiated; documentation-only.** `QLT-004` is scheduled as a HIGH-band block and is **not** sequenced behind `CQLT-7`'s deletions. | **CQLT-6** |
 | **`VAL-08-003`** | MEDIUM | **Substantiated; already applied by the report.** The native PostgreSQL enum refutes the storage anchor, which is why `QLT-001` is a **typing and write-path** change — **no stored row is rewritten and no migration is involved**. | **CQLT-1** |
 | **`VAL-08-004`** | MEDIUM | **Substantiated and understated: twelve declarations, not two.** The finding is *bigger and cheaper* than filed; the honest statement is twelve decorative declarations and one decision site. | **CQLT-8** · `D-08-7` |
-| **`VAL-08-005`** | MEDIUM | **Substantiated; premise refuted, conclusion intact.** `AccessRepository.grant_access` has **two** production callers — `DashboardService.grant_access` and `::create_dashboard`'s owner-grant — so `QLT-002`'s check must cover the create path or name it a deliberate exemption. | **CQLT-2** · `C08-11` |
+| **`VAL-08-005`** | MEDIUM | **Substantiated; premise refuted, conclusion intact.** `AccessRepository.grant_access` has **two** production callers — `DashboardService.grant_access` and `::create_dashboard`'s owner-grant — so `QLT-002`'s check **must cover the create path**, which the 2026-10-03 ruling does: it is **in scope**, a co-signature rather than a deliberate exemption. | **CQLT-2** · `C08-11` |
 | **`VAL-08-006`** | MEDIUM | **Substantiated.** `QLT-009` collapses to *implement the declared validation* or *amend two documents*. **"Delete the enums" is off the table** — they are documented as intended. | **CQLT-9** · `D-08-3` |
 | **`VAL-08-007`** | MEDIUM | **Substantiated; the merge ruling is upheld and the ordering constraint is already satisfied.** Phase 09's `TST-002` owns the entry-point remediation; the constraint ("do not land the rewiring while diagnostics are red") is **met by `8953bf7`**, so it is a note to phase 09, not a phase-08 blocker. The report's strongest present-tense consequence is **retired**. | **CQLT-10** · `O-01` · `C08-10` |
 | **`VAL-08-008`** | MEDIUM | **Substantiated; both paths still live in code.** Folded into `CQLT-1` as a third element — same boundary, same root cause, no new identifier. **The binding correction: the 200 is the no-op branch, not acceptance.** | **CQLT-1** |
@@ -1029,10 +1098,13 @@ sentence belongs in the release note and in `CQLT-1`'s definition of done.
 **`CQLT-2` is the only user-visible authorization change in the plan**, and it is the one most likely to
 be reported as a regression. Any authenticated account of any role can currently insert an `admin`
 grant for itself on any dashboard, and it is effective immediately on every read path that consults
-`check_dashboard_access`; the fix turns **200 into 403**. It also covers **one call site more than the
-report assumed** — `DashboardService.create_dashboard`'s owner-grant. **Treat any caller that breaks as
-a defect to fix, not a client to accommodate.** Grants that were wrongly created persist and must be
-reconciled by an operator; the fix rewrites no stored row.
+`check_dashboard_access`; the fix turns **200 into 403** on **three documented endpoints**, and it also
+covers **one call site more than the report assumed** — `DashboardService.create_dashboard`'s owner-grant,
+which the ruling puts **in scope** as a co-signature. **Treat any caller that breaks as
+a defect to fix, not a client to accommodate.** **Wrongly-created `dashboard_access` rows and filter
+bindings persist and require operator reconciliation; the fix rewrites no stored row.** The enforcement
+point is the **shared dependency** `api/deps.py::require_dashboard_admin_access`, which is the only
+shape a new call site cannot bypass — and **plan 12 installs `AZ-3` while this block co-signs it.**
 
 **`CQLT-3` is the failure mode this plan is most careful about, because nothing will catch it.** The
 obvious change — replace the two inline access-set computations with the shared dependency — **silently
@@ -1099,7 +1171,9 @@ does not get two owners.
   is phase 01's (`C08-6`). A deployment can still install six libraries no code path reaches.
 - **The 65 % coverage floor is still asymmetric.** `CQLT-10` makes it legible; it does not fix it. A
   contributor running `.\Makefile.ps1 test` still gets no coverage enforcement, and only
-  `.\Makefile.ps1 test-all` does. The remedy is phase 09 `TST-003`'s.
+  `.\Makefile.ps1 test-all` does. The remedy is phase 09 `TST-003`'s, and **that record is back open**
+  — the ruling that made the floor live on the main entry point was withdrawn, so the floor's *reach*
+  is once again phase 09's open question with its original chooser, **Planner**.
 - **Report coordinates stay wrong.** `CQLT-0` records that and does not repair the audit corpus.
   Anyone reading the report as a checklist must re-derive by symbol — and must re-derive the figures
   this Planner corrected upward: **21** `required_permission=` sites, **seven** root `devDependencies`,
@@ -1120,7 +1194,10 @@ does not get two owners.
   `CQLT-10` → `CQLT-11`, with the block map's dependency edges as the subset that must hold.
 - **Eleven decision records**, `D-08-1` … `D-08-11` — nine carried verbatim from the code context §6
   (`D1` … `D9`, its own instruction "leave open — I pick none" inherited), two raised by this Planner
-  (`D-08-10`, `D-08-11`). **This plan chooses none of them.**
+  (`D-08-10`, `D-08-11`). **This plan chooses none of the ten still open.** `D-08-4` is **RULED by the
+  Product Owner on 2026-10-03** (adjudicated register cluster 1 — `DP-12-A` for the audience, `C12-2`
+  for the enforcement point and the install ownership) and is recorded here as ruled / answered-by, not
+  re-ruled.
 - **Eleven cross-phase seams**, `C08-1` … `C08-11`, of which one accepts phase 06's `C06-15` and nine
   reconcile against phase 07's `HO-*` register; phase 05's `ProcessingSettingsModel` residue is
   deferred to `C08-8`.
