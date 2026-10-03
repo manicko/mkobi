@@ -60,7 +60,7 @@ class TestProcessingSettingsBoundaryOpenAPI:
     """
 
     def test_put_request_body_forbids_unknown_settings_keys(self) -> None:
-        """The PUT settings object forbids extra keys over the nineteen declared."""
+        """The PUT settings object forbids extra keys over the twenty-two declared."""
         from mkobi.main import app
 
         from tests.test_processing_config_boundary import DECLARED_SETTINGS_KEYS

@@ -145,14 +145,14 @@ class CSVLoader:
         try:
             if file_size_mb > lazy_threshold_mb:
                 logger.info(
-                    "Using lazy evaluation for file %.2f MB (threshold: %.2f MB)",
+                    "Building frame via the lazy query engine for file %.2f MB (threshold: %.2f MB)",
                     file_size_mb,
                     lazy_threshold_mb,
                 )
                 df = self._read_csv_via_scan(file_path, config)
             else:
                 logger.info(
-                    "Using normal reading for file %.2f MB (threshold: %.2f MB)",
+                    "Building frame via read_csv for file %.2f MB (threshold: %.2f MB)",
                     file_size_mb,
                     lazy_threshold_mb,
                 )

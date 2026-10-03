@@ -108,9 +108,13 @@ is reclaimed on a clock.
 The loop is **lease-guarded** by `core/reconciler_lease.py`, so among several replicas
 only the single lease holder sweeps. The guard **fails open**: an unreachable Redis
 still sweeps (Redis is a load-and-observability optimisation, never a correctness
-gate), and the only case that skips is "reached Redis and it is not mine". A row a
-consumer is still about to pick up stays `uploaded` until the horizon passes; once it
-passes, the row is genuinely stuck and failing it is the intent.
+gate), and the only case that skips is "reached Redis and it is not mine". On a
+periodic sweep against a shared horizon the sweep **cannot distinguish a stranded row
+from a merely backlogged one**: a row the `rq-worker` has simply not picked up yet
+passes the same horizon as a genuinely abandoned one and is flipped to `FAILED`. A
+long queue delay can therefore produce a **transient false failure** in a dashboard's
+processing history, which the job overwrites to `PROCESSING` / `COMPLETED` when it
+finally runs. The horizon bounds **time to first report**, not job lifetime.
 
 ### Horizon and where it is configured
 
@@ -147,6 +151,7 @@ Stating these is part of the contract; they are the accepted limits, not oversig
 - **`cleanup_stale_temp_files` cannot tell a live file from an abandoned one.** It selects on the directory glob plus `st_mtime` and never reads `processing_logs`, so it will delete the input of a run that is still in flight if that file is older than the threshold. The two horizons are deliberately far apart, which is what keeps this from biting.
 - **Only `*.csv*` in the upload temp directory is considered.** A file left anywhere else, or under a name the glob does not match, is outside the sweep entirely.
 - **The row sweep is status-scoped.** It reclaims `uploaded` and `processing` rows only. A row already at `completed` or `failed` is never revisited, so a file left behind by a committed run waits for the file sweep alone.
+- **It cannot tell a stranded row from a merely backlogged one.** On a periodic clock the sweep selects on age alone, so an `uploaded` row the `rq-worker` has not yet picked up — ordinary queue depth, not a crash — passes the horizon and is marked `FAILED`, producing a **transient false failure in the processing history** that the job later overwrites to `PROCESSING` / `COMPLETED`. The horizon bounds **time to first report**, not job lifetime.
 - **Cancellation is not observable to either sweep.** A cancelled run is reclaimed by the worker's own handler at cancellation time; a hard kill is only ever recovered by age.
 
 ## Configuration

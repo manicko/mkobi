@@ -94,10 +94,10 @@ shape), who resolved it, and a one-line rationale.
 | `D-05-D` | `limit` without a fully-determining `sort_by` | **(a)** move the limit to **after** aggregation. | Domain owner | It makes `limit` mean what every reader already takes it to mean — top N by this metric. Rejection (b) and "require `sort_by`" (c) each create a **new failure class** for configurations that work today. Under (a) the change alters stored **values**, not just row counts. |
 | `D-05-E` | The `dims` identity canonicalisation rule | **(a)** `str()` every scalar dimension value, as the single canonicalisation point. | Domain owner + phase 14 for the index implication | It makes write and read agree by construction: the read path already compares `dims[key].astext == str(value)`. `None` → `""` is unchanged. Python's `str()` keeps `True` → `"True"` distinct from `1` → `"1"`, so a boolean dimension does not collide with a 0/1 dimension. Reverses `_coerce_dim_value`'s deliberate native-type preservation — that cost is accepted and the rule statement is mandatory. Canonicalise at the **write** path only; canonicalising in the reader would hide the symptom and leave every stored row wrong. |
 | `D-05-F` | Where validation warnings land | **(b)** summarise warnings into `processing_logs.message` (`String(1000)`) with an explicit cap and truncation rule. | Domain owner | No enum, no migration, no frontend change. Option (a) — a new status value — is **not available**: `processing_logs.processing_status` is a **native PostgreSQL ENUM**, so a new value requires an Alembic migration, which this phase forbids. Record (a) as a **hand-over to phase 14**, not a rejection. Separately, fix the never-true `column_types` check so it can become true. |
-| `D-05-G` | Where the settings boundary lives | **OPEN — a prerequisite, not a blocker.** | Coordinator, on the `PB-8` Auditor/Researcher chain | The ruling requires the `PUT /processing-configs/{dashboard_id}` caller and frontend-form census to exist **first**. `PB-8`'s own Auditor/Researcher chain produces it; the Coordinator confirms the ruling from that evidence. Do not guess the option now. |
+| `D-05-G` | Where the settings boundary lives | **RULED — (a′).** Complete `models/types.py::ProcessingSettingsModel` into the strict settings boundary. | Coordinator, resolved by the `PB-8` Auditor/Researcher chain | The twenty-two declared keys are now spelled out, `extra="forbid"` replaces `{"extra": "allow"}`, `settings` is retyped on `ProcessingConfigUpdate` and `ProcessingConfigBase`, `ProcessingSettingsDict` is deleted, `ProcessingConfigService._validate_settings` is retyped rather than extended, and `_merge_metric_agg_into_settings` / `_extract_metric_agg_into_settings` are `model_dump`-based. Committed in `31397db`. **"(a′)" was a fifth option, not one of the four in the upstream plan's `D-05-G` table**, forced by a real constraint: a `TypedDict` cannot emit `additionalProperties: false`, so the OpenAPI tripwire the plan demanded is unwritable against one. Its limits are stated in `31397db`'s body — the boundary is at the request/response edge only, the worker and `ProcessingConfig` stay permissive, and config-time `metric_agg` validation was **not** added. |
 | `D-05-H` | The `db_session is None` branch in `_store_aggregates` | **(b)** delete the `db_session is None` branch **after proving it has no caller**, and make `db_session` a required parameter. | Domain owner + Coordinator | Upgraded from a dead-code-policy question. That branch opens its **own session**, which **bypasses the phase-03 rebuild advisory lock** (`ab76989`) and **splits the aggregate write from the `COMPLETED` update**. Making the parameter required removes the hazard by construction rather than by convention. The caller proof is `DataService::trigger_processing` having no route caller — prove it, do not assume it. |
 | `D-05-I` | Orphan-sweep placement | **(a)** move the sweep **into** the lease-guarded periodic loop. | Domain owner | One loop, one cancellation path, one thing to reason about at shutdown; both sweeps share one horizon and one failure class, and consolidating removes the second place where they can race. The key question is **moot**: `907e052` already wired the configured `stale_processing_timeout_minutes`. **The commit body must state that the fail-open direction changes** — today every replica sweeps when Redis is unreachable; under a lease one does. |
-| `D-05-J` | `cleanup_task_files` and `cleanup_old_processing_logs` | **OPEN — investigation first.** | Domain owner, on `PB-14`'s Auditor | The project's dead-code rule is binding: investigate the purpose of `cleanup_task_files` and `cleanup_old_processing_logs` via git history before any removal is proposed. `PB-14`'s Auditor produces that; the Coordinator then rules. Note the open question for the investigator: `tests/test_upload_api.py::test_cleanup_task_files_called_during_processing` asserts the helper **is** called during processing. |
+| `D-05-J` | `cleanup_task_files` and `cleanup_old_processing_logs` | **RULED — (b), with an amendment.** Delete both uncalled helpers; **rename, do not delete**, `test_cleanup_task_files_called_during_processing`. | Domain owner, resolved on `PB-14`'s Auditor evidence | The project's dead-code rule was satisfied by investigation first. Both helpers were uncalled: `cleanup_task_files` was born uncalled in `415900d` during the in-process `TaskQueue` era and lost its only data source when that registry was deleted; it uses a loose `*{task_id}*.csv*` glob the project deliberately tightened elsewhere in `d536c51`, and it swallows every failure, so it is a strictly worse unlink than the worker's inline unlink. `cleanup_old_processing_logs` was a duplicate of the startup retention sweep. The test's assertion is sound while its name and docstring are false, so it is renamed, not deleted, and `tests/test_file_cleanup.py` is updated. Committed in `6a2c04a`. |
 | `D-05-K` | `aggregated_data.ordinal` migration, or an interim ordering | **(b)** interim `ORDER BY id` on the three read methods, with the append-mode limitation **documented**, plus a written hand-over of the `aggregated_data.ordinal` DDL to phase 14. | Domain owner + phase 14 sequencing | This phase authors no migration. `ORDER BY id` is correct for overwrite mode (rows are deleted and re-inserted, so the order regenerates) and **wrong for append mode**, which is exactly the divergence the column exists to solve. The limitation ships with the change; it is not discovered later. |
 | `D-05-L` | Who owns the `success` documentation | **(b)** split ownership by file — **confirmed**. | Coordinator | Phase 14 owns `docs/09-database/**` (it owns `4479eb53fd4e`, the migration that removed the retired `success` value). Phase 05 owns the pipeline narrative: `docs/00-overview/`, `docs/03-processing/`, `docs/04-admin/`. |
 | `D-05-M` | Sequencing against phase 03 | **(b)** interleave — **confirmed and now moot.** | Coordinator | The unblocked blocks were run first; phase-03 B1, B2, B3 and B10 have all landed, so nothing is gated on them any more. B3's and B2's commits are a **read-first obligation** for `PB-1`, `PB-14` and `PB-5`, not a start gate. |
@@ -117,6 +117,23 @@ this reason).
 
 **`tests/test_app_lifespan.py` has five `mark_orphaned_uploaded_logs_failed` patch sites**, not the
 six the upstream plan states. `PB-13`'s regression gate is **five before and five after**.
+
+### E.2 `PB-14` was split into `PB-14a` and `PB-14b`
+
+The block **`PB-14` was split into `PB-14a` and `PB-14b`**, on the plan's own split condition, and the
+trigger was the `D-05-J` investigation. The split is recorded here, not in an amended commit body,
+because history must not be rewritten: a reader of the repository otherwise sees two commits with no
+statement that they were one block.
+
+| Half | Finding | Commit | What it did |
+| ---- | ------- | ------ | ----------- |
+| `PB-14a` | `DP-019` | `6a2c04a` | Delete both uncalled helpers (`cleanup_task_files`, `cleanup_old_processing_logs`) and rename the misleading `test_cleanup_task_files_called_during_processing`. |
+| `PB-14b` | `DP-016` | `5e73e37` | Move the file unlink to **after** the commit and clean up on cancellation, catching `BaseException` for cleanup only and re-raising. |
+
+The `D-05-J` investigation showed the two halves were independent: one is a dead-code removal that
+could land on its own evidence, the other is an atomicity change with its own red-before test. Neither
+commit body states the split, so this table is the only record that `6a2c04a` and `5e73e37` are the
+two halves of one planned block.
 
 ---
 
@@ -198,6 +215,47 @@ Two bullets, because blocks will otherwise claim them:
 - **`ruff` sees none of this phase's defects** — they are type, ordering and data-contract defects.
   Its only role here is import ordering and syntax.
 
+**The inherited `mypy` "error" is a narrow-invocation artefact, not a defect.** An earlier draft of
+this note recorded *"one inherited `mypy` error in `services/file_processing.py`"*. That is wrong.
+Under the **narrow** invocation `uv run mypy src/mkobi/services/file_processing.py`, `pyproject.toml`'s
+`follow_imports = "skip"` resolves `mkobi.core.task_queue` as `Any`, which produces a spurious
+`Returning Any` rather than a real type error. The project's own gates —
+`uv run mypy src/ alembic/env.py` and `.\Makefile.ps1 typecheck` — are **fully clean across 118 source
+files**. Do not chase this artefact; the phase's `mypy` gate is green.
+
 **A regression test that passes against the unfixed code is worse than no test.** Where a block
 writes a test for a currently-broken behaviour, it must **prove** the test fails before the fix,
 temporarily and locally, and record the evidence in its commit body.
+
+---
+
+## I. Hand-overs that were never raised
+
+Three statements the phase was correctly barred from editing in place. They are recorded here so the
+owning phase can pick them up; **no such file is edited by this pass.**
+
+### `docs/06-backend/configuration.md` — the `UPLOADED` marker is no longer boot-time
+
+`docs/06-backend/configuration.md` still reads:
+
+> `STALE_PROCESSING_TIMEOUT_MINUTES` … shared by **the boot-time `UPLOADED` marker** and the periodic
+> `PROCESSING` sweep.
+
+**The stale word is "boot-time".** Since `ee0f0f5` the `UPLOADED` marker (`mark_orphaned_uploaded_logs_failed`)
+runs on the **periodic** reconciler loop too, on the same tick and under the same horizon as the
+`PROCESSING` sweep. The corrected fact is: the horizon is shared by the **periodic** `UPLOADED` marker
+and the periodic `PROCESSING` sweep. The file is owned by **phase 01**, so this pass records the
+hand-over and does **not** edit it.
+
+### `docs/09-database/schema-processing.md` — the UPSERT claim is false
+
+`schema-processing.md` attributes reliable UPSERT to recursive `dims` key sorting, which is false:
+JSONB canonicalises object key order itself, and the real reason is the scalar canonicalisation rule
+that stringifies every `dims` value at the write path. The file belongs to **phase 14**; the corrected
+reason is already recorded in `data-flow.md` and `SPEC.md`, both of which this phase owns.
+
+### `docs/11-guides/task-queue-migration.md` — retained as another phase's record
+
+`task-queue-migration.md` is the RQ migration decision record and is another phase's substantive
+content. It is cross-referenced from this phase's docs, never edited.
+

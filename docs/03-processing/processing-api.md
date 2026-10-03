@@ -429,8 +429,9 @@ reads, plus three kept only for stored payloads.
 | Declared, read by nothing in `src/` | `loader`, `date_column`, `timezone` — kept because the development seeder writes them and stored payloads may carry them |
 
 **An unknown key is a `422`.** A `settings` object containing a key the model does not
-declare is rejected at the request boundary with `code = VALIDATION_ERROR`, and the
-detail names the unknown key. This is a **request-body contract, not a new response**:
+declare is rejected at the request boundary with `code = VALIDATION_ERROR`. The RFC 7807
+`detail` is the generic `"Request validation failed"`; the unknown key is named in
+`errors[].loc`, not in `detail`. This is a **request-body contract, not a new response**:
 the route already declared its `422` before the boundary tightened, so no status code
 was added and no OpenAPI response entry is new. Previously an unknown key was silently
 dropped, so a misspelled setting had no effect and no diagnostic.
