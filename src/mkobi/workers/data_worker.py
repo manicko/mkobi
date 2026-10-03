@@ -720,14 +720,37 @@ async def _process_csv_file_async(
                 or config.share_config
                 or config.custom_metrics
             ):
+                # calculate_aggregations unpacks yoy_config/share_config with
+                # ``**`` and passes custom_metrics to _add_computed_fields, which
+                # reads each field as a mapping. Hand it the model_dump of the
+                # Pydantic models, not the models themselves: a ``**`` on a model
+                # raises ``TypeError`` and ``.get`` on a model raises
+                # ``AttributeError``. exclude_none keeps unset fields out of the
+                # configuration the receiving functions read. mypy cannot see
+                # this: the asyncio.to_thread boundary erases the argument types.
                 df = await asyncio.to_thread(
                     calculate_aggregations,
                     df=df,
                     groupby=config.groupby,
                     aggregations=config.aggregations,
-                    yoy_config=config.yoy_config,
-                    share_config=config.share_config,
-                    custom_metrics=config.custom_metrics,
+                    yoy_config=(
+                        config.yoy_config.model_dump(exclude_none=True)
+                        if config.yoy_config
+                        else None
+                    ),
+                    share_config=(
+                        config.share_config.model_dump(exclude_none=True)
+                        if config.share_config
+                        else None
+                    ),
+                    custom_metrics=(
+                        [
+                            metric.model_dump(exclude_none=True)
+                            for metric in config.custom_metrics
+                        ]
+                        if config.custom_metrics
+                        else None
+                    ),
                 )
 
             # Truncate after aggregation, not before (DP-008).

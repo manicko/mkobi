@@ -866,6 +866,341 @@ class TestCalculateShare:
         assert "share" in result.columns
 
 
+class TestYoyUnpackingContract:
+    """DP-009: the argument shape ``calculate_aggregations`` is documented to take.
+
+    ``calculate_aggregations`` unpacks ``yoy_config``/``share_config`` with ``**``
+    and passes ``custom_metrics`` to ``filter_transforms._add_computed_fields``,
+    which reads ``field["name"]``. The worker therefore had to hand it **mappings**
+    (and a list of mappings), not the Pydantic models declared on
+    ``ProcessingConfig``. These tests pin the receiving contract directly, so the
+    worker's dump-shape fix has a stated target.
+    """
+
+    def test_yoy_config_mapping_works_and_model_does_not(self):
+        """A dict unpacks; the model raises ``TypeError`` at the ``**`` boundary."""
+        from mkobi.models.transformation_configs import YoyConfig
+
+        df = pl.DataFrame({"year": [2022, 2023], "value": [100, 150]})
+        mapping = {"year_column": "year", "value_column": "value"}
+
+        result = calculate_aggregations(df, yoy_config=mapping)
+        assert "yoy" in result.columns
+
+        with pytest.raises(TypeError):
+            calculate_aggregations(df, yoy_config=YoyConfig(**mapping))
+
+    def test_share_config_mapping_works_and_model_does_not(self):
+        """A dict unpacks; the model raises ``TypeError`` at the ``**`` boundary."""
+        from mkobi.models.transformation_configs import ShareConfig
+
+        df = pl.DataFrame({"value": [100, 200]})
+        mapping = {"value_column": "value"}
+
+        result = calculate_aggregations(df, share_config=mapping)
+        assert "share" in result.columns
+
+        with pytest.raises(TypeError):
+            calculate_aggregations(df, share_config=ShareConfig(**mapping))
+
+    def test_custom_metrics_mapping_works_and_model_does_not(self):
+        """A list of dicts works; the model raises ``AttributeError`` on ``.get``."""
+        from mkobi.models.transformation_configs import CustomMetricConfig
+
+        df = pl.DataFrame({"revenue": [100, 200], "cost": [40, 80]})
+        mapping = {"name": "profit", "expr": "revenue - cost"}
+
+        result = calculate_aggregations(df, custom_metrics=[mapping])
+        assert "profit" in result.columns
+        assert result["profit"].to_list() == [60, 120]
+
+        with pytest.raises(AttributeError):
+            calculate_aggregations(
+                df, custom_metrics=[CustomMetricConfig(**mapping)]
+            )
+
+
+class TestDumpShapeExcludesNone:
+    """DP-009: the dump handed to ``calculate_aggregations`` must not leak ``None``.
+
+    The receiving functions treat their arguments as configuration, so a
+    ``"group_cols": None`` entry would be read as if a caller had configured it.
+    ``exclude_none=True`` is the chosen shape and is asserted here -- not assumed.
+    """
+
+    def test_exclude_none_ooo_config_omits_unset_keys(self):
+        from mkobi.models.transformation_configs import YoyConfig
+
+        dumped = YoyConfig(
+            year_column="year", value_column="value"
+        ).model_dump(exclude_none=True)
+
+        # None-valued fields must not leak into a function that reads the
+        # argument as configuration. Non-None defaults (alias, percent_alias)
+        # are legitimate settings and are allowed to remain.
+        assert dumped["year_column"] == "year"
+        assert dumped["value_column"] == "value"
+        assert "group_cols" not in dumped
+        assert "month_column" not in dumped
+        assert all(value is not None for value in dumped.values())
+
+    def test_exclude_none_share_config_omits_unset_keys(self):
+        from mkobi.models.transformation_configs import ShareConfig
+
+        dumped = ShareConfig(value_column="value").model_dump(exclude_none=True)
+
+        assert dumped["value_column"] == "value"
+        assert "group_cols" not in dumped
+        assert all(value is not None for value in dumped.values())
+
+    def test_default_model_dump_does_leak_none(self):
+        """The reason ``exclude_none`` is chosen: the default dump leaks ``None``."""
+        from mkobi.models.transformation_configs import YoyConfig
+
+        leaked = YoyConfig(year_column="year", value_column="value").model_dump()
+
+        assert leaked["group_cols"] is None
+        assert "group_cols" in leaked
+
+
+class TestGroupLessYoyIsPerEntity:
+    """D-05-P(a): the group-less YoY path must be per-entity, not global.
+
+    With no ``group_cols`` the unfixed ``_calculate_yoy`` sorts by the year column
+    and applies one ungrouped ``shift(1)``, so an entity's YoY is taken against the
+    globally preceding row rather than its own previous year. The entity column is
+    available, so the arithmetic is correctable without a configuration key.
+    """
+
+    def test_group_less_yoy_is_computed_per_entity(self):
+        from mkobi.models.transformation_configs import YoyConfig
+
+        interleaved = pl.DataFrame(
+            {
+                "year": [2022, 2022, 2023, 2023],
+                "entity": ["B", "A", "B", "A"],
+                "value": [200, 100, 300, 150],
+            }
+        )
+
+        result = _calculate_yoy(interleaved, **YoyConfig(
+            year_column="year", value_column="value"
+        ).model_dump(exclude_none=True))
+        by_entity = {row["entity"]: row["yoy"] for row in result.to_dicts()}
+
+        # Each entity's YoY is its own prior year: A: 100 -> 150 = 50%,
+        # B: 200 -> 300 = 50%.
+        assert by_entity["A"] == pytest.approx(50.0)
+        assert by_entity["B"] == pytest.approx(50.0)
+
+    def test_group_less_yoy_uses_a_differing_entity_baseline(self):
+        from mkobi.models.transformation_configs import YoyConfig
+
+        interleaved = pl.DataFrame(
+            {
+                "year": [2022, 2022, 2023, 2023],
+                "entity": ["B", "A", "B", "A"],
+                "value": [200, 100, 300, 400],
+            }
+        )
+
+        result = _calculate_yoy(interleaved, **YoyConfig(
+            year_column="year", value_column="value"
+        ).model_dump(exclude_none=True))
+        by_entity = {row["entity"]: row["yoy"] for row in result.to_dicts()}
+
+        # A: (400-100)/100 = 300%, B: (300-200)/200 = 50%. Any global-order
+        # shift would compare A 2023 against B 2022 or A 2022.
+        assert by_entity["A"] == pytest.approx(300.0)
+        assert by_entity["B"] == pytest.approx(50.0)
+
+
+class TestCalculateAggregationsDictShape:
+    """DP-009: the plain-dict contract of ``calculate_aggregations`` is unchanged.
+
+    ``aggregate_data`` calls ``calculate_aggregations`` positionally with dicts.
+    The worker's boundary fix must not alter the function's public signature or
+    its dict tolerance.
+    """
+
+    def test_all_three_dicts_are_accepted_positionally(self):
+        df = pl.DataFrame(
+            {
+                "year": [2022, 2023],
+                "region": ["N", "N"],
+                "value": [100, 150],
+            }
+        )
+
+        result = calculate_aggregations(
+            df,
+            ["year", "region"],
+            [{"column": "value", "function": "sum"}],
+            {"year_column": "year", "value_column": "value_sum"},
+            {"value_column": "value_sum"},
+            [{"name": "double", "expr": "value_sum * 2"}],
+        )
+
+        assert "yoy" in result.columns
+        assert "share" in result.columns
+        assert "double" in result.columns
+
+    def test_aggregate_data_positional_call_is_unaffected(self):
+        df = pl.DataFrame({"category": ["A", "A", "B"], "value": [10, 20, 30]})
+        graph_configs = [
+            {
+                "dimensions": ["category"],
+                "metrics": [{"column": "value", "function": "sum"}],
+            }
+        ]
+
+        result = aggregate_data(df, graph_configs)
+
+        assert len(result) == 2
+        assert all(isinstance(row, dict) for row in result)
+
+
+class TestWorkerStoresAllThreeFields:
+    """DP-009: the three structural fields store and run end to end.
+
+    Drives the real worker (``process_csv_background``) over the real storage path
+    (``StorageManager.save_aggregates``) with a config carrying each field, and
+    reads the persisted metrics back. Each of the three fails today at the
+    ``calculate_aggregations`` call boundary -- ``yoy_config`` and ``share_config``
+    with ``TypeError`` from ``**`` on a model, ``custom_metrics`` with
+    ``AttributeError`` from ``.get`` on a model. These are the three tripwires the
+    finding needs.
+    """
+
+    @pytest.fixture
+    async def agg_dashboard(self, async_db_session):
+        """Dashboard with a year/region graph over the config's output columns.
+
+        The graph names every derived column this class asserts (``yoy``,
+        ``share``, ``double``) plus the config's ``revenue_sum``. A metric absent
+        from a given run's frame is dropped by ``AggregationService`` rather than
+        failing, so one graph serves all three tripwires. Each stored metric is
+        named ``<column>_sum``.
+        """
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+        from mkobi.db.repositories.graph_repo import GraphRepository
+        from mkobi.models.enums import GraphType
+
+        dashboard = await DashboardRepository().create(
+            db=async_db_session,
+            name=f"tripwire_{uuid.uuid4().hex[:8]}",
+            description="DP-009 tripwire",
+        )
+        graph = await GraphRepository().create(
+            db=async_db_session,
+            dashboard_id=dashboard.id,
+            name=f"tripwire_graph_{uuid.uuid4().hex[:8]}",
+            type=GraphType.TABLE,
+            dimensions=["year", "region"],
+            metrics=["revenue_sum", "yoy", "share", "double"],
+            config={},
+        )
+        await async_db_session.commit()
+        return {"dashboard": dashboard, "graph": graph}
+
+    @staticmethod
+    def _csv() -> bytes:
+        """Two entities interleaved across two years."""
+        return (
+            b"year,region,revenue\n"
+            b"2022,N,100\n"
+            b"2022,S,200\n"
+            b"2023,N,150\n"
+            b"2023,S,300\n"
+        )
+
+    async def _run(self, async_db_session, dashboard_id, settings) -> list[dict]:
+        import tempfile
+        from pathlib import Path
+
+        from mkobi.data.storage.manager import StorageManager
+        from mkobi.workers.data_worker import process_csv_background
+
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as f:
+            f.write(self._csv())
+            csv_path = Path(f.name)
+
+        try:
+            await process_csv_background(
+                file_path_str=str(csv_path),
+                task_id=str(uuid.uuid4()),
+                dashboard_id_str=str(dashboard_id),
+                processing_config_dict={"settings": settings, **settings},
+                mode="overwrite",
+                db_session=async_db_session,
+            )
+            await async_db_session.flush()
+            return await StorageManager(async_db_session).get_aggregates(dashboard_id)
+        finally:
+            csv_path.unlink(missing_ok=True)
+
+    async def test_yoy_config_stores_and_runs(
+        self, async_db_session, agg_dashboard
+    ) -> None:
+        """Red before the fix: ``TypeError: argument after ** must be a mapping``."""
+        settings = {
+            "groupby": ["year", "region"],
+            "aggregations": [{"column": "revenue", "function": "sum"}],
+            "yoy_config": {"year_column": "year", "value_column": "revenue_sum"},
+        }
+
+        records = await self._run(
+            async_db_session, agg_dashboard["dashboard"].id, settings
+        )
+
+        by_entity = {
+            (record["dims"]["year"], record["dims"]["region"]): record["metrics"]
+            for record in records
+        }
+        # N: 100 -> 150 is +50%; S: 200 -> 300 is +50%. Year dimes are stored as
+        # their canonical string form.
+        assert by_entity[("2023", "N")]["yoy_sum"] == pytest.approx(50.0)
+        assert by_entity[("2023", "S")]["yoy_sum"] == pytest.approx(50.0)
+
+    async def test_share_config_stores_and_runs(
+        self, async_db_session, agg_dashboard
+    ) -> None:
+        """Red before the fix: ``TypeError`` from ``**share_config``."""
+        settings = {
+            "groupby": ["year", "region"],
+            "aggregations": [{"column": "revenue", "function": "sum"}],
+            "share_config": {"value_column": "revenue_sum"},
+        }
+
+        records = await self._run(
+            async_db_session, agg_dashboard["dashboard"].id, settings
+        )
+
+        total = sum(record["metrics"]["revenue_sum_sum"] for record in records)
+        for record in records:
+            expected = record["metrics"]["revenue_sum_sum"] / total * 100
+            assert record["metrics"]["share_sum"] == pytest.approx(expected)
+
+    async def test_custom_metrics_stores_and_runs(
+        self, async_db_session, agg_dashboard
+    ) -> None:
+        """Red before the fix: ``AttributeError: 'CustomMetricConfig' has no .get``."""
+        settings = {
+            "groupby": ["year", "region"],
+            "aggregations": [{"column": "revenue", "function": "sum"}],
+            "custom_metrics": [{"name": "double", "expr": "revenue_sum * 2"}],
+        }
+
+        records = await self._run(
+            async_db_session, agg_dashboard["dashboard"].id, settings
+        )
+
+        for record in records:
+            assert record["metrics"]["double_sum"] == pytest.approx(
+                record["metrics"]["revenue_sum_sum"] * 2
+            )
+
+
 class TestAggregateData:
     """Tests for aggregate_data function."""
 

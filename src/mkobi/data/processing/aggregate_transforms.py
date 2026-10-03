@@ -161,6 +161,14 @@ def _calculate_yoy(
 ) -> pl.DataFrame:
     """Calculate Year-over-Year growth.
 
+    The growth is always computed against the **same entity's** previous period,
+    never the globally preceding row. When ``group_cols`` is supplied the entity
+    is the group; when it is absent the entity is whatever identifies a series --
+    any column that is neither the year, the value nor the shift key. That
+    discovers the entity columns from the frame itself so the per-entity
+    arithmetic is correct without a configuration key. ``month_column`` shifts
+    within the month and the discovered entity columns.
+
     Args:
         df: Source DataFrame.
         year_column: Column name containing year.
@@ -168,6 +176,7 @@ def _calculate_yoy(
         group_cols: List of grouping columns (dimensions).
         month_column: Column name containing month.
         alias: Name of resulting YoY column.
+        percent_alias: Reserved; not used by this implementation.
 
     Returns:
         pl.DataFrame: DataFrame with YoY column.
@@ -180,10 +189,21 @@ def _calculate_yoy(
 
     result = df.sort(sort_cols)
 
+    # Columns that are neither the year, the value nor the month are entity
+    # identifiers (the group-less case): shift within them so each entity's YoY
+    # is taken against its own previous period. With ``group_cols`` supplied they
+    # are the shift keys unchanged.
+    if group_cols:
+        shift_group_cols = list(group_cols)
+    else:
+        shift_group_cols = [
+            column
+            for column in df.columns
+            if column not in {year_column, value_column, month_column}
+        ]
+
     if month_column:
-        shift_group_cols = [month_column]
-        if group_cols:
-            shift_group_cols.extend(group_cols)
+        shift_group_cols = [month_column, *shift_group_cols]
 
         result = result.with_columns([
             pl.col(value_column).shift(1).over(shift_group_cols).alias("__prev_value"),
@@ -194,8 +214,8 @@ def _calculate_yoy(
         prev_value_expr = pl.when(year_diff == 1).then(pl.col("__prev_value")).otherwise(None)
     else:
         shift_lag = 1
-        if group_cols:
-            prev_value_expr = pl.col(value_column).shift(shift_lag).over(group_cols)
+        if shift_group_cols:
+            prev_value_expr = pl.col(value_column).shift(shift_lag).over(shift_group_cols)
         else:
             prev_value_expr = pl.col(value_column).shift(shift_lag)
 
