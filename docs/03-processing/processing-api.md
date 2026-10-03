@@ -34,7 +34,7 @@ The processing API handles CSV file upload, data processing (via Polars), backgr
 
 ### Upload CSV File
 
-Upload a CSV or CSV.gz file to a specific dashboard. The file is saved to a temporary directory (`platformdirs`), processed, and then deleted. File history is not retained.
+Upload a CSV or CSV.gz file to a specific dashboard. The file is saved to a temporary directory (`platformdirs`), read once, and then removed. File history is not retained, and a run that reaches a terminal state leaves nothing on disk to reprocess from — see [Temp File Cleanup](file-cleanup.md#the-terminal-state-rule).
 
 | Attribute      | Value                                              |
 | -------------- | -------------------------------------------------- |
@@ -54,13 +54,15 @@ Content-Type: multipart/form-data
 **Constraints:**
 
 - Allowed file extensions: `.csv`, `.csv.gz`
-- Allowed MIME types: `text/csv`, `application/gzip`, `application/x-gzip`
-- **MIME type detection:** Server-side content sniffing using `python-magic` (reads first 2KB of file bytes to detect actual MIME type — does not trust client `Content-Type` header). Falls back to extension-based detection if `libmagic` is unavailable.
+- **Admitted MIME types**: exactly the three `MimeTypeEnum` members — `text/csv`, `application/gzip`, `application/x-gzip`. There is **no configuration key** for this set any more: `UPLOAD__ALLOWED_MIME_TYPES` was removed from `config.py` (field and property) and from `settings/app.yaml`, so `MimeTypeEnum` is the **single declaration site** of what is admitted. See [Configuration](../06-backend/configuration.md).
+- **MIME type detection:** Server-side content sniffing using `python-magic` (reads the first 2 KB of file bytes; the client `Content-Type` header is not trusted). **libmagic is a hard startup dependency**: `main.check_dependencies` refuses to start the backend when `python-magic` is not importable, so there is **no heuristic fallback** and no host-dependent branch. The admitted set is therefore the **image's**, not the host's — every shipped image (dev, test, prod) installs `libmagic1`, and a host without it can no longer start the backend at all.
+- **Rejection is RFC 7807**: a detected type outside the admitted set raises `AppException(ErrorCode.INVALID_FILE_TYPE)`, which answers **`415 Unsupported Media Type`** with `code = INVALID_FILE_TYPE`.
+- **Behaviour change — stricter admission.** The deleted heuristic used to admit text as `text/csv`; libmagic does not. Text that the heuristic accepted is now classified by its bytes, and **semicolon-delimited** plain text is the notable casualty: it is `text/plain`, not `text/csv`, so it is now **refused**. A CSV must actually be comma-delimited to be detected as `text/csv`.
 - **Character Support:** UTF-8 encoding with full Cyrillic and Latin character support. All string data is stored and rendered in Unicode without restrictions.
 - **Date Format:** Input dates are parsed according to `processing_config.settings.date_format`. Standard user-facing display format is `dd/mm/yyyy`.
 - Rate limiting is enforced on upload endpoints
 - Maximum file size is enforced on the backend, including cumulative byte tracking during streaming writes (applies even when the client does not provide `Content-Length`). The ceiling comes from configuration (`UploadSettings.max_file_size_mb`, default 100 MB), not a literal in the loader, and it applies to the **decompressed** stream for `.csv.gz`: the gzip member is measured through `gzip.open` in bounded chunks and the read aborts the moment it passes the budget, so a small gzip of a multi-gigabyte CSV is rejected rather than fully expanded by the reader. The default value is unchanged.
-- Temporary files are deleted after processing
+- The input file is **removed on every terminal state** — see [Temp File Cleanup](file-cleanup.md#the-terminal-state-rule)
 
 **Response** (`200 OK`):
 
@@ -77,13 +79,39 @@ Content-Type: multipart/form-data
 
 The upload endpoint returns a structured `UploadResponse` model (not an ad-hoc dict), providing consistent fields for frontend consumption.
 
+### What a stored artefact is called
+
+Once the upload is accepted the file is moved to
+`{UPLOAD__TEMP_DIR}/{processing_log_id}{extension}` — the processing-log id, plus an
+extension **derived from the detector's verdict at admission**, never from the caller's
+filename. The mapping lives on `MimeTypeEnum.extension`:
+
+| Detected type | Stored extension |
+| ------------- | ---------------- |
+| `text/csv` | `.csv` |
+| `application/gzip`, `application/x-gzip` | `.csv.gz` |
+
+So a plain CSV the uploader named `*.csv.gz` is stored as `.csv`, and a real gzip the
+uploader named `.csv` is stored as `.csv.gz`. **The stored name can never claim a
+compression the bytes do not have.** This matters to anyone reading the directory: the
+extension is evidence, not decoration.
+
+The `.csv.gz` reader is still selected **by the path**, so the naming rule is what keeps
+that selection sound. One residual is stated rather than relied upon: for a path ending
+`.gz`, `data/loaders/loader.py::_validate_file_size` reads the gzip stream in pure Python
+and fails a mislabelled archive **before either reader is selected**, at any size — not
+only above `lazy_threshold_mb`. So the reader's ability to sniff bytes is not a guarantee
+any code should depend on, and no branch relies on it.
+
 ---
 
 ## Processing Pipeline
 
 ### Pipeline Stages
 
-The data processing pipeline is triggered automatically after file upload or manually via the process endpoint.
+The data processing pipeline is triggered by file upload. There is no manual trigger: the
+`POST /upload/:dashboard_id/process` endpoint described in earlier revisions of this page
+does not exist, and no re-run endpoint exists for an already-uploaded file.
 
 ```
 Upload → Parse (Polars) → Transform (processing_config) → Aggregate → Save to PostgreSQL
@@ -93,7 +121,7 @@ Upload → Parse (Polars) → Transform (processing_config) → Aggregate → Sa
 
 | Stage | Description |
 | ----- | ----------- |
-| **1. Upload** | File saved to temporary directory (`UPLOAD__TEMP_DIR`, defaults to `platformdirs`; see [Docker Guide](../11-guides/docker.md#application-data-directories) for mounted paths). MIME type and size validated. |
+| **1. Upload** | File saved to temporary directory (`UPLOAD__TEMP_DIR`, defaults to `platformdirs`; see [Docker Guide](../11-guides/docker.md#application-data-directories) for mounted paths). MIME type and size validated; the stored extension is derived from the detector's verdict, not the caller's filename (see [What a stored artefact is called](#what-a-stored-artefact-is-called)). |
 | **2. Parse** | File read using Polars; CSV parsing config (separator, encoding, column_types) applied from `processing_config` |
 | **3. Cast and rename** | `column_types` casts applied per column, then `renames` applied. A `column_types` key naming an absent column is logged and skipped; a `date` declared without a `date_format` is not parsed, and the validator reports the uncast dtype as a warning. |
 | **4. Validate** | `DataValidator.validate(df)` runs **after** the casts and the renames, so it inspects the namespace the frame actually has. `required_columns` naming a post-rename name resolves; a `column_types` check inspects the post-cast dtype. Failures fail the run with `VALIDATION_ERROR`; warnings are carried into the completion message. |
@@ -101,7 +129,7 @@ Upload → Parse (Polars) → Transform (processing_config) → Aggregate → Sa
 | **6. Aggregate** | `groupby` + `aggregations`, then `yoy_config`, `share_config`, `custom_metrics` |
 | **7. Limit** | `sort_by` / `descending` order the frame, then `limit` truncates it — **after** aggregation |
 | **8. Save** | Aggregated records written to `aggregated_data`; filter values written to `dashboard_filter_values` (idempotent overwrite) |
-| **9. Cleanup** | The input file is unlinked **after** the transaction commits |
+| **9. Cleanup** | The input file is unlinked. On success this happens **after** the transaction commits, never before — see [Temp File Cleanup](file-cleanup.md#the-terminal-state-rule) |
 
 **Important:** Each upload triggers a **full recalculation** — both `aggregated_data`
 and `dashboard_filter_values` are rebuilt from scratch. There is no incremental
@@ -165,6 +193,7 @@ out is reported as in-progress rather than failed.
 | `FILE_UPLOAD_ERROR` | The input file was not found |
 | `FILE_PROCESSING_ERROR` | In the worker: an encoding fault, or a CSV read/parse fault. On the **upload** path, separately: the job could not be submitted to RQ |
 | `FILE_TOO_LARGE` | The file — the **decompressed** stream for `.csv.gz` — exceeds the configured ceiling |
+| `INVALID_FILE_TYPE` | The detected MIME type is not one of `MimeTypeEnum`'s members. On the **upload** path this is an admission refusal (`415`); in the **worker** it is a malformed archive or a path ending `.gz` over non-gzip bytes, refused by the loader's reader boundary |
 | `PROCESSING_IN_PROGRESS` | Another rebuild holds this dashboard's exclusion and the wait timed out |
 | `PROCESSING_FAILED` | Anything else, including a selection that produced no aggregates for one or more graphs |
 
@@ -212,6 +241,12 @@ the row in `processing` for the periodic stale-processing sweep to find.
 with `progress=50` mid-job; previously the row stayed `uploaded` until it
 jumped straight to `completed`, so that branch was unreachable.
 
+A `completed` or `failed` row is also the **end of the file's life**: the input was
+removed before the transition was written, so a terminal status and an absent artefact
+are the same fact. A run that was **hard-killed** mid-job is the exception — it reaches
+no terminal state and no removal, so its file survives until the age-based sweep. See
+[Temp File Cleanup](file-cleanup.md#the-terminal-state-rule).
+
 ### Task Queue
 
 Background work is submitted to a **Redis-backed RQ queue** and executed by the
@@ -220,30 +255,6 @@ Background work is submitted to a **Redis-backed RQ queue** and executed by the
 in-process `asyncio.Queue` implementation was removed in 2026-09-30 and a test asserts
 its symbols stay absent. See [Task Queue](task-queue.md) for the historical record and
 [Task Queue Migration](../11-guides/task-queue-migration.md) for the migration record.
-
-### Trigger Processing (Manual)
-
-Manually trigger processing for a previously uploaded file.
-
-| Attribute      | Value                                              |
-| -------------- | -------------------------------------------------- |
-| **Method**     | `POST`                                             |
-| **Path**       | `/api/v1/upload/:dashboard_id/process`             |
-| **Auth level** | Editor+                                            |
-| **Query param**| `task_id` — UUID of the processing task            |
-
-**Constraints:**
-
-- **Task ownership validation:** The endpoint validates that the requested task belongs to the specified dashboard. If the task's `dashboard_id` does not match the URL parameter, the request is rejected. This prevents cross-dashboard task triggering.
-
-**Response** (`200 OK`):
-
-```json
-{
-  "task_id": "<uuid>",
-  "status": "processing"
-}
-```
 
 ### Check Processing Status
 
@@ -256,15 +267,35 @@ Manually trigger processing for a previously uploaded file.
 **Response** (`200 OK`):
 
  ```json
- {
-   "task_id": "<uuid>",
-   "status": "processing",
-   "progress": 50,
-   "message": "Aggregating data...",
-   "started_at": "2026-05-18T12:00:00Z",
-   "finished_at": null
- }
- ```
+{
+    "task_id": "<uuid>",
+    "status": "processing",
+    "progress": 50,
+    "message": "Aggregating data...",
+    "started_at": "2026-05-18T12:00:00Z",
+    "finished_at": null
+  }
+  ```
+
+#### `filename` is display-only
+
+`ProcessingStatusResponse.filename` is **display text, not a locator**. Its value is
+filled from the processing log's `message` column (falling back to the literal `"unknown"`)
+— the *message*, not a stored file name.
+
+- There is **no durable filename anywhere**. `processing_logs` stores no name and no path
+  column, and none is being added, because the artefact is scratch space that is removed
+  on every terminal state.
+- **No code may use this field to open, locate or re-process a file.** It names nothing on
+  disk.
+- The field's **name and `str` type are unchanged** and it is never `null`, so clients
+  that have always received a string here receive a string. That is the whole of its
+  contract: wire compatibility.
+
+Two helpers that would have made this field actionable were **deleted** —
+`find_task_file` and `DataService.trigger_processing` (with the
+`IDataService.trigger_processing` protocol declaration). See
+[Temp File Cleanup](file-cleanup.md#the-csv-glob-is-an-age-sweep-not-a-selector).
 
 ### Get Processing Result
 
@@ -491,7 +522,7 @@ Only aggregated data is stored. The structure uses a single `aggregated_data` ta
 - [Dashboards API](../02-dashboards/dashboards-api.md) — Dashboard, graph, and filter CRUD
 - [Authentication API](../01-auth/auth-api.md) — JWT auth and role definitions
 - [Database Schema](../09-database/schema-core.md) — `aggregated_data`, `processing_configs`, `processing_logs` table definitions
-- [Security Overview](../08-security/) — Rate limiting, MIME-type validation, file size limits
+- [Security Overview](../08-security/security-overview.md) — Rate limiting, MIME-type validation, file size limits
 - [Overview](../00-overview/overview.md) — System architecture and data flow
 - [Data Flow](../00-overview/data-flow.md) — End-to-end upload-to-display pipeline
 - [Upload UI](../07-frontend/upload-ui.md) — Frontend upload modal and file handling

@@ -27,7 +27,8 @@ User (Browser)
 │  1. UPLOAD                                              │
 │  POST /api/v1/upload/:dashboard_id?mode=overwrite|append │
 │  ├─ File saved to temp directory (platformdirs)         │
-│  ├─ MIME-type validated (.csv, .csv.gz)                 │
+│  ├─ MIME-type detected from bytes (libmagic, required)  │
+│  ├─ Stored name = log id + extension from the verdict   │
 │  ├─ File size checked                                   │
 │  └─ Processing task submitted to Redis / RQ             │
 └─────────────────────┬───────────────────────────────────┘
@@ -65,6 +66,7 @@ User (Browser)
 │  ├─ Write to dashboard_filter_values table (filter UI)  │
 │  ├─ Dim VALUES stringified, so one category is one row  │
 │  └─ Temp file unlinked AFTER the commit                 │
+│     (and on every terminal state — see below)           │
 └─────────────────────┬───────────────────────────────────┘
                       │
                       ▼
@@ -89,13 +91,16 @@ User (Browser)
 ## Upload Details
 
 * **Formats**: `.csv`, `.csv.gz`
+* **Admission**: the MIME type is detected from the **bytes** with libmagic, which is a hard startup dependency — the backend refuses to start without it, and there is no heuristic fallback. Only `MimeTypeEnum`'s three members (`text/csv`, `application/gzip`, `application/x-gzip`) are admitted, and there is no configuration key for that set. Because the verdict is the image's rather than the host's, **semicolon-delimited** text is now classified `text/plain` and **refused**.
+* **Stored name**: `{processing_log_id}{extension}`, where the extension comes from the detector's verdict — a plain CSV named `*.csv.gz` is stored as `.csv`, a real gzip named `.csv` as `.csv.gz`. No record stores the name or the path.
 * **Encoding**: UTF-8 (or as specified in `processing_config.settings.encoding`)
 * **Character Support**: Full Cyrillic and Latin character set support across database, backend, and frontend
 * **Date Format**: Standard user-facing format is `dd/mm/yyyy`; processing config supports flexible input parsing via `date_format` setting
-* **Lifecycle**: File is uploaded → processed → deleted
+* **Lifecycle**: File is uploaded → read once → removed on **every** terminal state (`completed` or `failed`). It is **not** retained past a terminal state and **cannot be reprocessed**; the only recourse after a failure is to ask the uploader for the file again. A hard process kill mid-job reaches no removal and is reclaimed by the age-based sweep. See [Temp File Cleanup](../03-processing/file-cleanup.md#the-terminal-state-rule).
 * **History**: Not stored (only aggregated results persist)
 * **Mode**: `overwrite` (replaces all data) or `append` (adds to existing)
 * **CSV parsing**: Separator, encoding, column types, and decimal separator are read from the dashboard's `processing_config` and applied during the parse phase
+* **Manual re-run**: none. There is no manual trigger endpoint; an already-accepted upload cannot be reprocessed from disk
 
 ## Processing Details
 
@@ -110,7 +115,8 @@ User (Browser)
 * **Background worker**: `data_worker.py` provides `process_csv_background` (async) and `process_csv_background_sync` (sync RQ wrapper) with mode-aware data persistence (`overwrite` clears old data, `append` keeps it).
 * **Status tracking**: `processing_logs` table. The vocabulary is exactly the five `ProcessingStatus` members — `started` → `uploaded` → `processing` → `completed` / `failed`. There is **no** `success` member; the retired database value was removed by a landed migration. The `processing` state is committed in its own transaction before the work starts and the terminal state commits with the aggregate write afterwards, so a killed worker's row stays `processing` for the periodic stale-processing sweep to find.
 * **Processing config wiring**: The dashboard's `processing_config` (from `processing_configs` table) is automatically fetched and passed through the upload pipeline to the background worker, ensuring transformations use the correct loader settings and custom metrics.
-* **Transaction safety**: The accepting path in `process_upload_with_session` **commits first**, then moves the file, then enqueues. The commit is the transaction boundary: a failure before it leaves no job in RQ and no file at a final path, and neither effect can be retracted by a rollback once done. A commit failure therefore leaves the file at the temp path, where the upload route's `finally` unlinks it; if the process dies before that, the age-based startup sweep reclaims it. The residual runs the other way: a failure between the commit and the move leaves a committed `uploaded` row with no file and no job, and a failure between the move and the enqueue leaves a file with no job (the enqueue handler unlinks the moved file). Both are reclaimed later by the orphan sweep, which now runs on the **periodic** reconciler loop rather than only at boot — see [Temp File Cleanup](../03-processing/file-cleanup.md).
+* **Transaction safety**: The accepting path in `process_upload_with_session` **commits first**, then moves the file, then enqueues. The commit is the transaction boundary: a failure before it leaves no job in RQ and no file at a final path, and neither effect can be retracted by a rollback once done. A commit failure therefore leaves the file at the temp path, where the upload route's `finally` unlinks it; if the process dies before that, the age-based sweep reclaims it. The residual runs the other way: a failure between the commit and the move leaves a committed `uploaded` row with no file and no job, and a failure between the move and the enqueue leaves a file with no job (the enqueue handler unlinks the moved file). Both are reclaimed later by the orphan sweep, which runs on the **periodic** lease-guarded reconciler loop rather than only at boot — as does the temp-file sweep, so a failed removal is retried on the next tick instead of waiting for a process restart. See [Temp File Cleanup](../03-processing/file-cleanup.md).
+* **The artefact area is bounded by age only**: `STALE_FILE_THRESHOLD_HOURS` decides when a file is removed, and nothing caps the area's size or in-flight count. A bound on the area was deferred, not dropped — it is phase 10's, under hand-over **C06-04** (volume layout, disk budget, backup story, alerting).
 * **Full recalculation is unconditional, because an empty selection now fails**: every upload rebuilds both `aggregated_data` and `dashboard_filter_values` from scratch. A selection that matches no graph is a **failed run**, not a silent success: the worker raises before either clear, names the skipped graphs in the detail, and leaves the previous rows and filter values in place.
 
 ## Aggregation Architecture

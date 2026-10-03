@@ -253,7 +253,7 @@ Admin-triggered password reset. Generates a temporary password for the target us
   the reset landed either way, even when the temporary-password handoff did not. See
   [Authentication API → Change Password](../01-auth/auth-api.md#8-change-password).
 
-> **Security:** The temporary password is **never returned in the response**. Instead, a `retrieval_token` is returned. The admin retrieves the password via `POST /api/v1/admin/temp-passwords` with the handle in the body when needed. This ensures the plaintext password never appears in API response logs, and the handle stays out of the application access log. The password is stored in Redis with TTL (default: 24h, configurable via `TEMP_PASSWORD_TTL_SECONDS`) and is deleted upon retrieval (single-use).
+> **Security:** The temporary password is **never returned in the response**. Instead, a `retrieval_token` is returned. The admin retrieves the password via `POST /api/v1/admin/temp-passwords` with the handle in the body when needed. This ensures the plaintext password never appears in API response logs, and the handle stays out of the application access log. The password is stored in Redis with TTL (default: 24h, configurable via `TEMP_PASSWORD_TTL_SECONDS`) and is deleted upon retrieval (single-use). As with registration approval, that TTL is the **only** expiry — a token issued here has no revocation path, so the window is accepted as written in [Retrieve Temporary Password](#14-retrieve-temporary-password).
 
 ---
 
@@ -418,6 +418,25 @@ roll back a transaction itself. See [Registration Approval Flow](#registration-a
 for why the Redis write is deliberately last.
 
 > **Security Note:** The `retrieval_token` (UUID) is returned instead of a plaintext `temp_password`. The admin retrieves the actual password via `POST /api/v1/admin/temp-passwords` with the handle in the body when needed. This ensures the plaintext password never appears in API response logs, and the handle stays out of the application access log. The password is stored in Redis with TTL (default: 24h) and is single-use.
+>
+> **Accepted risk — the TTL is the only expiry.** A retrieval token minted by this
+> endpoint has **no revocation path**. `TempPasswordStore` exposes no `revoke`,
+> `delete` or `invalidate`, and none of these events ends the credential's life:
+> deleting the user it was issued for, rejecting or cancelling the registration request,
+> or changing that user's password through any other path. The only two endings are
+> collection (which consumes it, single-use) and the configured
+> `TEMP_PASSWORD_TTL_SECONDS` — default **86400 s / 24 hours**, bound at store
+> construction and applied to every write. A token issued here and never collected
+> therefore stays retrievable by an administrator for that window, and **nothing reports
+> it absent until the window closes** — including the caller, which is still told a
+> credential exists.
+>
+> This is a **deliberate, documented risk acceptance**, not an oversight: the retrieval
+> token is minted with `uuid4()` *after* this transaction commits and
+> `RegistrationRequest` persists no token, so a revocation method could only be added by
+> persisting the token — which would leave a committed request with no revocable handle
+> at all. The full statement is in `src/mkobi/core/temp_password_store.py`; the windows
+> are pinned by `tests/core/test_temp_password_store.py`.
 
 ---
 
@@ -495,6 +514,18 @@ Retrieve a one-time temporary password by its retrieval token. Admin only. The p
 An expired, already-retrieved and never-existed token are indistinguishable by
 design and all answer `404`; a **store fault is not one of them** and answers
 `503`, so a retry loop against a `404` is never mistaken for an outage.
+
+**Accepted risk — no revocation path.** Collecting the credential is the only way to end
+it early. `TempPasswordStore` exposes no revocation method at all, so **user deletion,
+request rejection and a password change do not remove a live token**; the configured TTL
+(default `86400` s / 24 h) is its **sole** expiry. A token that is issued and never
+collected therefore remains retrievable by an admin until that window elapses, and no
+caller is told it is gone in the meantime. This is an accepted risk, recorded in full in
+`src/mkobi/core/temp_password_store.py` and pinned by
+`tests/core/test_temp_password_store.py::test_store_exposes_no_revocation_method` — which
+also fails if a future revocation surface appears without a deliberate review. See
+[Approve Registration Request](#12-approve-registration-request) for the same statement at
+the point the token is minted.
 
 #### 14a. Legacy Retrieve Temporary Password (Deprecated)
 

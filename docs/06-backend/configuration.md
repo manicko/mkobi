@@ -88,6 +88,7 @@ All environment variables use the double-underscore (`__`) delimiter for nesting
 | `RATE_LIMITER_FAIL_CLOSED`    | `rate_limiter_fail_closed` | `true`      | Fail-closed on Redis outage     |
 | `CORS_ORIGINS`                | `cors_origins`           | `["http://localhost:3000", "http://localhost:5173"]` | Allowed CORS origins (from `app.yaml`) |
 | `TEMP_PASSWORD_TTL_SECONDS`   | `temp_password_ttl_seconds` | `86400`     | Temp password Redis TTL (min 60s) |
+| `FRONTEND__DIST_DIR`          | `frontend.dist_dir`    | `frontend/dist` | Location of the built SPA bundle. The **single** configured source for both the static mount and the `static_files` component of `/health/detailed`: it is resolved to an absolute path once, and both read the one availability predicate, so the route table and the health verdict cannot disagree. The bundle counts as available only when the directory exists **and** carries an `index.html` — a `dist` directory without one is reported `unavailable` and is not mounted. Container `HEALTHCHECK` is unchanged. |
 
 ## Secrets Management
 
@@ -289,8 +290,14 @@ The `Settings` class exposes convenient properties that map to nested config val
 | `upload_temp_dir`     | `upload.temp_dir`             | Temp file directory            |
 | `max_file_size`       | `upload.max_file_size_mb`     | Max upload size in bytes       |
 | `allowed_file_types`  | `upload.allowed_extensions`   | Allowed file extensions        |
-| `allowed_mime_types`  | `upload.allowed_mime_types`   | Allowed MIME types             |
 | `log_level`           | `logging.level`               | Logging level                  |
+
+> `allowed_mime_types` was **removed** from this table and from `config.py`. The
+> admitted MIME set is now declared in exactly one place — the three `MimeTypeEnum`
+> members — with no configuration key able to widen or narrow it. The detector behind
+> it (libmagic) is a hard startup dependency enforced by `main.check_dependencies`, so
+> the verdict is the image's rather than the host's. See
+> [Processing API](../03-processing/processing-api.md) for what that changed.
 
 ## Cross-References
 
