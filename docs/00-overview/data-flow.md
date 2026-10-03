@@ -29,7 +29,7 @@ User (Browser)
 │  ├─ File saved to temp directory (platformdirs)         │
 │  ├─ MIME-type validated (.csv, .csv.gz)                 │
 │  ├─ File size checked                                   │
-│  └─ Processing task queued (TaskQueue)                  │
+│  └─ Processing task submitted to Redis / RQ             │
 └─────────────────────┬───────────────────────────────────┘
                       │
                       ▼
@@ -63,8 +63,8 @@ User (Browser)
 │  5. SAVE TO POSTGRESQL                                  │
 │  ├─ Write to aggregated_data table (JSONB dims+metrics) │
 │  ├─ Write to dashboard_filter_values table (filter UI)  │
-│  ├─ JSONB keys normalized (sorted) for UPSERT           │
-│  └─ Temp file deleted                                   │
+│  ├─ Dim VALUES stringified, so one category is one row  │
+│  └─ Temp file unlinked AFTER the commit                 │
 └─────────────────────┬───────────────────────────────────┘
                       │
                       ▼
@@ -105,16 +105,17 @@ User (Browser)
   2. Transform per dashboard configuration
   3. Aggregate: groupby, YoY, shares, custom metrics
 * **Result**: Full recalculation, written to PostgreSQL
-* **Background**: Processing runs asynchronously via task queue (in-memory `TaskQueue` for MVP; Redis + RQ for production). See [Task Queue](../03-processing/task-queue.md) for the migration plan.
+* **Background**: Processing runs asynchronously on a **Redis-backed RQ queue**. The application process only *submits*; the `rq-worker` container is the only executor. `src/mkobi/core/task_queue.py` is a thin RQ seam (`enqueue_job`, `get_rq_queue`) and holds no queue of its own. There is no in-process queue: the in-memory `asyncio.Queue` implementation was removed, and a test asserts the retired symbols are absent. See [Task Queue](../03-processing/task-queue.md) for the history and [Task Queue Migration](../11-guides/task-queue-migration.md) for the migration record.
 * **File processing service**: `file_processing.py` handles validation, upload, and task orchestration.
 * **Background worker**: `data_worker.py` provides `process_csv_background` (async) and `process_csv_background_sync` (sync RQ wrapper) with mode-aware data persistence (`overwrite` clears old data, `append` keeps it).
-* **Status tracking**: `processing_logs` table (`started` → `uploaded` → `processing` → `completed`/`failed`). The `processing` state is committed in its own transaction before the work starts and the terminal state commits with the aggregate write afterwards, so a killed worker's row stays `processing` for the periodic stale-processing sweep to find.
+* **Status tracking**: `processing_logs` table. The vocabulary is exactly the five `ProcessingStatus` members — `started` → `uploaded` → `processing` → `completed` / `failed`. There is **no** `success` member; the retired database value was removed by a landed migration. The `processing` state is committed in its own transaction before the work starts and the terminal state commits with the aggregate write afterwards, so a killed worker's row stays `processing` for the periodic stale-processing sweep to find.
 * **Processing config wiring**: The dashboard's `processing_config` (from `processing_configs` table) is automatically fetched and passed through the upload pipeline to the background worker, ensuring transformations use the correct loader settings and custom metrics.
-* **Transaction safety**: File move to final path occurs **after** DB commit to prevent orphan files. On commit failure, the file remains at the temp path for cleanup.
+* **Transaction safety**: The accepting path in `process_upload_with_session` **commits first**, then moves the file, then enqueues. The commit is the transaction boundary: a failure before it leaves no job in RQ and no file at a final path, and neither effect can be retracted by a rollback once done. A commit failure therefore leaves the file at the temp path, where the upload route's `finally` unlinks it; if the process dies before that, the age-based startup sweep reclaims it. The residual runs the other way: a failure between the commit and the move leaves a committed `uploaded` row with no file and no job, and a failure between the move and the enqueue leaves a file with no job (the enqueue handler unlinks the moved file). Both are reclaimed later by the orphan sweep, which now runs on the **periodic** reconciler loop rather than only at boot — see [Temp File Cleanup](../03-processing/file-cleanup.md).
+* **Full recalculation is unconditional, because an empty selection now fails**: every upload rebuilds both `aggregated_data` and `dashboard_filter_values` from scratch. A selection that matches no graph is a **failed run**, not a silent success: the worker raises before either clear, names the skipped graphs in the detail, and leaves the previous rows and filter values in place.
 
 ## Aggregation Architecture
 
-The aggregation step uses `AggregationService` which performs **per-chart GROUP BY** with Polars. For each graph, the GROUP BY columns include both the graph's dimensions and the dashboard's filter dimensions. This produces one row per unique combination of dimension values with aggregated metric values (sum by default).
+The aggregation step uses `AggregationService` which performs **per-chart GROUP BY** with Polars. For each graph, the GROUP BY columns include both the graph's dimensions and the dashboard's filter dimensions. The list is **de-duplicated in first-seen order**, so a filter whose name coincides with a graph dimension does not repeat the key (graph dimensions stay ahead of filter-only names). This produces one row per unique combination of dimension values with aggregated metric values (sum by default).
 
 After aggregation, sorting is applied to ensure proper chart visualization:
 - X-axis sorted chronologically (uses `year`/`month` columns if present, otherwise sorts by X dimension directly)
@@ -126,11 +127,12 @@ After sorting, distinct filter values are extracted from the aggregated records 
 
 ```
 CSV data → AggregationService.aggregate_for_dashboard()
-         ├─ For each graph: GROUP BY (graph.dims + filter.dims)
+         ├─ For each graph: GROUP BY (graph.dims + filter.dims, de-duplicated)
          ├─ Produce aggregated records (dims + metrics)
          ├─ Apply chart sorting (_color_total desc, x-axis asc)
          ├─ StorageManager.save_aggregates() → aggregated_data table
-         └─ extract_filter_values() → dashboard_filter_values table
+         ├─ extract_filter_values() → dashboard_filter_values table
+         └─ (no records for a graph) → run FAILS, naming the skipped graphs
 ```
 
 ## Storage Details
@@ -141,7 +143,9 @@ CSV data → AggregationService.aggregate_for_dashboard()
   * `metrics` — metric values (key-value for display)
 * **Filter value cache**: `dashboard_filter_values` stores distinct values per (dashboard, filter_name). Automatically rebuilt on each upload. See [Processing Schema](../09-database/schema-processing.md) for the table definition.
 * **Data is shared** (not user-dependent; access controlled via `dashboard_access` table). See [Access Control](../08-security/access-control.md) for the permission model.
-* **JSONB normalization**: `dims` keys are sorted recursively before writes to ensure deterministic UPSERT conflict detection
+* **Dimension value canonicalisation**: every scalar `dims` value is stringified at the storage boundary (`StorageManager._canonicalize_dims` / `_canonicalize_dim_scalar`), so the same logical category is one row whether the frame held it as `Utf8` or `Int64`. `None` becomes `""`; a `date`/`datetime` keeps its ISO `T` separator; `metrics` are **not** canonicalised, because numbers there are the data.
+* **Key sorting is cosmetic, not the identity rule**: `dims` keys are still sorted recursively before writes, but JSONB canonicalises object key order itself, so the sorting never provided index stability. What makes the UPSERT work is the scalar rule above. See the hand-over note in [Processing Schema](../09-database/schema-processing.md).
+* **Read order is a stated contract**: the aggregated-data read paths order by ascending row id, which under `overwrite` reproduces the computed chart order because the dashboard's rows are deleted before re-inserting. `append` mode is the documented exception — see [Processing API](../03-processing/processing-api.md).
 
 ## Related Documentation
 
@@ -150,4 +154,4 @@ CSV data → AggregationService.aggregate_for_dashboard()
 * [Database Schema](../09-database/schema-core.md) — Core table definitions for `dashboards`, `graphs`, `filters`
 * [Processing Configuration](../03-processing/processing-api.md) — Upload, processing pipeline, and data endpoints
 * [Security Overview](../08-security/security-overview.md) — Rate limiting, file upload security, credential enforcement
-* [Task Queue](../03-processing/task-queue.md) — Background processing and migration plan
+* [Task Queue](../03-processing/task-queue.md) — Historical record of the in-process queue and its removal

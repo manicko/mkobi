@@ -548,12 +548,22 @@ Retrieve processing logs with filtering and pagination. Admin only.
 
 | Parameter      | Type      | Required | Description                                |
 | -------------- | --------- | -------- | ------------------------------------------ |
-| `status_filter`       | string    | No       | Filter by status: `started`, `uploaded`, `processing`, `success`, `failed`, `completed` |
+| `status_filter`       | string    | No       | Filter by status: `started`, `uploaded`, `processing`, `completed`, `failed` |
 | `dashboard_id` | UUID      | No       | Filter by dashboard                        |
 | `date_from`    | datetime  | No       | Filter logs with started_at >= this date    |
 | `date_to`      | datetime  | No       | Filter logs with started_at <= this date    |
 | `skip`         | integer   | No       | Number of records to skip (default: 0)     |
 | `limit`        | integer   | No       | Maximum records to return (default: 100)  |
+
+`status_filter` is typed as `ProcessingStatus`, whose members are exactly the five
+values listed above. **`success` is not a member** — the retired database value was
+removed by a landed migration — so `?status_filter=success` is a `422`, not an empty
+result set. The success state is named `completed`. Any other value is likewise a `422`.
+
+> **Note:** the `description` string on the query parameter in
+> `api/routes/processing_logs.py` still lists `SUCCESS`. That is a source string this
+> documentation phase does not edit; the table above states the actual behaviour, which
+> the `ProcessingStatus` enum and the database both enforce.
 
 **Response** (`200 OK`):
 
@@ -562,13 +572,16 @@ Retrieve processing logs with filtering and pagination. Admin only.
   {
     "id": "990e8400-e29b-41d4-a716-446655440004",
     "dashboard_id": "550e8400-e29b-41d4-a716-446655440000",
-    "status": "success",
-    "message": "Processing completed successfully",
+    "status": "completed",
+    "message": "Processing completed successfully: 15000 rows processed",
     "started_at": "2026-05-18T12:00:00Z",
     "finished_at": "2026-05-18T12:01:30Z"
   }
 ]
 ```
+
+`message` on a completed run is the completion sentence, with any validation warnings
+summarised after an explicit separator under the column's length cap.
 
 ---
 
@@ -789,7 +802,7 @@ Displays processing logs with filtering and pagination.
 
 **Key operations:**
 - View processing logs (status, dashboard, timestamps)
-- Filter by status (`started`, `uploaded`, `processing`, `success`, `failed`, `completed`)
+- Filter by status (`started`, `uploaded`, `processing`, `completed`, `failed`)
 - Filter by dashboard
 - Filter by date range (`date_from`, `date_to`)
 - Paginated navigation
