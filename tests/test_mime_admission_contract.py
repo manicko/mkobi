@@ -18,6 +18,7 @@ import pytest
 
 import mkobi.config
 import mkobi.main
+import mkobi.startup
 from mkobi.config import Settings, UploadSettings, clear_config_cache, get_config
 from mkobi.models.enums import MimeTypeEnum
 from mkobi.services import file_processing
@@ -105,7 +106,7 @@ class TestCheckDependencies:
     """libmagic is a hard startup dependency."""
 
     def test_magic_is_required(self) -> None:
-        assert "magic" in mkobi.main.REQUIRED_MODULES
+        assert "magic" in mkobi.main.APP_REQUIRED_MODULES
 
     def test_missing_magic_exits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         real_import = builtins.__import__
@@ -120,7 +121,7 @@ class TestCheckDependencies:
         # Attach a collector directly to the emitting logger instead.
         import logging
 
-        main_logger = mkobi.main.logger
+        main_logger = mkobi.startup.logger
         captured: list[logging.LogRecord] = []
 
         class _Collector(logging.Handler):
@@ -137,7 +138,7 @@ class TestCheckDependencies:
         monkeypatch.setattr(builtins, "__import__", fake_import)
         try:
             with pytest.raises(SystemExit) as exc_info:
-                mkobi.main.check_dependencies()
+                mkobi.main.check_dependencies(mkobi.main.APP_REQUIRED_MODULES)
         finally:
             main_logger.removeHandler(collector)
             main_logger.setLevel(original_level)
@@ -147,7 +148,7 @@ class TestCheckDependencies:
         assert any("magic" in record.getMessage() for record in captured)
 
     def test_all_required_modules_present(self) -> None:
-        mkobi.main.check_dependencies()
+        mkobi.main.check_dependencies(mkobi.main.APP_REQUIRED_MODULES)
 
 
 class _MagicSentinel:

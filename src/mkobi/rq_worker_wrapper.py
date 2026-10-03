@@ -18,6 +18,7 @@ from rq.worker_registration import REDIS_WORKER_KEYS
 
 from mkobi.config import get_config
 from mkobi.core.task_queue import DEFAULT_QUEUE_NAME
+from mkobi.startup import WORKER_REQUIRED_MODULES, check_dependencies
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +204,8 @@ def start_rq_worker(redis_url: str | None = None) -> None:
     """
     if redis_url is None:
         redis_url = _build_redis_url()
+
+    check_dependencies(WORKER_REQUIRED_MODULES)
 
     try:
         # Run async connection check with retry

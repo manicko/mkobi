@@ -307,8 +307,10 @@ The `Settings` class exposes convenient properties that map to nested config val
 > `allowed_mime_types` was **removed** from this table and from `config.py`. The
 > admitted MIME set is now declared in exactly one place — the three `MimeTypeEnum`
 > members — with no configuration key able to widen or narrow it. The detector behind
-> it (libmagic) is a hard startup dependency enforced by `main.check_dependencies`, so
-> the verdict is the image's rather than the host's. See
+> it (libmagic) is a hard startup dependency enforced by `main.check_dependencies` from
+> the **app-required** set: `magic` is certified because the API entrypoint imports
+> `mkobi.services.file_processing`, which imports it at boot. The verdict is therefore
+> the image's rather than the host's. See
 > [Processing API](../03-processing/processing-api.md) for what that changed.
 
 ## Cross-References

@@ -189,7 +189,12 @@ On startup, FastAPI runs initialization through `DatabaseStarter` (lifespan cont
 
 Before any imports, `check_dependencies()` verifies that all required Python packages are importable. The application exits with a clear error message if any critical module is missing.
 
-Required modules: `aiofiles`, `fastapi`, `sqlalchemy`, `httpx`, `pydantic`, `polars`, `plotly`, `redis`, `bcrypt`, `jose`, `alembic`, `asyncpg`, `rq`, `tenacity`.
+The gate certifies two disjoint sets, one per entrypoint, so each process gates on the libraries it actually reaches rather than on a shared list:
+
+- **App-required** — loaded by the API entrypoint (`main.py` module scope): `aiofiles`, `fastapi`, `sqlalchemy`, `pydantic`, `polars`, `redis`, `bcrypt`, `jose`, `alembic`, `asyncpg`, `magic`.
+- **Worker-required** — loaded by the RQ worker entrypoint (`mkobi.rq_worker_wrapper.start_rq_worker`): `rq`. It is a *worker* contract the API app never imports, which is why it is not in the app set.
+
+`httpx` is a **test-tier** contract (used by `tests/conftest.py` and the API test modules), not an application dependency, and is gated at neither entrypoint.
 
 ### Step 2: Database Connectivity Check
 
