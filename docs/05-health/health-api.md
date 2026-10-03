@@ -23,7 +23,7 @@ The health check API provides endpoints for monitoring application availability 
 
 **Base path:** `/`
 
-**Auth level:** Public (no authentication required)
+**Auth level:** Public for `/health`; `/health/detailed` requires an administrator (see [below](#2-detailed-health-check)).
 
 ---
 
@@ -75,7 +75,9 @@ Returns the overall application status along with per-component health informati
 | -------------- | ------------------------------ |
 | **Method**     | `GET`                          |
 | **Path**       | `/health/detailed`             |
-| **Auth level** | Public                         |
+| **Auth level** | Requires an administrator      |
+
+> **Documentation-ahead-of-code.** This document states that `/health/detailed` requires an administrator. The gate is **not built in this document's release**: it is implemented by phase 15's `D-15-G` / `SECB-4`. Until that block lands, the endpoint answers anonymously as it does today. The same phase's `D-15-H` moves the reconciler counters (`lease_state`, `unprotected_ticks`) out of the anonymous body. This is a deliberate documentation-ahead-of-code hazard, accepted by the `DP-1` ruling.
 
 **Response** (`200 OK`):
 
@@ -91,6 +93,10 @@ Returns the overall application status along with per-component health informati
       "status": "available",
       "path": "/app/frontend/dist"
     },
+    "redis": {
+      "status": "connected",
+      "type": "redis"
+    },
     "stale_processing_reconciler": {
       "status": "ok",
       "lease_state": "holder",
@@ -105,7 +111,7 @@ Returns the overall application status along with per-component health informati
 
 **Response** (`200 OK` with unhealthy status):
 
-Returned when one or more components are unavailable. The overall `status` field reflects the worst component state.
+Returned when one or more components are unavailable. The overall `status` field is computed from the `database` component only, so a failing non-database component never changes it.
 
 ```json
 {
@@ -129,13 +135,16 @@ Returned when one or more components are unavailable. The overall `status` field
 | -------------- | ---------------------------------------------------------- | ----------- |
 | `database`     | Executes `SELECT 1` against PostgreSQL                     | Critical    |
 | `static_files` | Verifies the resolved bundle directory exists **and** carries `index.html` | Non-critical|
+| `redis`        | Sends a `PING` on a short-lived client from `get_async_redis_client()` | Non-critical (reported only) |
 | `stale_processing_reconciler` | Reports the background reconciler's lease state and last completed sweep | Observability only |
 
 **Behavior:**
 - Database check: same connectivity test as the basic endpoint; includes the error message in the response on failure
 - Static files check: verifies the configured bundle directory (default `frontend/dist`, populated by `npm run build`) exists **and** contains an `index.html`; reports `"available"` only for that predicate, otherwise `"unavailable"`, and the `path` field carries the **resolved absolute path** rather than the configured literal. A `dist` directory without an `index.html` is reported `"unavailable"` because the app registers no catch-all routes in that state — the check and the SPA mount are driven by the same helper, so the health verdict and the route table cannot disagree
-- The overall `status` is `"unhealthy"` if any component reports a failure
+- Redis check: sends a `PING` on a client built fresh from `get_async_redis_client()`, mirrors the `database` component's vocabulary (`"connected"` / `"disconnected"`, with `type: "redis"` and an `error` field on failure), and **always closes the client it built** so a health poll cannot leak a connection pool. The transport is bounded (see the [Configuration](../06-backend/configuration.md) note on the Redis socket timeouts), so a blackholed Redis reports the outage in roughly one second rather than blocking for a minute
+- The overall `status` is computed from the `database` component only: it is `"unhealthy"` if and only if the database check fails. `static_files`, `redis` and the reconciler never change it, and `/health/detailed` always returns `200`
 - The reconciler component never changes the overall `status` — see [below](#22-health-is-deliberately-unchanged)
+- Redis never changes the overall `status` either: a degraded Redis is reported as `"disconnected"` while the overall `status` stays `"healthy"`. This is the `DP-1` ruling (2026-10-03): Redis is a *detailed* component that never moves liveness
 
 #### 2.1 The `stale_processing_reconciler` Component
 
@@ -173,6 +182,7 @@ The lease is a load-and-observability optimisation, never a correctness gate: on
   "components": {
     "database": { "status": "connected", "type": "postgresql" },
     "static_files": { "status": "available", "path": "/app/frontend/dist" },
+    "redis": { "status": "connected", "type": "redis" },
     "stale_processing_reconciler": {
       "status": "ok",
       "lease_state": "holder",
@@ -193,7 +203,11 @@ The lease is a load-and-observability optimisation, never a correctness gate: on
 
 `/health` still returns exactly `{"status": "healthy", "database": "connected"}` (or the `503` `unhealthy` variant). It was **not** widened to include the reconciler, and the split is intentional.
 
-`/health` is what the container healthcheck curls and what `nginx` gates on via `depends_on: app: condition: service_healthy`. If reconciler or lease state fed that endpoint, then during any Redis blip three of the four workers would report unhealthy and the reverse proxy would refuse to start — turning a degraded background sweep into a total outage of the API. `/health` therefore keeps meaning one thing only: *the database is reachable*. Everything else belongs on `/health/detailed`, which returns `200` regardless and never withholds a component.
+`/health` is what the container healthcheck curls and what `nginx` gates on via `depends_on: app: condition: service_healthy`. If reconciler or lease state fed that endpoint, then during any Redis blip three of the four workers would report unhealthy and the reverse proxy would refuse to start — turning a degraded background sweep into a total outage of the API. `/health` therefore keeps meaning one thing only: *the database is reachable*. Redis is deliberately **not** a key on `/health` either, even though every authenticated request depends on it (revocation reads fail closed, so a Redis outage is what makes `GET /api/v1/auth/me` answer `503`). Everything else belongs on `/health/detailed`, which returns `200` regardless and never withholds a component.
+
+**Release coupling (`DP-1`, 2026-10-03).** Because `/health/detailed` requires an administrator (see [above](#2-detailed-health-check)), an unauthenticated external monitor can no longer use it: such a monitor must poll `/health` or authenticate. `/health` remains the only anonymous probe.
+
+**On the nginx layer.** The health `location` block forwards to the application and overrides only the `Host` header, so an application-level gate on `/health/detailed` **is** effective through nginx; there is no separate nginx access control to change. What becomes stale once the gate lands is nginx's own "no auth required" comment near that block — a phase-12 hand-over, not a claim that production is controlled by nginx rather than the application.
 
 ---
 
@@ -247,7 +261,7 @@ These endpoints are designed for integration with:
 - **Kubernetes:** Configure as `livenessProbe` and `readinessProbe` targets
 - **Load balancers:** Use `/health` for health check pings to determine instance availability
 - **Uptime monitors:** Poll `/health` at regular intervals; alert on non-200 responses
-- **Admin dashboards:** Use `/health/detailed` for a component-level status overview
+- **Admin dashboards:** Use `/health/detailed` for a component-level status overview; since it requires an administrator, an anonymous uptime monitor cannot use it and must poll `/health` or authenticate
 
 **Recommended polling interval:** 10–30 seconds for `/health`.
 

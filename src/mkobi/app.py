@@ -351,6 +351,38 @@ def create_app() -> FastAPI:
             "path": str(bundle_dir),
         }
 
+        # Check Redis connectivity. Redis is a hard dependency of every
+        # authenticated request (revocation reads fail closed), so its outage has
+        # to be observable - but it must never move the overall status or the
+        # status code. /health stays database-only, and the anonymous /health
+        # body must not grow a Redis key (DP-1, 2026-10-03; DP-2 closed). The
+        # factory is not lru_cached and builds a fresh ConnectionPool per call,
+        # so the client built here is closed in the finally below - a health poll
+        # must not leak a pool.
+        redis_client = None
+        try:
+            redis_client = get_async_redis_client()
+            await redis_client.ping()
+            components["redis"] = {
+                "status": "connected",
+                "type": "redis",
+            }
+        except Exception as e:
+            # warning, not error: Redis is degraded here, not a hard dependency
+            # failure like the database. The asymmetry is deliberate.
+            logger.warning("Redis health check failed: %s", e)
+            components["redis"] = {
+                "status": "disconnected",
+                "type": "redis",
+                "error": str(e),
+            }
+        finally:
+            if redis_client is not None:
+                try:
+                    await redis_client.aclose()
+                except Exception as e:
+                    logger.warning("Failed to close health check Redis client: %s", e)
+
         # Report the stale-processing reconciler's liveness and lease state. A
         # dead loop is visible here as a frozen last_success_at; a Redis outage is
         # visible as lease_state "unprotected". This component never changes the
