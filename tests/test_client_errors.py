@@ -7,10 +7,24 @@ with the value truncated. They also pin the properties the defect report
 established by measurement: the emitted record stays within the cap, the
 untruncated length is logged beside a capped value, the record remains one
 physical line (log-injection property), and the per-IP rate limit is unchanged.
+
+Capture note: the application calls ``setup_logging`` at import time, which
+configures every ``mkobi.*`` logger with ``propagate=False`` and its own
+handlers. pytest's ``caplog`` attaches its handler to the *root* logger, so a
+record emitted by ``mkobi.api.routes.client_errors`` is stopped at the
+``mkobi.api`` logger and ``caplog`` never sees it. ``caplog`` therefore captures
+nothing (in isolation or in a full-suite run). The project's established
+pattern for this configuration is a collector handler attached directly to the
+emitting logger; see ``tests/test_processing_config_boundary.py``'s
+``_capture_logs`` and ``tests/test_starter.py``. The captured record is still
+formatted with the production ``JSONFormatter``, so the log-injection property
+is proven through the JSON formatter exactly as before.
 """
 
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from fastapi import status
@@ -48,14 +62,46 @@ def _caller_shaped_payload() -> dict[str, Any]:
     }
 
 
-def _endpoint_records(caplog) -> list[logging.LogRecord]:
-    """Return the records the endpoint emitted, in order."""
-    return [r for r in caplog.records if r.name == "mkobi.api.routes.client_errors"]
+def _endpoint_logger() -> logging.Logger:
+    """Return the logger the report path emits through."""
+    return logging.getLogger("mkobi.api.routes.client_errors")
 
 
-def _single_endpoint_record(caplog) -> logging.LogRecord:
+@contextmanager
+def _capture_endpoint_records() -> Iterator[list[logging.LogRecord]]:
+    """Yield the records emitted by the client-errors route.
+
+    A collector is attached directly to the emitting logger because the
+    application configures ``propagate=False`` on the ``mkobi.*`` tree, so the
+    root handler pytest's ``caplog`` installs would never receive these records.
+    The logger's level and disabled flag are forced open for the duration (the
+    test image sets ``LOGGING__LEVEL=WARNING``, which is below ERROR, but the
+    forced level keeps the capture independent of that setting) and restored on
+    exit.
+    """
+    logger = _endpoint_logger()
+    records: list[logging.LogRecord] = []
+
+    class _Collector(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    collector = _Collector()
+    original_level = logger.level
+    was_disabled = logger.disabled
+    logger.addHandler(collector)
+    logger.setLevel(logging.DEBUG)
+    logger.disabled = False
+    try:
+        yield records
+    finally:
+        logger.removeHandler(collector)
+        logger.setLevel(original_level)
+        logger.disabled = was_disabled
+
+
+def _single_endpoint_record(records: list[logging.LogRecord]) -> logging.LogRecord:
     """Return the single endpoint record the report path emitted."""
-    records = _endpoint_records(caplog)
     assert len(records) == 1, f"expected one endpoint record, got {len(records)}"
     return records[0]
 
@@ -152,7 +198,7 @@ class TestParsedValueTruncation:
         payload["error"]["stack"] = "s" * (MAX_CLIENT_ERROR_FIELD_LENGTH + 5000)
         body = json.dumps(payload).encode("utf-8")
 
-        async def _chunks():  # type: ignore[no-untyped-def]
+        async def _chunks():
             yield body
 
         response = await async_client.post(
@@ -168,7 +214,6 @@ class TestParsedValueTruncation:
     async def test_oversized_top_level_fields_bounded_without_declared_length(
         self,
         async_client: AsyncClient,
-        caplog,
     ) -> None:
         """``url``, ``userAgent`` and ``componentStack`` are bounded, not rejected.
 
@@ -184,10 +229,10 @@ class TestParsedValueTruncation:
         payload["componentStack"] = oversized
         body = json.dumps(payload).encode("utf-8")
 
-        async def _chunks():  # type: ignore[no-untyped-def]
+        async def _chunks():
             yield body
 
-        with caplog.at_level(logging.ERROR):
+        with _capture_endpoint_records() as records:
             response = await async_client.post(
                 "/client-errors",
                 content=_chunks(),
@@ -198,7 +243,7 @@ class TestParsedValueTruncation:
             f"got {response.status_code}: {response.text}"
         )
 
-        record = _single_endpoint_record(caplog)
+        record = _single_endpoint_record(records)
         rendered = JSONFormatter().format(record)
         assert len(rendered) <= 4 * MAX_CLIENT_ERROR_FIELD_LENGTH + 1024, (
             f"record length {len(rendered)} exceeds the expected bound"
@@ -208,21 +253,20 @@ class TestParsedValueTruncation:
     async def test_oversized_error_message_truncated_and_length_logged(
         self,
         async_client: AsyncClient,
-        caplog,
     ) -> None:
         """An oversized ``error.message`` is truncated and its real length logged."""
         oversized = "m" * (MAX_CLIENT_ERROR_FIELD_LENGTH + 2048)
         payload = _caller_shaped_payload()
         payload["error"]["message"] = oversized
 
-        with caplog.at_level(logging.ERROR):
+        with _capture_endpoint_records() as records:
             response = await async_client.post("/client-errors", json=payload)
         assert response.status_code == status.HTTP_204_NO_CONTENT
 
-        record = _single_endpoint_record(caplog)
+        record = _single_endpoint_record(records)
         rendered = JSONFormatter().format(record)
         assert oversized not in rendered, "the oversized value must be truncated"
-        assert f"truncated=message:{len(oversized)}" in caplog.text, (
+        assert f"truncated=message:{len(oversized)}" in rendered, (
             "the untruncated length must be logged beside the capped value"
         )
 
@@ -231,25 +275,26 @@ class TestLogRecordProperties:
     """The emitted record's shape is pinned by test, not assumed."""
 
     async def test_multi_line_values_stay_one_physical_record_line(
-        self, async_client: AsyncClient, caplog
+        self, async_client: AsyncClient
     ) -> None:
         """A body containing newlines cannot forge a record boundary.
 
         The record is emitted through the JSON formatter, which escapes
         newlines; this must still hold after the bound is added. The assertion
-        formats with the production ``JSONFormatter`` rather than caplog's
-        plain-text formatter, because the plain formatter does not escape.
+        formats the captured record with the production ``JSONFormatter``, which
+        is the same formatter the application's handler runs at emit time; a
+        plain-text formatter would not escape.
         """
         payload = _caller_shaped_payload()
         payload["error"]["message"] = "line one\nline two\nERROR forged record"
         payload["error"]["stack"] = "at a\nat b\nat c"
         payload["componentStack"] = "\n    in A\n    in B"
 
-        with caplog.at_level(logging.ERROR):
+        with _capture_endpoint_records() as records:
             response = await async_client.post("/client-errors", json=payload)
         assert response.status_code == status.HTTP_204_NO_CONTENT
 
-        record = _single_endpoint_record(caplog)
+        record = _single_endpoint_record(records)
         rendered = JSONFormatter().format(record)
         assert "\n" not in rendered, "the emitted record must be one physical line"
         # json.loads round-trips, so the record is one JSON object, not several.
@@ -257,25 +302,25 @@ class TestLogRecordProperties:
         assert "forged record" in parsed["message"]
 
     async def test_truncated_log_record_within_cap_and_length_logged(
-        self, async_client: AsyncClient, caplog
+        self, async_client: AsyncClient
     ) -> None:
         """The emitted record stays within the cap and reports the real length."""
         payload = _caller_shaped_payload()
         original = "q" * (MAX_CLIENT_ERROR_FIELD_LENGTH + 1000)
         payload["error"]["stack"] = original
 
-        with caplog.at_level(logging.ERROR):
+        with _capture_endpoint_records() as records:
             response = await async_client.post("/client-errors", json=payload)
         assert response.status_code == status.HTTP_204_NO_CONTENT
 
-        record = _single_endpoint_record(caplog)
+        record = _single_endpoint_record(records)
         rendered = JSONFormatter().format(record)
         assert len(rendered) <= MAX_CLIENT_ERROR_FIELD_LENGTH + 2048, (
             f"record length {len(rendered)} exceeds the cap"
         )
         assert original not in rendered, "the oversized value must be truncated"
         # The untruncated length is present beside the capped value.
-        assert f"truncated=stack:{len(original)}" in caplog.text
+        assert f"truncated=stack:{len(original)}" in rendered
 
 
 class TestRateLimitUnchanged:
