@@ -101,11 +101,14 @@ def pytest_sessionfinish(session, exitstatus):
     try:
         from mkobi.services.file_cleanup import cleanup_stale_temp_files
 
-        # max_age_hours=0 means delete all files immediately regardless of age
-        deleted_count = cleanup_stale_temp_files(max_age_hours=0)
+        # max_age_hours=0 means delete all files immediately regardless of age.
+        # The result is a CleanupResult; read its ``deleted`` count. No ceiling is
+        # enforced here (the sweep applies none), so this session cleanup cannot
+        # inherit an inherited byte/count limit.
+        result = cleanup_stale_temp_files(max_age_hours=0)
 
-        if deleted_count > 0:
-            logger.info("Cleaned up %d temp files after test session", deleted_count)
+        if result.deleted > 0:
+            logger.info("Cleaned up %d temp files after test session", result.deleted)
     except Exception as e:
         # Log cleanup failures but don't fail the test session
         logger.warning("Failed to clean up temp files after test session: %s", e)

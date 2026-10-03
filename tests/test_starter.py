@@ -3,6 +3,7 @@
 Tests ensure_admin_user placeholder password rejection.
 """
 
+import inspect
 import os
 
 import pytest
@@ -710,3 +711,24 @@ class TestRecreateTestDatabaseCliGuard:
         # The CLI path must refuse before reaching any destructive call.
         assert factory.calls == []
         assert factory.statements == []
+
+
+class TestStarterDoesNotSweepTempFilesAtBoot:
+    """FAB-4 / D-06-C(a): the temp-file sweep left the boot path.
+
+    The sweep now rides the lease-guarded periodic loop
+    (``start_stale_processing_cleanup_task``), so ``DatabaseStarter.startup``
+    must no longer call it. Pinning the *source* is deliberately chosen over a
+    behavioural call assertion: ``startup`` needs a live database to reach the
+    old call site, whereas "the symbol is absent" is exactly the placement
+    property under test and holds regardless of environment.
+    """
+
+    def test_startup_source_does_not_reference_the_temp_file_sweep(self):
+        """The sweep symbol is gone from the starter module entirely."""
+        source = inspect.getsource(starter_module)
+        assert "cleanup_stale_temp_files" not in source
+
+    def test_startup_does_not_import_the_temp_file_sweep(self):
+        """No import of the swept function remains in the starter's imports."""
+        assert not hasattr(starter_module, "cleanup_stale_temp_files")

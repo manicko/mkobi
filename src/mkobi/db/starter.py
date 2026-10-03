@@ -34,7 +34,6 @@ from mkobi.config import (
 )
 from mkobi.core.security import hash_password
 from mkobi.models.enums import EnvironmentEnum, ProcessingStatus, UserRole
-from mkobi.services.file_cleanup import cleanup_stale_temp_files
 
 logger = logging.getLogger(__name__)
 
@@ -221,11 +220,6 @@ class DatabaseStarter:
         if self._config.env == EnvironmentEnum.DEVELOPMENT:
             from mkobi.db.dev_seeders import run_dev_seeders
             await run_dev_seeders()
-
-        # Clean up orphaned temp files from previous runs
-        deleted_count = cleanup_stale_temp_files()
-        if deleted_count > 0:
-            logger.info("Cleaned up %d orphaned temp files during startup", deleted_count)
 
         # Clean up old processing logs based on retention policy
         await self.cleanup_old_logs()

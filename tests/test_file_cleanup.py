@@ -13,7 +13,7 @@ from uuid import uuid4
 import pytest
 
 from mkobi.models.enums import ProcessingStatus
-from mkobi.services.file_cleanup import cleanup_stale_temp_files
+from mkobi.services.file_cleanup import CleanupResult, cleanup_stale_temp_files
 
 
 @pytest.fixture(autouse=True)
@@ -66,9 +66,11 @@ class TestFileCleanup:
         recent_file = Path(temp_dir) / "recent_file.csv"
         recent_file.write_text("recent\n")
 
-        deleted_count = cleanup_stale_temp_files()
+        result = cleanup_stale_temp_files()
 
-        assert deleted_count == 1
+        assert result.deleted == 1
+        assert result.already_gone == 0
+        assert result.failed == 0
         assert not old_file.exists()
         assert recent_file.exists()
 
@@ -83,8 +85,8 @@ class TestFileCleanup:
         os.utime(file_path, (old_time, old_time))
 
         # With 2 hour threshold, should be deleted
-        deleted_count = cleanup_stale_temp_files(max_age_hours=2)
-        assert deleted_count == 1
+        result = cleanup_stale_temp_files(max_age_hours=2)
+        assert result.deleted == 1
 
     def test_cleanup_stale_temp_files_keeps_recent_files(self, setup_temp_dir_fixture):
         """Test cleanup keeps recent files with 5 hour threshold."""
@@ -97,8 +99,10 @@ class TestFileCleanup:
         os.utime(file_path, (old_time, old_time))
 
         # With 5 hour threshold, should NOT be deleted
-        deleted_count = cleanup_stale_temp_files(max_age_hours=5)
-        assert deleted_count == 0
+        result = cleanup_stale_temp_files(max_age_hours=5)
+        assert result.deleted == 0
+        assert result.already_gone == 0
+        assert result.failed == 0
         assert file_path.exists()
 
     def test_cleanup_stale_temp_files_nonexistent_directory(self, monkeypatch):
@@ -108,8 +112,8 @@ class TestFileCleanup:
             lambda: MagicMock(upload_temp_dir="/nonexistent/path", stale_file_threshold_hours=24)
         )
 
-        deleted_count = cleanup_stale_temp_files()
-        assert deleted_count == 0
+        result = cleanup_stale_temp_files()
+        assert result == CleanupResult()
 
     def test_cleanup_stale_temp_files_zero_threshold_deletes_all(self, monkeypatch):
         """Test that max_age_hours=0 deletes all files regardless of age."""
@@ -125,8 +129,10 @@ class TestFileCleanup:
         file2 = Path(temp_dir) / "test_file2.csv.gz"
         file2.write_text("compressed\n")
 
-        deleted_count = cleanup_stale_temp_files(max_age_hours=0)
-        assert deleted_count == 2  # All files should be deleted
+        result = cleanup_stale_temp_files(max_age_hours=0)
+        assert result.deleted == 2  # All files should be deleted
+        assert result.already_gone == 0
+        assert result.failed == 0
 
         # Verify all files are gone
         assert not file1.exists()
@@ -147,14 +153,281 @@ class TestFileCleanup:
         file1 = Path(temp_dir) / "test_file1.csv"
         file1.write_text("test\n")
 
-        deleted_count = cleanup_stale_temp_files(max_age_hours=-1)
-        assert deleted_count == 0  # Negative threshold is invalid, no files deleted
+        result = cleanup_stale_temp_files(max_age_hours=-1)
+        assert result == CleanupResult()  # Negative threshold is invalid, no files deleted
         assert file1.exists()  # File should still exist
 
         # Cleanup
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+
+
+class TestConcurrentSweepCountContract:
+    """The count is a contract, and a lost race is not an ERROR.
+
+    Several sweepers over the same directory race the same candidates. Exactly
+    one removes each file; the others see ``FileNotFoundError``. The ruling: a
+    lost race is the ordinary outcome and must be silent at ERROR, while the
+    ``deleted`` values across sweepers still sum to the number of files removed
+    exactly once (FAB-4 / D-06-D(c)).
+    """
+
+    @staticmethod
+    def _make_old_csv(directory: Path, index: int) -> Path:
+        """Create one stale CSV file (mtime far in the past)."""
+        path = directory / f"race_{index}.csv"
+        path.write_text("a,b\n1,2\n")
+        old_time = time.time() - (100 * 3600)
+        os.utime(path, (old_time, old_time))
+        return path
+
+    def test_concurrent_sweepers_delete_each_file_once_and_do_not_log_errors(
+        self, setup_temp_dir_fixture
+    ):
+        """N sweepers over M old files: each deleted once, no ERROR, counts sum.
+
+        The last assertion is what turns ``deleted`` from a log line into a
+        contract: the sum over all concurrent sweepers of ``deleted`` equals
+        ``M``, and ``deleted + already_gone`` also sums to ``M`` -- so every
+        candidate is accounted for exactly once across the fleet.
+        """
+        import logging
+
+        temp_dir = Path(setup_temp_dir_fixture)
+        m_files = 20
+        paths = [self._make_old_csv(temp_dir, i) for i in range(m_files)]
+
+        records: list[logging.LogRecord] = []
+
+        class _Collector(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        cleanup_logger = logging.getLogger("mkobi.services.file_cleanup")
+        collector = _Collector(level=logging.DEBUG)
+        original_level = cleanup_logger.level
+        was_disabled = cleanup_logger.disabled
+        cleanup_logger.addHandler(collector)
+        cleanup_logger.setLevel(logging.DEBUG)
+        cleanup_logger.disabled = False
+        try:
+            # Simulate N concurrent sweepers by interleaving the same glob list:
+            # each sweeper independently lists the directory, so the losers reach
+            # files the winner already removed.
+            results = [cleanup_stale_temp_files(max_age_hours=0) for _ in range(5)]
+        finally:
+            cleanup_logger.removeHandler(collector)
+            cleanup_logger.setLevel(original_level)
+            cleanup_logger.disabled = was_disabled
+
+        # (i) Every file is deleted exactly once: physically gone...
+        assert all(not path.exists() for path in paths)
+
+        # (ii) No ERROR-level record is produced for a file another sweeper won.
+        error_records = [r for r in records if r.levelno >= logging.ERROR]
+        assert error_records == [], [r.getMessage() for r in error_records]
+
+        # (iii) The sweepers' deleted counts sum to M; deleted + already_gone
+        # also sum to M, so no candidate is counted twice or lost.
+        assert sum(r.deleted for r in results) == m_files
+        assert sum(r.deleted + r.already_gone for r in results) == m_files
+        assert sum(r.failed for r in results) == 0
+
+    def test_deleted_is_the_count_contract_not_an_error_line(
+        self, setup_temp_dir_fixture
+    ):
+        """One sweeper: deleted counts exactly the files it removed.
+
+        The plain single-sweeper shape of the same contract, stated so a reader
+        sees ``deleted`` as "files this process won" and not "files observed".
+        """
+        temp_dir = Path(setup_temp_dir_fixture)
+        paths = [self._make_old_csv(temp_dir, i) for i in range(3)]
+
+        result = cleanup_stale_temp_files(max_age_hours=0)
+
+        assert result.deleted == 3
+        assert result.already_gone == 0
+        assert result.failed == 0
+        assert all(not path.exists() for path in paths)
+
+
+class TestGenuineRemovalFailureIsNotSilenced:
+    """A real removal error stays an ERROR and is counted in ``failed``.
+
+    This is the counterweight to the race test: an implementation could make the
+    log quiet by swallowing every exception as "someone else got it", which is
+    exactly the opposite of the finding. An ``OSError`` that is *not*
+    ``FileNotFoundError`` (here, an ``EACCES``) must be counted in ``failed`` and
+    logged at ERROR with a traceback.
+
+    The unwritable case is simulated by patching ``Path.unlink`` to raise
+    ``PermissionError`` (an ``OSError`` subclass): this is platform-independent
+    and does not depend on the test process not being privileged, which is what
+    a real chmod-based EACCES would.
+    """
+
+    def test_permission_error_is_counted_failed_and_logged_error(
+        self, setup_temp_dir_fixture
+    ):
+        """An EACCES-equivalent removal is a failure, not a lost race."""
+        import logging
+
+        temp_dir = Path(setup_temp_dir_fixture)
+        target = temp_dir / "unwritable.csv"
+        target.write_text("a,b\n1,2\n")
+        old_time = time.time() - (100 * 3600)
+        os.utime(target, (old_time, old_time))
+
+        records: list[logging.LogRecord] = []
+
+        class _Collector(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        cleanup_logger = logging.getLogger("mkobi.services.file_cleanup")
+        collector = _Collector(level=logging.DEBUG)
+        original_level = cleanup_logger.level
+        was_disabled = cleanup_logger.disabled
+        cleanup_logger.addHandler(collector)
+        cleanup_logger.setLevel(logging.DEBUG)
+        cleanup_logger.disabled = False
+
+        real_unlink = Path.unlink
+
+        def _raise_permission_error(self, *args, **kwargs):
+            if self == target:
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_unlink(self, *args, **kwargs)
+
+        try:
+            with patch.object(Path, "unlink", _raise_permission_error):
+                result = cleanup_stale_temp_files(max_age_hours=0)
+        finally:
+            cleanup_logger.removeHandler(collector)
+            cleanup_logger.setLevel(original_level)
+            cleanup_logger.disabled = was_disabled
+
+        # The failure is counted as a failure, not absorbed as a lost race.
+        assert result.failed == 1
+        assert result.deleted == 0
+        assert result.already_gone == 0
+
+        # The ERROR severity survives: a genuine failure is not made silent.
+        error_records = [
+            r for r in records if r.levelno >= logging.ERROR and target.name in r.getMessage()
+        ]
+        assert error_records, "a genuine removal failure must be logged at ERROR"
+        # exc_info is attached (a traceback is available on the record).
+        assert any(r.exc_info is not None for r in error_records)
+
+        # The file was not removed, so a later tick can retry it.
+        assert target.exists()
+
+
+class TestPlacementUnderTheReconcilerLease:
+    """Placement/guard: the sweep rides the lease-guarded periodic loop.
+
+    The sweep moved out of ``DatabaseStarter.startup`` and onto
+    ``start_stale_processing_cleanup_task``. The guard's committed direction is
+    fail **open**: a non-holder does not sweep, but an unreachable Redis still
+    sweeps.
+    """
+
+    @staticmethod
+    def _run_loop(lease, status=None):
+        """Create the periodic loop task with a zero interval."""
+        from mkobi.workers.data_worker import start_stale_processing_cleanup_task
+
+        return asyncio.create_task(
+            start_stale_processing_cleanup_task(
+                interval_seconds=0, lease=lease, status=status
+            )
+        )
+
+    @staticmethod
+    async def _run_for(ticks: int) -> None:
+        for _ in range(ticks):
+            await asyncio.sleep(0.005)
+
+    @staticmethod
+    async def _stop(task) -> None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_non_holder_does_not_sweep_and_unreachable_redis_does(self):
+        """A non-holder performs no sweep; an unreachable Redis still sweeps.
+
+        Mirrors the assertion shape of the existing
+        ``TestReconcilerLoop`` lease tests: the same ``FakeAsyncRedis`` double,
+        the same zero-interval loop, the same ``NOT_ACQUIRED`` vs ``UNREACHABLE``
+        pair. Both sweeps of the paired recorder are patched so the loop opens no
+        database session.
+        """
+        from mkobi.core.reconciler_lease import LEASE_KEY, ReconcilerLease
+        from mkobi.models.enums import LeaseAcquisitionResult
+        from tests.test_data_worker import FakeAsyncRedis
+
+        sweeps: list[int] = []
+        orphans: list[int] = []
+        file_sweeps: list[int] = []
+
+        async def sweep(timeout_minutes=5, session=None):
+            sweeps.append(len(sweeps))
+            return 0
+
+        async def orphan_sweep(timeout_minutes=None, session=None):
+            orphans.append(len(orphans))
+            return 0
+
+        def file_sweep(max_age_hours=None):
+            file_sweeps.append(len(file_sweeps))
+            return CleanupResult()
+
+        with patch(
+            "mkobi.workers.data_worker.cleanup_stale_processing_logs", new=sweep
+        ):
+            with patch(
+                "mkobi.workers.data_worker.mark_orphaned_uploaded_logs_failed",
+                new=orphan_sweep,
+            ):
+                with patch(
+                    "mkobi.workers.data_worker.cleanup_stale_temp_files", new=file_sweep
+                ):
+                    # (1) Reachable Redis held by another replica: no sweep.
+                    holder_client = FakeAsyncRedis()
+                    assert (
+                        await ReconcilerLease(holder_client).acquire()
+                        == LeaseAcquisitionResult.ACQUIRED
+                    )
+                    task = self._run_loop(ReconcilerLease(holder_client))
+                    try:
+                        await self._run_for(60)
+                        assert sweeps == [], "a non-holder must not run the DB sweep"
+                        assert file_sweeps == [], "a non-holder must not sweep files"
+                    finally:
+                        await self._stop(task)
+
+                    # (2) Unreachable Redis: fail open and sweep the files too.
+                    unreachable = FakeAsyncRedis()
+                    unreachable.fail_mode = True
+                    task = self._run_loop(ReconcilerLease(unreachable))
+                    try:
+                        for _ in range(200):
+                            if file_sweeps:
+                                break
+                            await asyncio.sleep(0.005)
+                        assert file_sweeps, "UNREACHABLE must fail open and sweep"
+                    finally:
+                        await self._stop(task)
+        # The key is held by the foreign replica throughout; nothing here deleted
+        # it, which is what makes case (1) a genuine NOT_ACQUIRED, not an outage.
+        assert LEASE_KEY in holder_client._data
 
 
 class TestTempFileCleanupOnProcessingFailure:

@@ -21,6 +21,7 @@ from mkobi.core.reconciler_lease import (
     ReconcilerStatus,
 )
 from mkobi.db.advisory_lock import LOCK_TIMEOUT_SQLSTATE
+from mkobi.services.file_cleanup import CleanupResult
 from mkobi.utils.exceptions import AppException, ErrorCode
 from mkobi.workers.data_worker import (
     DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES,
@@ -103,8 +104,9 @@ class TestReconcilerLoop:
     def sweep_recorder(self):
         """Sweep double plus its call recorder.
 
-        Patches the module-level ``cleanup_stale_processing_logs`` for the whole
-        fixture lifetime, so the loop never opens a real database session and the
+        Patches the module-level ``cleanup_stale_processing_logs`` and the
+        temp-file sweep for the whole fixture lifetime, so the loop never opens
+        a real database session nor touches a real upload directory, and the
         tick behaviour is deterministic. The loop is driven with
         ``interval_seconds=0`` (a real, yielding ``asyncio.sleep(0)``) rather than
         by patching ``asyncio.sleep`` - patching that attribute is global to the
@@ -116,22 +118,30 @@ class TestReconcilerLoop:
             calls.append(len(calls))
             return 0
 
+        def file_sweep(max_age_hours=None):
+            return CleanupResult()
+
         with patch(
             "mkobi.workers.data_worker.cleanup_stale_processing_logs", new=sweep
         ):
-            yield calls
+            with patch(
+                "mkobi.workers.data_worker.cleanup_stale_temp_files", new=file_sweep
+            ):
+                yield calls
 
     @pytest.fixture
     def reconciler_recorder(self):
-        """Both reconciler sweeps patched together, with per-sweep call recorders.
+        """All three reconciler sweeps patched together, with per-sweep recorders.
 
-        ``PB-13`` moves the orphan reclamation onto the periodic loop, so the two
-        sweeps must be observed as a pair: an assertion that one ran is not an
-        assertion that the other did. Both are patched for the whole fixture
-        lifetime so the loop never opens a real database session.
+        ``PB-13`` moved the orphan reclamation onto the periodic loop and FAB-4
+        moved the temp-file sweep there too, so the sweeps must be observed
+        together: an assertion that one ran is not an assertion that another did.
+        All are patched for the whole fixture lifetime so the loop never opens a
+        real database session nor touches a real upload directory.
         """
         sweeps: list[int] = []
         orphans: list[int] = []
+        files: list[int] = []
 
         async def sweep(timeout_minutes=5, session=None):
             sweeps.append(len(sweeps))
@@ -141,6 +151,10 @@ class TestReconcilerLoop:
             orphans.append(len(orphans))
             return 0
 
+        def file_sweep(max_age_hours=None):
+            files.append(len(files))
+            return CleanupResult()
+
         with patch(
             "mkobi.workers.data_worker.cleanup_stale_processing_logs", new=sweep
         ):
@@ -148,7 +162,11 @@ class TestReconcilerLoop:
                 "mkobi.workers.data_worker.mark_orphaned_uploaded_logs_failed",
                 new=orphan_sweep,
             ):
-                yield sweeps, orphans
+                with patch(
+                    "mkobi.workers.data_worker.cleanup_stale_temp_files",
+                    new=file_sweep,
+                ):
+                    yield sweeps, orphans, files
 
     async def _run_for(self, ticks: int) -> None:
         """Drive the zero-interval loop forward by yielding the event loop.
@@ -373,9 +391,10 @@ class TestReconcilerLoop:
         The old pin asserted the marker ran once at boot. This replaces it: with
         the marker patched at loop scope and nothing at boot, the loop must call
         it on a tick - and more than once, which is what "not only at boot"
-        actually means.
+        actually means. FAB-4 adds the temp-file sweep to the same tick, so it is
+        asserted here too: all three sweeps ride one loop.
         """
-        sweeps, orphans = reconciler_recorder
+        sweeps, orphans, files = reconciler_recorder
         lease = ReconcilerLease(FakeAsyncRedis())
 
         task = asyncio.create_task(
@@ -388,10 +407,12 @@ class TestReconcilerLoop:
                 "the orphan sweep must run on the periodic loop, not only at boot"
             )
             assert len(orphans) >= 2
-            # The two sweeps ride the same tick: both ran, the orphan sweep not
-            # fewer times than the PROCESSING sweep.
+            # The three sweeps ride the same tick: all ran, the orphan and
+            # temp-file sweeps not fewer times than the PROCESSING sweep.
             assert sweeps, "the PROCESSING sweep must still run on the loop"
             assert len(orphans) >= len(sweeps)
+            assert files, "the temp-file sweep must run on the loop"
+            assert len(files) >= len(sweeps)
         finally:
             await self._stop(task)
 
@@ -401,7 +422,7 @@ class TestReconcilerLoop:
         This is the half of the old behaviour that changes: when Redis is
         reachable and another replica holds the lease, the orphan reclamation
         must not run here. The boot path did not sweep either (the loop is the
-        only sweeper now), so a contender that loses the lease must leave both
+        only sweeper now), so a contender that loses the lease must leave all
         recorders empty.
         """
         holder_client = FakeAsyncRedis()
@@ -412,6 +433,7 @@ class TestReconcilerLoop:
 
         sweeps: list[int] = []
         orphans: list[int] = []
+        files: list[int] = []
 
         async def sweep(timeout_minutes=5, session=None):
             sweeps.append(len(sweeps))
@@ -421,6 +443,10 @@ class TestReconcilerLoop:
             orphans.append(len(orphans))
             return 0
 
+        def file_sweep(max_age_hours=None):
+            files.append(len(files))
+            return CleanupResult()
+
         contender_status = ReconcilerStatus()
         with patch(
             "mkobi.workers.data_worker.cleanup_stale_processing_logs", new=sweep
@@ -429,20 +455,25 @@ class TestReconcilerLoop:
                 "mkobi.workers.data_worker.mark_orphaned_uploaded_logs_failed",
                 new=orphan_sweep,
             ):
-                task = asyncio.create_task(
-                    start_stale_processing_cleanup_task(
-                        interval_seconds=0,
-                        lease=ReconcilerLease(holder_client),
-                        status=contender_status,
+                with patch(
+                    "mkobi.workers.data_worker.cleanup_stale_temp_files",
+                    new=file_sweep,
+                ):
+                    task = asyncio.create_task(
+                        start_stale_processing_cleanup_task(
+                            interval_seconds=0,
+                            lease=ReconcilerLease(holder_client),
+                            status=contender_status,
+                        )
                     )
-                )
-                try:
-                    await self._run_for(60)
-                    assert sweeps == [], "a non-holder must not run the PROCESSING sweep"
-                    assert orphans == [], "a non-holder must not run the orphan sweep"
-                    assert contender_status.lease_state == ReconcilerLeaseState.NOT_HOLDER
-                finally:
-                    await self._stop(task)
+                    try:
+                        await self._run_for(60)
+                        assert sweeps == [], "a non-holder must not run the PROCESSING sweep"
+                        assert orphans == [], "a non-holder must not run the orphan sweep"
+                        assert files == [], "a non-holder must not sweep temp files"
+                        assert contender_status.lease_state == ReconcilerLeaseState.NOT_HOLDER
+                    finally:
+                        await self._stop(task)
 
 
 @pytest.mark.asyncio

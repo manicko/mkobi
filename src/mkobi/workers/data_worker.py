@@ -39,6 +39,7 @@ from mkobi.models.enums import (
     ReconcilerLeaseState,
 )
 
+from mkobi.services.file_cleanup import cleanup_stale_temp_files
 from mkobi.utils.exceptions import AppException
 
 logger = logging.getLogger(__name__)
@@ -1365,23 +1366,28 @@ async def start_stale_processing_cleanup_task(
     """Start background task for cleaning up stale processing logs.
 
     This function runs indefinitely on each tick, marking stale PROCESSING
-    entries as FAILED and reclaiming orphaned UPLOADED entries whose job never
-    materialised. Both sweeps run here, on the same tick, under one horizon and
-    one cancellation path; they are disjoint by status, so they never contend
-    for the same row.
+    entries as FAILED, reclaiming orphaned UPLOADED entries whose job never
+    materialised, and removing stale temporary upload files. All three sweeps
+    run here, on the same tick, under one horizon and one cancellation path; the
+    two database sweeps are disjoint by status, so they never contend for the
+    same row.
 
     The orphan reclamation used to run only once per process, from
     ``app.py::lifespan`` at boot. Moving it onto this loop is what makes a
     stranded ``uploaded`` row recover on a tick rather than wait for a restart.
+    Likewise, the temp-file sweep used to run only from
+    ``DatabaseStarter.startup``; a removal that failed there was never retried
+    until a human restarted a process. It now shares this loop, so a failed
+    removal is retried on the next tick.
 
     When a ``lease`` is supplied the loop is guarded so that, among several
     replicas, only the single lease holder sweeps. The guard fails **open**: an
     unreachable Redis still sweeps (Redis is a load-and-observability
     optimisation, never a correctness gate), while a reachable Redis holding
     another replica's lease is the only case that skips - it is proof a live
-    sweeper exists. Both sweeps inherit this guard, so under a lease exactly one
-    replica reclaims orphans; when Redis is unreachable every replica does, which
-    is the fail-open direction.
+    sweeper exists. All three sweeps inherit this guard, so under a lease
+    exactly one replica reclaims orphans and stale files; when Redis is
+    unreachable every replica does, which is the fail-open direction.
 
     Args:
         interval_seconds: Interval between cleanup runs in seconds.
@@ -1465,8 +1471,17 @@ async def start_stale_processing_cleanup_task(
             orphaned = await mark_orphaned_uploaded_logs_failed(
                 timeout_minutes=timeout_minutes
             )
+            # Remove stale temp upload files on the same tick and under the same
+            # guard. This ran only from DatabaseStarter.startup before, so a
+            # removal that failed was retried only by a human restarting a
+            # process; here it is retried every tick. The result carries three
+            # counts: ``deleted`` is the sweep's count contract (only files this
+            # replica won; concurrent sweepers' ``deleted`` values sum to the
+            # files removed exactly once), ``already_gone`` is a benign lost
+            # race, and ``failed`` is a real removal error.
+            files = cleanup_stale_temp_files()
             if status is not None:
-                status.record_success(count + orphaned)
+                status.record_success(count + orphaned + files.deleted)
         except Exception as e:
             logger.exception("Error during stale processing cleanup: %s", e)
         if lease is not None and holding:
