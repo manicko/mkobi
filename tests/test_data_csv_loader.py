@@ -9,14 +9,17 @@ Tests:
 - File size validation
 """
 
+import gzip
 from pathlib import Path
 
 import polars as pl
 import pytest
 
+from mkobi.config import get_config
 from mkobi.data.loaders.loader import CSVLoader, detect_file_type
 from mkobi.models.data import LoaderConfig
-from mkobi.models.enums import FileExtensionEnum
+from mkobi.models.enums import ErrorCode, FileExtensionEnum
+from mkobi.utils.exceptions import AppException
 
 
 class TestDetectFileType:
@@ -253,7 +256,13 @@ class TestCSVLoaderFileValidation:
         assert size >= 0
 
     def test_validate_file_size_exceeds_limit(self, tmp_path: Path) -> None:
-        """Test file size validation fails for large file."""
+        """Test file size validation fails for large file.
+
+        The ceiling is raised as an ``AppException`` carrying
+        ``ErrorCode.FILE_TOO_LARGE`` so the worker's classifier uses its
+        code-first branch; the message keeps the "File too large" prefix for the
+        substring fallback.
+        """
         csv_content = b"d" * 100  # 100 bytes
         csv_file = tmp_path / "test.csv"
         csv_file.write_bytes(csv_content)
@@ -261,8 +270,11 @@ class TestCSVLoaderFileValidation:
         config = LoaderConfig(max_file_size=50)  # 50 bytes limit
         loader = CSVLoader(config=config)
 
-        with pytest.raises(ValueError, match="File too large"):
+        with pytest.raises(AppException) as exc_info:
             loader._validate_file_size(csv_file)
+
+        assert exc_info.value.code == ErrorCode.FILE_TOO_LARGE
+        assert "File too large" in exc_info.value.detail
 
     def test_get_file_size_mb(self, tmp_path: Path) -> None:
         """Test _get_file_size_mb returns correct size."""
@@ -484,3 +496,163 @@ class TestCSVLoaderAggregate:
         )
         assert "value_min" in result.columns
         assert "value_max" in result.columns
+
+
+class TestSizeCeilingOwnership:
+    """The byte ceiling is configuration, not a literal, and one predicate gates it."""
+
+    def test_default_is_unchanged_at_rollout(self) -> None:
+        """Test 1: the shipped ceiling is still 100 MiB for rollout neutrality."""
+        from mkobi.config import UploadSettings
+
+        assert UploadSettings().max_file_size_mb == 100
+        assert get_config().max_file_size == 100 * 1024 * 1024
+        # The loader's own default must not drift from the derived value.
+        assert LoaderConfig().max_file_size == 100 * 1024 * 1024
+
+    def test_supplied_ceiling_reaches_construction_and_is_enforced(
+        self, tmp_path: Path
+    ) -> None:
+        """Test 2: a ceiling passed at construction is the one enforced."""
+        loader = CSVLoader(config=LoaderConfig(max_file_size=4096))
+        # Inspectable: the ceiling is object state, which is what makes
+        # "no longer a literal" testable at all.
+        assert loader.config.max_file_size == 4096
+
+        under = tmp_path / "under.csv"
+        under.write_bytes(b"d" * 4096)  # exactly the ceiling: accepted
+        assert loader._validate_file_size(under) >= 0
+
+        over = tmp_path / "over.csv"
+        over.write_bytes(b"d" * 4097)
+        with pytest.raises(AppException) as exc_info:
+            loader._validate_file_size(over)
+        assert exc_info.value.code == ErrorCode.FILE_TOO_LARGE
+
+    def test_one_predicate_agrees_across_readers(self) -> None:
+        """The gzip predicate agrees for every name _read_csv opens gzipped."""
+        assert CSVLoader._is_gzip_file(Path("x.csv.gz"))
+        assert CSVLoader._is_gzip_file(Path("x.gz"))
+        assert CSVLoader._is_gzip_file(Path("dir/x.csv.gz"))
+        assert not CSVLoader._is_gzip_file(Path("x.csv"))
+
+
+class TestGzipDecompressedCeiling:
+    """The ceiling applies to the decompressed .csv.gz stream (DP-011)."""
+
+    @staticmethod
+    def _write_csv_gz(path: Path, content: bytes) -> int:
+        path.write_bytes(gzip.compress(content, 9))
+        return path.stat().st_size
+
+    def test_small_gzip_of_large_content_is_rejected(self, tmp_path: Path) -> None:
+        """Test 4a: a small gzip whose decompressed content is large is rejected."""
+        csv_path = tmp_path / "big.csv.gz"
+        decompressed = b"category,region,sales\n" * 300_000  # ~7 MB
+        compressed_size = self._write_csv_gz(csv_path, decompressed)
+
+        ceiling = 1024 * 1024  # 1 MiB
+        # The premise: the old st_size check would have accepted this file.
+        assert compressed_size < ceiling, "test would pass via the old stat check"
+
+        loader = CSVLoader(config=LoaderConfig(max_file_size=ceiling))
+        with pytest.raises(AppException) as exc_info:
+            loader._validate_file_size(csv_path)
+        assert exc_info.value.code == ErrorCode.FILE_TOO_LARGE
+        assert "File too large" in exc_info.value.detail
+
+    def test_large_gzip_of_small_content_is_accepted(self, tmp_path: Path) -> None:
+        """Test 4b: a gzip larger on disk than its content is accepted.
+
+        Incompressible data makes the compressed size exceed the decompressed
+        size, so a ceiling measured on st_size would reject it while the stream
+        is within budget.
+        """
+        import os
+
+        csv_path = tmp_path / "rand.csv.gz"
+        content = os.urandom(1000)
+        compressed_size = self._write_csv_gz(csv_path, content)
+        assert compressed_size > 1000, "incompressible data grew the file"
+
+        ceiling = 1010  # between the decompressed size and the st_size
+        assert compressed_size > ceiling, "test relies on st_size exceeding the ceiling"
+
+        loader = CSVLoader(config=LoaderConfig(max_file_size=ceiling))
+        size_mb = loader._validate_file_size(csv_path)
+        assert size_mb >= 0
+
+    def test_single_member_bomb_is_rejected(self, tmp_path: Path) -> None:
+        """Test 5: a few-KB gzip expanding to megabytes is rejected."""
+        csv_path = tmp_path / "bomb.csv.gz"
+        decompressed = b"category,region,sales\n" * 70_000  # ~1.6 MB
+        compressed_size = self._write_csv_gz(csv_path, decompressed)
+        assert compressed_size < 8 * 1024, "bomb is small on disk, large expanded"
+
+        loader = CSVLoader(config=LoaderConfig(max_file_size=1024 * 1024))
+        with pytest.raises(AppException) as exc_info:
+            loader._validate_file_size(csv_path)
+        assert exc_info.value.code == ErrorCode.FILE_TOO_LARGE
+
+    def test_multi_member_archive_is_rejected(self, tmp_path: Path) -> None:
+        """Test 6: concatenated members defeat any trailer-based check.
+
+        The gzip ISIZE trailer is per member and can understate the total, so a
+        bounded reader that stopped at the first member would be bypassed. This
+        archive is read to EOF and rejected on the running total.
+        """
+        csv_path = tmp_path / "multi.csv.gz"
+        member = b"category,region,sales\n" * 70_000  # ~1.6 MB
+        members = [member] * 40
+        with gzip.open(csv_path, "wb") as stream:
+            for part in members:
+                stream.write(part)
+        compressed_size = csv_path.stat().st_size
+        assert compressed_size < 1024 * 1024, "archive small on disk, huge expanded"
+
+        loader = CSVLoader(config=LoaderConfig(max_file_size=1024 * 1024))
+        with pytest.raises(AppException) as exc_info:
+            loader._validate_file_size(csv_path)
+        assert exc_info.value.code == ErrorCode.FILE_TOO_LARGE
+
+
+class TestMalformedGzipFailures:
+    """Test 7: malformed archives fail as ordinary exceptions and are classified.
+
+    On the unfixed tree these raise ``pyo3_runtime.PanicException`` from inside
+    the Polars read -- a ``BaseException`` that escapes every ``except
+    Exception`` in the loader and the worker. Reading the stream in pure Python
+    before the size decision turns each into an ordinary exception subclass.
+    """
+
+    def _assert_ordinary_and_classified(self, csv_path: Path) -> None:
+        from mkobi.workers.data_worker import _map_processing_error_to_code
+
+        with pytest.raises(BaseException) as exc_info:
+            CSVLoader().load_csv(csv_path)
+
+        error = exc_info.value
+        assert isinstance(error, Exception), (
+            f"{type(error).__name__} is not an Exception; "
+            "malformed archives must not surface as a BaseException panic"
+        )
+        emitted = _map_processing_error_to_code(error)
+        assert emitted in {m.value for m in ErrorCode}
+
+    def test_truncated_archive(self, tmp_path: Path) -> None:
+        csv_path = tmp_path / "truncated.csv.gz"
+        full = gzip.compress(b"a,b\n" * 100_000)
+        csv_path.write_bytes(full[: len(full) // 2])
+        self._assert_ordinary_and_classified(csv_path)
+
+    def test_non_gzip_bytes_named_csv_gz(self, tmp_path: Path) -> None:
+        csv_path = tmp_path / "fake.csv.gz"
+        csv_path.write_bytes(b"this is not a gzip stream\n")
+        self._assert_ordinary_and_classified(csv_path)
+
+    def test_corrupt_deflate(self, tmp_path: Path) -> None:
+        csv_path = tmp_path / "corrupt.csv.gz"
+        payload = bytearray(gzip.compress(b"a,b\n" * 100_000))
+        payload[14] ^= 0xFF  # corrupt bytes inside the deflate stream
+        csv_path.write_bytes(payload)
+        self._assert_ordinary_and_classified(csv_path)

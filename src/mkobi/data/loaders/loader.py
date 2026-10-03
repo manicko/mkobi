@@ -5,6 +5,7 @@ including support for compressed .csv.gz files.
 """
 
 import asyncio
+import gzip
 import logging
 from pathlib import Path
 from typing import Any
@@ -13,9 +14,15 @@ import polars as pl
 
 from mkobi.config import get_config
 from mkobi.models.data import LoaderConfig
-from mkobi.models.enums import FileExtensionEnum
+from mkobi.models.enums import ErrorCode, FileExtensionEnum
+from mkobi.utils.exceptions import AppException
 
 logger = logging.getLogger(__name__)
+
+# Chunk size for the bounded decompressed-size measurement. The gzip member is
+# read through gzip.open in chunks of this size, so peak memory is one chunk
+# rather than the whole decompressed stream.
+_SIZE_PROBE_CHUNK_BYTES = 1 << 20
 
 
 async def load_csv(filepath: Path, config: dict[str, Any] | None = None) -> pl.DataFrame:
@@ -35,9 +42,7 @@ async def load_csv(filepath: Path, config: dict[str, Any] | None = None) -> pl.D
         FileNotFoundError: If file does not exist.
         ValueError: If file cannot be read.
     """
-    loader = CSVLoader()
-    if config:
-        loader.config = LoaderConfig(**config)
+    loader = CSVLoader(config=LoaderConfig(**config) if config else None)
     return await asyncio.to_thread(loader.load_csv, filepath, config)
 
 
@@ -72,7 +77,9 @@ class CSVLoader:
 
     Responsible for reading CSV files (including compressed .csv.gz),
     validating data structure and transforming types.
-    Supports lazy loading for large files.
+    ``lazy_threshold_mb`` chooses how the frame is built (Polars'
+    lazy query engine versus ``read_csv``), not whether the result is
+    materialised -- every path returns a ``pl.DataFrame``.
 
     Attributes:
         config: Loader configuration.
@@ -93,16 +100,21 @@ class CSVLoader:
         config: dict[str, Any] | None = None,
         lazy_threshold_mb: float | None = None,
     ) -> pl.DataFrame:
-        """Load CSV file with lazy loading support for large files.
+        """Load CSV file, choosing how the frame is built by size.
 
         Reads CSV file (supports .csv and .csv.gz).
-        Uses lazy evaluation for files larger than lazy_threshold_mb.
-        Performs file size validation.
+        Files larger than ``lazy_threshold_mb`` are built through Polars'
+        lazy query engine and then materialised; smaller files are read with
+        ``read_csv``. Both paths return a ``pl.DataFrame`` -- the threshold
+        selects the builder, not whether the frame is materialised.
+        Performs file size validation (the ceiling applies to the
+        decompressed stream for .csv.gz).
 
         Args:
             file_path: Path to CSV file.
             config: Optional configuration for reading CSV (separator, has_header, encoding, etc.).
-            lazy_threshold_mb: Threshold in MB for lazy loading.
+            lazy_threshold_mb: Threshold in MB above which the frame is built
+                through Polars' lazy query engine.
                 If None, uses application configuration.
 
         Returns:
@@ -110,7 +122,8 @@ class CSVLoader:
 
         Raises:
             FileNotFoundError: If file does not exist.
-            ValueError: If file is too large or cannot be read.
+            AppException: If the file (decompressed, for .csv.gz) is too large.
+            ValueError: If the file cannot be read.
         """
         logger.info("Loading CSV file: %s", file_path)
 
@@ -136,7 +149,7 @@ class CSVLoader:
                     file_size_mb,
                     lazy_threshold_mb,
                 )
-                df = self._read_csv_lazy(file_path, config)
+                df = self._read_csv_via_scan(file_path, config)
             else:
                 logger.info(
                     "Using normal reading for file %.2f MB (threshold: %.2f MB)",
@@ -183,8 +196,14 @@ class CSVLoader:
         """
         return self.load_csv(file_path)
 
-    def _read_csv_lazy(self, file_path: Path, config: dict[str, Any] | None = None) -> pl.DataFrame:
-        """Read CSV file using lazy evaluation.
+    def _read_csv_via_scan(self, file_path: Path, config: dict[str, Any] | None = None) -> pl.DataFrame:
+        """Read CSV by scanning through Polars' lazy query engine, then collect.
+
+        The name states what the branch does. It is **not** lazy in its result:
+        ``pl.scan_csv(...).collect()`` returns a materialised ``pl.DataFrame``,
+        exactly like ``_read_csv``. The branch is selected only by
+        ``lazy_threshold_mb``; for a plain ``.csv`` the ``st_size`` that selects
+        it is the decompressed size, so that path is already correct.
 
         Args:
             file_path: Path to CSV file.
@@ -208,13 +227,13 @@ class CSVLoader:
                         encoding = "utf8"
                     read_kwargs["encoding"] = encoding
 
-            if file_path.suffix == ".gz" or file_path.name.endswith(".csv.gz"):
-                logger.debug("Reading gzipped CSV file (lazy): %s", file_path)
+            if self._is_gzip_file(file_path):
+                logger.debug("Reading gzipped CSV file (scan): %s", file_path)
             else:
-                logger.debug("Reading normal CSV file (lazy): %s", file_path)
+                logger.debug("Reading normal CSV file (scan): %s", file_path)
             return pl.scan_csv(file_path, **read_kwargs).collect()
         except Exception as e:
-            logger.error("Error reading CSV file (lazy) %s: %s", file_path, e)
+            logger.error("Error reading CSV file (scan) %s: %s", file_path, e)
             raise
 
     def _get_file_size_mb(self, file_path: Path) -> float:
@@ -233,8 +252,111 @@ class CSVLoader:
             raise FileNotFoundError(f"File not found: {file_path}")
         return file_path.stat().st_size / (1024 * 1024)
 
+    @staticmethod
+    def _is_gzip_file(file_path: Path) -> bool:
+        """Return True when the path names a gzip-compressed CSV.
+
+        The single predicate for "this file is read through gzip.open". It must
+        agree with the test ``_read_csv`` uses to open the file, or a ``.csv.gz``
+        could be measured by ``stat`` (its compressed size) while being read
+        decompressed.
+        """
+        return file_path.suffix == ".gz" or file_path.name.endswith(".csv.gz")
+
+    def _raise_file_too_large(
+        self,
+        file_path: Path,
+        observed_bytes: int,
+        max_size_bytes: int,
+        *,
+        decompressed: bool = False,
+    ) -> None:
+        """Raise the classified FILE_TOO_LARGE error for an oversized file.
+
+        The message keeps the established "File too large" prefix so the
+        substring fallback in ``_map_processing_error_to_code`` still classifies
+        it, while the ``AppException``'s code makes the code-first branch of that
+        classifier the one that actually applies.
+
+        Args:
+            file_path: Path to the offending file.
+            observed_bytes: The size that tripped the ceiling, in bytes.
+            max_size_bytes: The configured ceiling, in bytes.
+            decompressed: Whether the observed size is the decompressed stream.
+
+        Raises:
+            AppException: Always, with ``ErrorCode.FILE_TOO_LARGE``.
+        """
+        logger.error(
+            "File exceeds maximum size: %s (%d > %d bytes, decompressed=%s)",
+            file_path,
+            observed_bytes,
+            max_size_bytes,
+            decompressed,
+        )
+        if decompressed:
+            detail = (
+                f"File too large: decompressed size exceeds {max_size_bytes} bytes "
+                f"(compressed: {file_path.stat().st_size} bytes)"
+            )
+        else:
+            detail = (
+                f"File too large: {file_path.stat().st_size} bytes "
+                f"(max: {max_size_bytes} bytes)"
+            )
+        raise AppException(code=ErrorCode.FILE_TOO_LARGE, detail=detail)
+
+    def _measure_decompressed_size(self, file_path: Path, max_size_bytes: int) -> int:
+        """Measure the decompressed gzip stream, failing closed at the ceiling.
+
+        Reads the gzip member through ``gzip.open`` in
+        ``_SIZE_PROBE_CHUNK_BYTES`` chunks and aborts the moment the running
+        total passes ``max_size_bytes``, so peak memory is one chunk and the
+        cost is bounded by the budget. Acceptance requires reading the stream to
+        EOF within budget, which keeps it fail-closed for a multi-member archive
+        whose trailer understates the expansion: every member is read, not just
+        the first.
+
+        Because the stream is read here in pure Python, a malformed archive
+        raises an ordinary ``Exception`` subclass before the size decision
+        (``zlib.error`` for a corrupt payload, ``EOFError`` for a truncated
+        archive, ``gzip.BadGzipFile`` for non-gzip bytes). Raising inside the
+        Polars read instead would surface as a ``BaseException`` panic and escape
+        every ``except Exception`` in the loader and the worker.
+
+        Args:
+            file_path: Path to the gzip file.
+            max_size_bytes: The configured ceiling, in bytes.
+
+        Returns:
+            int: The decompressed size in bytes.
+
+        Raises:
+            AppException: If the decompressed stream exceeds the ceiling.
+        """
+        total = 0
+        with gzip.open(file_path, "rb") as stream:
+            while True:
+                chunk = stream.read(_SIZE_PROBE_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_size_bytes:
+                    self._raise_file_too_large(
+                        file_path, total, max_size_bytes, decompressed=True
+                    )
+        return total
+
     def _validate_file_size(self, file_path: Path, max_size_mb: float | None = None) -> float:
-        """Validate file size.
+        """Validate file size against the configured ceiling.
+
+        For a plain ``.csv`` the ceiling is compared against ``st_size``, which
+        *is* the decompressed size, so that path is correct as it stands. For a
+        ``.csv.gz`` the ceiling applies to the **decompressed** stream: the
+        gzip member is read through ``gzip.open`` in bounded chunks and the
+        running total is aborted the moment it passes the budget. Measuring
+        ``st_size`` there would let a small gzip of a multi-gigabyte CSV pass the
+        check and then be fully expanded by the reader.
 
         Args:
             file_path: Path to file.
@@ -242,27 +364,34 @@ class CSVLoader:
                 If None, uses loader configuration.
 
         Returns:
-            float: File size in MB.
+            float: File size in MB (decompressed for a gzip file).
 
         Raises:
-            ValueError: If file is too large.
+            AppException: If the file is too large, with
+                ``ErrorCode.FILE_TOO_LARGE``.
             FileNotFoundError: If file not found.
         """
-        file_size_mb = self._get_file_size_mb(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
 
-        if max_size_mb is None:
-            max_size_mb = self.config.max_file_size / (1024 * 1024)
+        max_size_bytes = (
+            int(max_size_mb * 1024 * 1024)
+            if max_size_mb is not None
+            else self.config.max_file_size
+        )
 
-        if file_size_mb > max_size_mb:
-            logger.error(
-                "File exceeds maximum size: %s (%.2f > %.2f MB)",
-                file_path,
-                file_size_mb,
-                max_size_mb,
+        if self._is_gzip_file(file_path):
+            decompressed_bytes = self._measure_decompressed_size(
+                file_path, max_size_bytes
             )
-            raise ValueError(
-                f"File too large: {file_path.stat().st_size} bytes "
-                f"(max: {int(max_size_mb * 1024 * 1024)} bytes)"
+            file_size_mb = decompressed_bytes / (1024 * 1024)
+            logger.info("File size %s: %.2f MB (decompressed)", file_path, file_size_mb)
+            return file_size_mb
+
+        file_size_mb = self._get_file_size_mb(file_path)
+        if file_size_mb > max_size_bytes / (1024 * 1024):
+            self._raise_file_too_large(
+                file_path, file_path.stat().st_size, max_size_bytes
             )
 
         logger.info("File size %s: %.2f MB", file_path, file_size_mb)
@@ -292,9 +421,8 @@ class CSVLoader:
                     encoding = "utf8"
                 read_kwargs["encoding"] = encoding
 
-            if file_path.suffix == ".gz" or file_path.name.endswith(".csv.gz"):
+            if self._is_gzip_file(file_path):
                 logger.debug("Reading gzipped CSV file: %s", file_path)
-                import gzip
                 with gzip.open(file_path, "rb") as f:
                     return pl.read_csv(f, **read_kwargs)
             else:

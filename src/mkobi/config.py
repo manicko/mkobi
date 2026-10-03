@@ -1055,7 +1055,7 @@ class Settings(BaseSettings):
 
     @property
     def lazy_threshold_mb(self) -> float:
-        """Threshold in MB for using lazy evaluation."""
+        """Threshold in MB above which the loader builds the frame via scan_csv."""
         return self.upload.lazy_threshold_mb
 
     @property

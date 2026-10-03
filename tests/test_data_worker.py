@@ -1848,3 +1848,80 @@ class TestEmptySelectionGuard:
             assert filter_rows[0].filter_value == "Alpha"
         finally:
             csv_path.unlink(missing_ok=True)
+
+
+class TestCeilingComesFromConfiguration:
+    """Test 3: the loader ceiling is the configured value, not the 100 MiB literal.
+
+    The worker used to construct ``CSVLoader()`` with no argument, so
+    ``LoaderConfig.max_file_size`` fell back to a hard-coded 100 MiB that the
+    environment cannot move. Patching the config the worker reads to a small
+    ceiling and feeding a file above it must fail the run as FILE_TOO_LARGE.
+    """
+
+    async def test_worker_ceiling_is_configuration_driven(self, async_db_session):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+        from mkobi.db.repositories.graph_repo import GraphRepository
+        from mkobi.db.repositories.processing_log_repo import ProcessingLogRepository
+        from mkobi.models.enums import GraphType
+
+        dashboard = await DashboardRepository().create(
+            db=async_db_session,
+            name=f"ceiling_{uuid4().hex[:8]}",
+            description="ceiling dashboard",
+        )
+        await GraphRepository().create(
+            db=async_db_session,
+            dashboard_id=dashboard.id,
+            name="Sales",
+            type=GraphType.TABLE,
+            config={},
+            dimensions=["category"],
+            metrics=["sales"],
+        )
+        log = await ProcessingLogRepository().create_log(
+            dashboard_id=dashboard.id,
+            status=ProcessingStatus.UPLOADED,
+            message="Uploaded",
+            db=async_db_session,
+        )
+        await async_db_session.commit()
+        task_id = str(log.id)
+
+        # A valid CSV larger than the patched ceiling (4096 bytes).
+        with tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".csv", delete=False
+        ) as handle:
+            handle.write(b"category,sales\n" + b"A,1\n" * 2000)
+            csv_path = Path(handle.name)
+        assert csv_path.stat().st_size > 4096
+
+        try:
+            with patch(
+                "mkobi.workers.data_worker.get_config",
+                return_value=SimpleNamespace(max_file_size=4096),
+            ):
+                with pytest.raises(AppException) as exc_info:
+                    await process_csv_background(
+                        file_path_str=str(csv_path),
+                        task_id=task_id,
+                        dashboard_id_str=str(dashboard.id),
+                        processing_config_dict=None,
+                        mode="overwrite",
+                        db_session=async_db_session,
+                    )
+
+            assert exc_info.value.code == ErrorCode.FILE_TOO_LARGE
+
+            refreshed = await ProcessingLogRepository().get_by_id(
+                log.id, async_db_session
+            )
+            assert refreshed is not None
+            assert refreshed.status == ProcessingStatus.FAILED
+            assert refreshed.error_code == ErrorCode.FILE_TOO_LARGE.value
+        finally:
+            csv_path.unlink(missing_ok=True)

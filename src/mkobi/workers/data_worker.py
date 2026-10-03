@@ -596,8 +596,15 @@ async def _process_csv_file_async(
             if settings.get("column_types"):
                 column_types = settings["column_types"]
 
-        # Load and process CSV (run in thread since Polars is sync)
-        loader = CSVLoader()
+        # Load and process CSV (run in thread since Polars is sync).
+        # The byte ceiling is taken from configuration, not a literal: the
+        # loader's LoaderConfig defaults max_file_size to a hard-coded 100 MiB
+        # that the environment cannot move, while Settings.max_file_size derives
+        # that same number from UploadSettings.max_file_size_mb. Passing it here
+        # makes the configured value the one door to the ceiling.
+        loader = CSVLoader(
+            config=LoaderConfig(max_file_size=get_config().max_file_size)
+        )
         df = await asyncio.to_thread(
             loader.load_csv, file_path, csv_parse_config if csv_parse_config else None
         )
