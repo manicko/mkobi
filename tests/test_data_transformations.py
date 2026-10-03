@@ -10,6 +10,8 @@ Tests:
 - _parse_polars_dt_expr (safe Polars expression parser)
 """
 
+import uuid
+
 import polars as pl
 import pytest
 
@@ -500,12 +502,115 @@ class TestApplyTransformations:
         assert result["value"][0] == 30
         assert result["value"][2] == 10
 
-    def test_transformations_with_limit(self):
-        """Test transformations with limit."""
-        df = pl.DataFrame({"value": [10, 20, 30, 40, 50]})
-        result = apply_transformations(df, limit=3)
+    def test_limit_with_complete_sort_by_truncates_deterministically(self):
+        """A complete ``sort_by`` orders the frame the limit is taken from.
 
-        assert result.shape[0] == 3
+        The ruled semantic is "top N by this metric": order by the metric
+        descending, keep the first N. This exercises the ordering half directly;
+        the worker applies sort+limit together through
+        ``_apply_post_aggregation_limit`` after aggregation. This is the case
+        that must not regress under the move.
+        """
+        df = pl.DataFrame({"category": ["A", "B", "C", "D"], "value": [10, 40, 20, 30]})
+
+        result = apply_transformations(df, sort_by=["value"], descending=True)
+
+        assert result["value"].to_list() == [40, 30, 20, 10]
+        assert result["category"].to_list() == ["B", "D", "C", "A"]
+
+    def test_post_aggregation_limit_is_order_then_head(self):
+        """``_apply_post_aggregation_limit`` sorts the frame, then truncates it.
+
+        Sorting by an aggregate column (``value_sum``) is only possible here,
+        after aggregation, which is why the limit's ordering is a post-aggregation
+        concern.
+        """
+        from mkobi.workers.data_worker import _apply_post_aggregation_limit
+
+        grouped = pl.DataFrame(
+            {
+                "category": ["C0", "C1", "C2", "C3", "C4"],
+                "value_sum": [10, 50, 30, 20, 40],
+            }
+        )
+
+        result = _apply_post_aggregation_limit(grouped, ["value_sum"], True, 3)
+
+        assert result["value_sum"].to_list() == [50, 40, 30]
+        assert result["category"].to_list() == ["C1", "C4", "C2"]
+
+    def test_post_aggregation_limit_without_sort_by_only_truncates(self):
+        """A bare ``limit`` truncates without reordering the frame."""
+        from mkobi.workers.data_worker import _apply_post_aggregation_limit
+
+        df = pl.DataFrame({"value": [10, 20, 30, 40, 50]})
+
+        result = _apply_post_aggregation_limit(df, None, False, 3)
+        unchanged = _apply_post_aggregation_limit(df, None, False, None)
+
+        assert result["value"].to_list() == [10, 20, 30]
+        assert unchanged.shape == df.shape
+        assert unchanged["value"].to_list() == [10, 20, 30, 40, 50]
+
+    def test_limit_composes_with_groupby_aggregation(self):
+        """``groupby`` + ``aggregations`` + ``limit`` compose: aggregate all
+        groups, then truncate by the computed metric.
+
+        Ten distinct categories each with one value; the aggregate ranking
+        (largest first) differs from the raw row order. Aggregating all ten then
+        keeping the top three by the computed metric yields the three LARGEST.
+        """
+        from mkobi.workers.data_worker import _apply_post_aggregation_limit
+
+        df = pl.DataFrame(
+            {
+                "category": [f"C{i}" for i in range(10)],
+                "value": [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+            }
+        )
+
+        grouped = calculate_aggregations(
+            df,
+            groupby=["category"],
+            aggregations=[{"column": "value", "function": "sum"}],
+        )
+        limited = _apply_post_aggregation_limit(grouped, ["value_sum"], True, 3)
+
+        assert limited["value_sum"].to_list() == [100, 90, 80]
+        assert limited["category"].to_list() == ["C9", "C8", "C7"]
+
+    def test_groupby_dedup_and_limit_do_not_disturb_each_other(self):
+        """The DP-007 ``groupby`` de-duplication and the post-aggregation limit
+        are independent: the groupby reduces to one representative row per group
+        first, and the limit then truncates those groups by order.
+        """
+        from mkobi.workers.data_worker import _apply_post_aggregation_limit
+
+        df = pl.DataFrame({"category": ["A", "A", "B", "C"], "value": [20, 10, 30, 40]})
+
+        deduped = apply_transformations(df, groupby=["category"])
+        assert deduped.shape[0] == 3
+
+        limited = _apply_post_aggregation_limit(deduped, ["value"], True, 2)
+        assert limited["category"].to_list() == ["C", "B"]
+        assert limited["value"].to_list() == [40, 30]
+
+    def test_transformations_reject_a_limit(self):
+        """``limit`` is applied after aggregation, not inside apply_transformations.
+
+        DP-008: truncating the raw frame before ``calculate_aggregations`` makes
+        ``limit: 3`` aggregate the first three raw rows instead of aggregating
+        all rows and keeping three groups. The truncation point therefore moved
+        into the worker's post-aggregation stage
+        (``data_worker._run_with_transaction`` calling
+        ``_apply_post_aggregation_limit``). The parameter was removed, not
+        accepted-and-ignored: passing it is a ``TypeError``, so no caller can
+        silently retain the old behaviour.
+        """
+        df = pl.DataFrame({"value": [10, 20, 30, 40, 50]})
+
+        with pytest.raises(TypeError):
+            apply_transformations(df, limit=3)  # type: ignore[call-arg]
 
     def test_transformations_with_computed_fields(self):
         """Test transformations with computed fields."""
@@ -845,3 +950,204 @@ class TestAggregateData:
         result = aggregate_data(df, graph_configs)
 
         assert all(isinstance(item, dict) for item in result)
+
+
+class TestLimitAfterAggregationStoredValue:
+    """DP-008: the stored-value detector for the limit's truncation point.
+
+    The truncation point must be asserted on the STORED value, not on a frame
+    shape: a test that only counts rows passes against the unfixed code and
+    proves nothing. These tests drive the real worker
+    (``process_csv_background``) over the real storage path
+    (``StorageManager.save_aggregates``) and read the persisted metrics back.
+
+    The fixture is the audit report's DP-008 shape: ten raw rows in two regions
+    (``N`` × 1..5, then ``S`` × 10..50), ``groupby=["region"]``,
+    ``aggregations=[revenue sum]`` and a bare ``limit=3`` with no ``sort_by``.
+    The first three raw rows are all region ``N``, so the unfixed premature
+    truncation aggregates three rows and loses region ``S`` entirely
+    (``{N: revenue_sum 6}``); the fix aggregates all ten and then truncates the
+    two resulting groups (``{N: 15, S: 150}``). The stored value, not the row
+    count, is the detector.
+    """
+
+    @pytest.fixture
+    async def limit_dashboard(self, async_db_session) -> dict:
+        """Dashboard with a region graph whose metric is the config's ``revenue_sum``.
+
+        The processing config aggregates ``revenue`` to ``revenue_sum``, so the
+        graph's metric must name the post-config column (``revenue_sum``); the
+        pipeline's own per-graph aggregation then stores it under
+        ``revenue_sum_sum``, which is the asserted stored key.
+        """
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+        from mkobi.db.repositories.graph_repo import GraphRepository
+        from mkobi.models.enums import GraphType
+
+        dashboard = await DashboardRepository().create(
+            db=async_db_session,
+            name=f"limit_after_agg_{uuid.uuid4().hex[:8]}",
+            description="DP-008 stored-value detector",
+        )
+        graph = await GraphRepository().create(
+            db=async_db_session,
+            dashboard_id=dashboard.id,
+            name=f"limit_graph_{uuid.uuid4().hex[:8]}",
+            type=GraphType.TABLE,
+            dimensions=["region"],
+            metrics=["revenue_sum"],
+            config={},
+        )
+        await async_db_session.commit()
+        return {"dashboard": dashboard, "graph": graph}
+
+    async def _store_with_config(
+        self,
+        async_db_session,
+        dashboard_id,
+        csv_content: bytes,
+        settings: dict,
+    ) -> dict[str, int]:
+        """Run the worker synchronously over a temp CSV, return stored metrics.
+
+        Returns a mapping of region -> the STORED metric value, read back from
+        the database through StorageManager so the assertion is on persisted
+        data, not on an intermediate frame.
+        """
+        import tempfile
+        from pathlib import Path
+
+        from mkobi.data.storage.manager import StorageManager
+        from mkobi.workers.data_worker import process_csv_background
+
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as f:
+            f.write(csv_content)
+            csv_path = Path(f.name)
+
+        try:
+            await process_csv_background(
+                file_path_str=str(csv_path),
+                task_id=str(uuid.uuid4()),
+                dashboard_id_str=str(dashboard_id),
+                # The producer (DataService._execute_upload) passes
+                # ``dict(config_response.settings)`` -- a FLAT dict, all keys at
+                # the top level. The worker reads CSV options from the same dict
+                # and builds ``ProcessingConfig(**processing_config_dict)`` from
+                # it, so ``groupby``/``limit`` sit at the top level too.
+                processing_config_dict=settings,
+                mode="overwrite",
+                db_session=async_db_session,
+            )
+            await async_db_session.flush()
+            records = await StorageManager(async_db_session).get_aggregates(
+                dashboard_id
+            )
+        finally:
+            csv_path.unlink(missing_ok=True)
+
+        return {
+            record["dims"]["region"]: record["metrics"]["revenue_sum_sum"]
+            for record in records
+        }
+
+    @staticmethod
+    def _audit_csv() -> bytes:
+        """The audit report's ten rows in the exact order it uses.
+
+        Rows: N × 1..5 first, then S × 10..50. A ``head(3)`` before aggregation
+        therefore sees only region ``N``.
+        """
+        rows = [f"N,{n}\n".encode() for n in range(1, 6)]
+        rows += [f"S,{s}\n".encode() for s in range(10, 51, 10)]
+        return b"region,revenue\n" + b"".join(rows)
+
+    async def test_stored_value_is_the_full_aggregate_not_the_truncation(
+        self, async_db_session, limit_dashboard
+    ) -> None:
+        """The stored sum is over ALL ten rows, not the three the old head kept.
+
+        Red before the fix: the stored set was ``{N: 6}`` -- region ``S`` was
+        lost and region ``N`` summed only the first three raw rows. After the
+        fix it is ``{N: 15, S: 150}``.
+        """
+        settings = {
+            "groupby": ["region"],
+            "aggregations": [{"column": "revenue", "function": "sum"}],
+            "limit": 3,
+        }
+
+        stored = await self._store_with_config(
+            async_db_session,
+            limit_dashboard["dashboard"].id,
+            self._audit_csv(),
+            settings,
+        )
+
+        assert stored == {"N": 15, "S": 150}
+        # Explicitly pin the unfixed value so a regression to premature
+        # truncation is unmistakable.
+        assert stored != {"N": 6}
+
+    async def test_reversed_source_order_stores_the_same_value(
+        self, async_db_session, limit_dashboard
+    ) -> None:
+        """Identical rows in reversed order store the same aggregate.
+
+        The audit's second half: with the unfixed code the reversed source
+        stored ``{N: 6}`` forward and ``{S: 120}`` reversed -- the same data,
+        a different number. Post-fix both orders store ``{N: 15, S: 150}``.
+        """
+        settings = {
+            "groupby": ["region"],
+            "aggregations": [{"column": "revenue", "function": "sum"}],
+            "limit": 3,
+        }
+        forward = self._audit_csv()
+        reversed_rows = [f"S,{s}\n".encode() for s in range(10, 51, 10)]
+        reversed_rows += [f"N,{n}\n".encode() for n in range(1, 6)]
+        reversed_csv = b"region,revenue\n" + b"".join(reversed_rows)
+
+        stored_forward = await self._store_with_config(
+            async_db_session,
+            limit_dashboard["dashboard"].id,
+            forward,
+            settings,
+        )
+        stored_reversed = await self._store_with_config(
+            async_db_session,
+            limit_dashboard["dashboard"].id,
+            reversed_csv,
+            settings,
+        )
+
+        assert stored_forward == stored_reversed == {"N": 15, "S": 150}
+
+    async def test_complete_sort_by_makes_the_truncation_deterministic(
+        self, async_db_session, limit_dashboard
+    ) -> None:
+        """A complete ``sort_by`` + ``limit`` keeps the top N groups by metric.
+
+        With ``sort_by=["revenue_sum"]``, ``descending=True`` and ``limit=1``,
+        the aggregated frame is ordered by the computed metric before the limit
+        is applied, so the single surviving group is the largest-region total.
+        This is the "top N by this metric" semantic and the case that must not
+        regress.
+        """
+        settings = {
+            "groupby": ["region"],
+            "aggregations": [{"column": "revenue", "function": "sum"}],
+            "sort_by": ["revenue_sum"],
+            "descending": True,
+            "limit": 1,
+        }
+
+        stored = await self._store_with_config(
+            async_db_session,
+            limit_dashboard["dashboard"].id,
+            self._audit_csv(),
+            settings,
+        )
+
+        assert stored == {"S": 150}
+
+

@@ -57,13 +57,21 @@ def apply_transformations(
     groupby: list[str] | None = None,
     sort_by: list[str] | None = None,
     descending: bool = False,
-    limit: int | None = None,
 ) -> pl.DataFrame:
     """Apply transformations to DataFrame per config.
 
     Executes filtering, grouping, sorting,
     computed field addition, column renaming
     and type casting.
+
+    The configured ``limit`` is deliberately **not** applied here (DP-008). A
+    limit truncates the number of stored groups, so it must be applied to the
+    frame the number is computed in -- the aggregated frame produced by
+    ``calculate_aggregations`` -- not to this frame. The worker
+    (``workers/data_worker.py::_run_with_transaction``) applies the limit after
+    aggregation; see :func:`_apply_post_aggregation_limit`. Applying it here
+    truncated the raw rows before any ``sum``/``mean`` was computed, so the
+    stored aggregate was a function of the input row order.
 
     When ``groupby`` is supplied without ``aggregations`` each group is
     collapsed to one representative row (deterministic de-duplication): the
@@ -80,7 +88,6 @@ def apply_transformations(
         groupby: List of columns for base grouping (no aggregations).
         sort_by: Column name to sort by.
         descending: Sort in descending order.
-        limit: Limit number of rows.
 
     Returns:
         pl.DataFrame: Transformed DataFrame.
@@ -131,24 +138,19 @@ def apply_transformations(
         logger.debug("Sorting by: %s (desc=%s)", sort_by, descending)
         result = result.sort(sort_by, descending=descending)
 
-    # 4. Row limit
-    if limit:
-        logger.debug("Limiting rows: %s", limit)
-        result = result.head(limit)
-
-    # 5. Computed fields
+    # 4. Computed fields
     computed_fields = config.get("computed_fields") if config else None
     if computed_fields:
         logger.debug("Adding computed fields: %s", computed_fields)
         result = _add_computed_fields(result, cast(list[dict[str, Any]], computed_fields))
 
-    # 6. Column renaming
+    # 5. Column renaming
     rename_map = config.get("rename")
     if rename_map:
         logger.debug("Renaming columns: %s", rename_map)
         result = result.rename(rename_map)
 
-    # 7. Column type casting
+    # 6. Column type casting
     dtype_map = config.get("dtype") if config else None
     if dtype_map:
         logger.debug("Casting column types: %s", dtype_map)

@@ -284,6 +284,59 @@ def _validate_processing_config(config: ProcessingConfig) -> None:
                 )
 
 
+def _apply_post_aggregation_limit(
+    df: pl.DataFrame,
+    sort_by: list[str] | None,
+    descending: bool,
+    limit: int | None,
+) -> pl.DataFrame:
+    """Apply the configured ordering and row limit to the aggregated frame.
+
+    The truncation point for ``limit`` is here -- **after** aggregation -- and
+    the frame it truncates is the frame this function is handed, i.e. the one
+    returned by ``calculate_aggregations`` (or by ``apply_transformations`` when
+    the configuration runs no aggregation, which is the same frame). It is
+    intentionally not applied inside ``apply_transformations``: a limit there
+    truncated the raw input rows before any ``sum``/``mean`` was computed, so a
+    configured ``limit: 3`` aggregated three rows instead of aggregating all
+    rows and keeping three groups (DP-008), and the stored value depended on the
+    CSV row order.
+
+    ``sort_by`` orders the frame the limit is taken from, so the sort and the
+    limit describe one operation -- "top N by this metric". Ordering by an
+    aggregate column (e.g. ``revenue_sum``) is the common case, and such a
+    column exists only after aggregation, which is why the sort belongs here and
+    not in ``apply_transformations``.
+
+    The truncation is **global across the frame**: ``limit`` is a frame-level
+    settings field, not a per-graph one. The frame is truncated once and the
+    per-graph ``AggregationService`` then aggregates the surviving rows. Making
+    it per-graph would require the limit to be applied inside the per-graph
+    loop, which is a different layer and a different setting shape.
+
+    Args:
+        df: The frame to order and truncate (aggregated, when aggregation ran).
+        sort_by: Columns to order by. When None the frame's existing order is
+            kept; a bare ``limit`` over an unordered grouped frame keeps N groups
+            but does not define which -- the aggregate of every row is still
+            correct, which is what DP-008 is about.
+        descending: Whether to order descending.
+        limit: Maximum number of rows to keep. When None the frame is unchanged.
+
+    Returns:
+        pl.DataFrame: The ordered, truncated frame.
+    """
+    if sort_by:
+        logger.debug(
+            "Post-aggregation sort by: %s (desc=%s)", sort_by, descending
+        )
+        df = df.sort(sort_by, descending=descending)
+    if limit:
+        logger.debug("Post-aggregation row limit: %s", limit)
+        df = df.head(limit)
+    return df
+
+
 async def _update_processing_log_status(
     task_id: str,
     status: ProcessingStatus,
@@ -647,15 +700,17 @@ async def _process_csv_file_async(
             config = ProcessingConfig(**processing_config_dict)
             _validate_processing_config(config)
 
-            # Apply transformations in thread
+            # Apply transformations in thread. ``sort_by`` is NOT passed here:
+            # ordering and the row limit are post-aggregation concerns (DP-008),
+            # applied by _apply_post_aggregation_limit below. A configured sort
+            # key is commonly an aggregate column (e.g. ``revenue_sum``) that
+            # does not exist until calculate_aggregations has run, so sorting
+            # here would raise rather than order the limit's candidates.
             df = await asyncio.to_thread(
                 apply_transformations,
                 df=df,
                 filters=config.filters,
                 groupby=config.groupby if not config.aggregations else None,
-                sort_by=config.sort_by,
-                descending=config.descending,
-                limit=config.limit,
             )
 
             # Apply aggregations in thread
@@ -674,6 +729,15 @@ async def _process_csv_file_async(
                     share_config=config.share_config,
                     custom_metrics=config.custom_metrics,
                 )
+
+            # Truncate after aggregation, not before (DP-008).
+            df = await asyncio.to_thread(
+                _apply_post_aggregation_limit,
+                df,
+                config.sort_by,
+                config.descending,
+                config.limit,
+            )
 
         # Save aggregated data to database
         result_data = {
