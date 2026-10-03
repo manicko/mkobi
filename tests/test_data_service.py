@@ -319,77 +319,28 @@ class TestDataServiceIntegration:
         assert result == []
 
     # --- trigger_processing tests ---
-
-    async def test_trigger_processing_updates_log_status(
-        self, data_service, async_db_session, test_dashboard, log_repo
-    ):
-        """Test trigger processing updates log status in database."""
-        # Create initial log in UPLOADED status via repository
-        log = await log_repo.create_log(
-            dashboard_id=test_dashboard.id,
-            status=ProcessingStatusEnum.UPLOADED,
-            message="test.csv",
-            db=async_db_session,
-        )
-        await async_db_session.commit()
-        task_id = log.id
-
-        with patch("mkobi.services.data_service.check_dashboard_access", return_value=True):
-            with patch("mkobi.services.data_service.find_task_file", return_value="/tmp/test.csv"):
-                with patch(
-                    "mkobi.services.data_service.enqueue_processing_job",
-                    return_value="rq-job-trigger-1",
-                ) as mock_enqueue:
-                    result = await data_service.trigger_processing(
-                        task_id, test_dashboard.id, uuid4(), db=async_db_session,
-                    )
-
-        mock_enqueue.assert_called_once()
-        assert mock_enqueue.call_args.kwargs["task_id"] == task_id
-        assert "rq-job-trigger-1" in result.message
-        assert result.task_id == task_id
-        assert result.status == ProcessingStatusEnum.PROCESSING
-
-        # Verify status was updated in database (not mock assertion)
-        updated_log = await log_repo.get_by_id(task_id, async_db_session)
-        assert updated_log is not None
-        assert updated_log.status == ProcessingStatusEnum.PROCESSING
-
-    async def test_trigger_processing_no_permission_raises(
-        self, data_service, async_db_session, test_dashboard
-    ):
-        """Test trigger processing fails without permission."""
-        log = await ProcessingLogRepository().create_log(
-            dashboard_id=test_dashboard.id,
-            status=ProcessingStatusEnum.UPLOADED,
-            message="test.csv",
-            db=async_db_session,
-        )
-        await async_db_session.commit()
-        task_id = log.id
-
-        with patch("mkobi.services.data_service.check_dashboard_access", return_value=False):
-            with pytest.raises(DashboardPermissionError):
-                await data_service.trigger_processing(
-                    task_id, test_dashboard.id, uuid4(), db=async_db_session,
-                )
-
-    async def test_trigger_processing_task_not_found(
-        self, data_service, async_db_session
-    ):
-        """Test trigger processing raises error for unknown task."""
-        with patch("mkobi.services.data_service.check_dashboard_access", return_value=True):
-            with pytest.raises(ValueError, match="Processing task.*not found"):
-                await data_service.trigger_processing(
-                    uuid4(), uuid4(), uuid4(), db=async_db_session,
-                )
+    #
+    # ``DataService.trigger_processing`` and its only callee ``find_task_file``
+    # were removed under ruling D-06-A = (b): the accepted artefact is scratch
+    # space, so no durable filename exists and no code may claim to locate one.
+    # The service method had no route caller, and the protocol declaration that
+    # advertised it was removed with it. See TestProcessingStatusLifecycleIntegration
+    # for the assertions on the surviving status-construction site.
 
 
 # --- Processing status lifecycle integration tests ---
 
 @pytest.mark.asyncio
 class TestProcessingStatusLifecycleIntegration:
-    """Integration tests for processing log status lifecycle."""
+    """Integration tests for processing log status lifecycle.
+
+    Under ruling D-06-A = (b) the accepted artefact is scratch space, so these
+    tests drive the *surviving* status-construction site
+    (``DataService.get_processing_status``). The removed ``trigger_processing``
+    method was the second construction site; its tests were retired with it, and
+    the assertions below hold the display-only ``filename`` contract that
+    survives.
+    """
 
     @pytest.fixture
     def data_service(self):
@@ -437,70 +388,103 @@ class TestProcessingStatusLifecycleIntegration:
         """Create DashboardService for test setup."""
         return DashboardService(DashboardRepository(), AccessRepository())
 
-    async def test_status_update_processes_to_processing(
+    async def test_status_response_is_processing(
         self, data_service, async_db_session, log_repo, test_log, dashboard_service_for_test
     ):
-        """Verify status update changes UPLOADED to PROCESSING."""
+        """Verify status response reports the stored log status."""
         log, dashboard = test_log
-        task_id = log.id
 
         with patch("mkobi.services.data_service.check_dashboard_access", return_value=True):
-            with patch("mkobi.services.data_service.find_task_file", return_value="/tmp/test.csv"):
-                with patch(
-                    "mkobi.services.data_service.enqueue_processing_job",
-                    return_value="rq-job-status-1",
-                ) as mock_enqueue:
-                    result = await data_service.trigger_processing(
-                        task_id=task_id,
-                        dashboard_id=dashboard.id,
-                        user_id=uuid4(),
-                        db=async_db_session,
-                    )
+            result = await data_service.get_processing_status(
+                task_id=log.id,
+                user_id=uuid4(),
+                db=async_db_session,
+            )
 
-        mock_enqueue.assert_called_once()
-        assert result.status == ProcessingStatusEnum.PROCESSING
+        assert result.status == ProcessingStatusEnum.UPLOADED
+        assert result.task_id == log.id
+        assert result.dashboard_id == dashboard.id
 
-        # Verify status was updated in database (not mock assertion)
-        updated_log = await log_repo.get_by_id(task_id, async_db_session)
-        assert updated_log is not None
-        assert updated_log.status == ProcessingStatusEnum.PROCESSING
-
-    async def test_status_update_from_failed_allows_reprocessing(
+    async def test_filename_is_never_null_and_is_display_only(
         self, data_service, async_db_session, log_repo, test_log, dashboard_service_for_test
     ):
-        """Verify transitioning from FAILED to PROCESSING is handled."""
-        log, dashboard = test_log
+        """``filename`` is always a string, never ``None`` (wire compatibility).
 
-        # Update log to FAILED status via repository
+        The field is display-only best-effort text derived from the log message;
+        under D-06-A = (b) it names no artefact on disk. This asserts the wire
+        contract is preserved: a client that received a string before never
+        receives ``null`` now -- even when the stored message is empty, the
+        ``"unknown"`` substitution keeps it a non-empty ``str``.
+        """
+        log, _dashboard = test_log
+
+        with patch("mkobi.services.data_service.check_dashboard_access", return_value=True):
+            with_message = await data_service.get_processing_status(
+                task_id=log.id, user_id=uuid4(), db=async_db_session,
+            )
+
+        assert isinstance(with_message.filename, str)
+        assert with_message.filename == "test.csv"
+        assert with_message.filename is not None
+
+        # Empty message: the substitution still yields a non-null string, so the
+        # published shape is unchanged for every pre-existing and future row.
         await log_repo.update_status(
             log_id=log.id,
-            status=ProcessingStatusEnum.FAILED,
-            message="Processing failed",
+            status=ProcessingStatusEnum.UPLOADED,
+            message="",
             db=async_db_session,
         )
         await async_db_session.commit()
 
         with patch("mkobi.services.data_service.check_dashboard_access", return_value=True):
-            with patch("mkobi.services.data_service.find_task_file", return_value="/tmp/test.csv"):
-                with patch(
-                    "mkobi.services.data_service.enqueue_processing_job",
-                    return_value="rq-job-reprocess-1",
-                ) as mock_enqueue:
-                    result = await data_service.trigger_processing(
-                        task_id=log.id,
-                        dashboard_id=dashboard.id,
-                        user_id=uuid4(),
-                        db=async_db_session,
-                    )
+            without_message = await data_service.get_processing_status(
+                task_id=log.id, user_id=uuid4(), db=async_db_session,
+            )
 
-        mock_enqueue.assert_called_once()
-        # Current behavior: status is updated to PROCESSING
-        assert result.status == ProcessingStatusEnum.PROCESSING
+        assert without_message.filename == "unknown"
+        assert isinstance(without_message.filename, str)
 
-        # Verify status was updated in database (not mock assertion)
-        updated_log = await log_repo.get_by_id(log.id, async_db_session)
-        assert updated_log is not None
-        assert updated_log.status == ProcessingStatusEnum.PROCESSING
+
+class TestFalseClaimSelectorRemoved:
+    """The record no longer claims to name an artefact it cannot hold.
+
+    Under ruling D-06-A = (b) the accepted artefact is scratch space: it is
+    removed on every terminal state, so no durable filename exists and the
+    processing log deliberately stores none. The code that pretended otherwise
+    -- ``find_task_file`` and its only caller ``DataService.trigger_processing``
+    -- was removed, together with the protocol declaration that advertised the
+    capability. These tests assert the removal so a future re-introduction
+    cannot pass silently.
+    """
+
+    def test_find_task_file_symbol_is_gone(self):
+        """The glob-based artefact selector no longer exists."""
+        import mkobi.services.file_processing as file_processing
+
+        assert not hasattr(file_processing, "find_task_file")
+
+    def test_data_service_does_not_import_or_declare_find_task_file(self):
+        """``data_service`` neither imports nor calls the removed selector."""
+        import mkobi.services.data_service as data_service
+
+        assert not hasattr(data_service, "find_task_file")
+
+    def test_trigger_processing_symbol_is_gone_from_service(self):
+        """The unreachable re-run capability is not declared on the service."""
+        assert not hasattr(DataService, "trigger_processing")
+
+    def test_trigger_processing_is_not_declared_on_the_protocol(self):
+        """A capability that does not exist must not remain declared.
+
+        Leaving the protocol declaration behind would let the interface imply a
+        re-run path that no implementation provides -- exactly the false
+        capability this block removes.
+        """
+        from mkobi.interfaces.service_interfaces import IDataService
+
+        assert "trigger_processing" not in IDataService.__abstractmethods__
+        assert not hasattr(IDataService, "trigger_processing")
 
 
 # --- Validation tests (keeping as unit tests since they test utility functions) ---

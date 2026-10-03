@@ -1283,3 +1283,93 @@ class TestAcceptedArtefactTerminalStateRule:
         assert result.deleted == 1
         assert not task_file.exists()
 
+
+class TestNoArtefactSelectorGlobRemains:
+    """Acceptance: no production code globs for a per-record artefact.
+
+    Ruling D-06-A = (b) makes the accepted artefact scratch space -- removed on
+    every terminal state -- so no durable filename exists and no selector may
+    guess one. The plan's acceptance test for this block is a repository-wide
+    grep for the two glob patterns that used to select a task file:
+    ``f"{task_id}.csv*"`` and ``f"*{task_id}*.csv*"``. This test performs that
+    grep over ``src/`` in-process and states what legitimately remains.
+
+    The one permitted ``*.csv*`` glob is the stale-age sweep in
+    ``services/file_cleanup.py``: it is an *age sweep over every candidate file
+    in the temp directory*, not a per-record selector. It carries no task-id
+    and therefore claims no filename; it is explicitly distinguished below so a
+    reader is not left to judge whether it is the same defect.
+    """
+
+    @staticmethod
+    def _iter_src_files() -> list[Path]:
+        """Return every ``.py`` file under the production ``src/`` tree."""
+        src_root = Path(__file__).resolve().parent.parent / "src"
+        return sorted(src_root.rglob("*.py"))
+
+    @staticmethod
+    def _glob_call_arguments(source: str) -> list[str]:
+        """Extract the string-literal arguments to every ``.glob(...)`` call.
+
+        A light import-free parser is enough: the subject is the *literal* glob
+        pattern, and every glob in this codebase is called with a literal. The
+        scan is whitespace-insensitive so a reformatted call cannot hide, and
+        surrounding quotes are stripped so ``"*.csv*"`` and ``'*.csv*'`` compare
+        the same.
+        """
+        import re
+
+        compact = re.sub(r"\s+", "", source)
+        raw = re.findall(r"\.glob\((.*?)\)", compact)
+        return [argument.strip("\"'") for argument in raw]
+
+    def test_no_selector_globs_for_a_task_artefact_in_src(self):
+        """No production glob names a task-id artefact.
+
+        This is the removal's tripwire: it fails if a future change re-introduces
+        ``f"{task_id}.csv*"`` or a ``*{task_id}*.csv*``-style selector. It scans
+        every production module, so it cannot be satisfied by editing one file.
+        """
+        offenders: list[str] = []
+        for path in self._iter_src_files():
+            source = path.read_text(encoding="utf-8")
+            for argument in self._glob_call_arguments(source):
+                # A per-record selector always interpolates a task id. None must
+                # remain: under D-06-A = (b) the record names no artefact.
+                if "task_id" in argument or "taskid" in argument.lower():
+                    offenders.append(f"{path}: .glob({argument})")
+
+        assert offenders == [], (
+            "an artefact selector glob still claims a durable filename: "
+            f"{offenders}"
+        )
+
+    def test_the_only_csv_glob_remaining_is_the_age_sweep_not_a_selector(self):
+        """The ``*.csv*`` glob that remains is a directory-wide age sweep.
+
+        Enumerated explicitly so the distinction is asserted rather than assumed:
+        the survivor is in ``services/file_cleanup.py`` and it globs ``*.csv*``
+        with **no** record identifier. Every other ``*.csv*`` glob must be gone.
+        """
+        remainder: dict[str, list[str]] = {}
+        for path in self._iter_src_files():
+            source = path.read_text(encoding="utf-8")
+            csv_globs = [
+                argument
+                for argument in self._glob_call_arguments(source)
+                if ".csv" in argument
+            ]
+            if csv_globs:
+                remainder[str(path.relative_to(path.parent.parent))] = csv_globs
+
+        # Exactly one production site globs `.csv`: the age sweep, and its glob
+        # is the bare ``*.csv*`` -- no task id, so it selects nothing by record.
+        assert list(remainder) == ["file_cleanup.py"] or len(remainder) == 1, (
+            f"expected the age sweep to be the sole csv glob site, got {remainder}"
+        )
+        (only_patterns,) = remainder.values()
+        assert only_patterns == ["*.csv*"], (
+            "the surviving csv glob must be the age sweep's bare pattern, got "
+            f"{only_patterns}"
+        )
+

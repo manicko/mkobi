@@ -24,6 +24,48 @@ from mkobi.data.storage.manager import StorageManager
 from mkobi.utils.exceptions import AppException, ErrorCode
 
 
+class TestProcessingLogModelShape:
+    """The record's shape, pinned: it names no artefact.
+
+    Under ruling D-06-A = (b) the accepted artefact is scratch space, so the
+    durable record deliberately carries **no** filename or path column. This
+    test holds that decision: adding one would re-introduce exactly the false
+    claim FAB-3 removed (a record that can disagree with a store), and it is
+    phase-14's DDL surface (C06-03), not this block's.
+    """
+
+    def test_processing_log_has_no_artefact_name_or_path_column(self):
+        """No column claims to name the artefact."""
+        columns = set(ProcessingLog.__table__.columns.keys())
+        forbidden = {
+            "artifact_filename",
+            "artefact_filename",
+            "filename",
+            "file_path",
+            "filepath",
+            "path",
+            "artifact_path",
+            "artefact_path",
+        }
+        offending = columns & forbidden
+        assert offending == set(), (
+            f"ProcessingLog must not name an artefact, found {sorted(offending)}"
+        )
+
+    def test_processing_log_keeps_its_declared_columns(self):
+        """The seven declared columns are unchanged (no column added)."""
+        columns = set(ProcessingLog.__table__.columns.keys())
+        assert columns == {
+            "id",
+            "dashboard_id",
+            "status",
+            "message",
+            "started_at",
+            "finished_at",
+            "error_code",
+        }
+
+
 class TestProcessingLogFilter:
     """Tests for ProcessingLogFilter model."""
 

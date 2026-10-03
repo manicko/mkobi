@@ -84,7 +84,19 @@ class UploadResponse(BaseModel):
 
 
 class ProcessingStatusResponse(BaseModel):
-    """Model for processing status."""
+    """Model for processing status.
+
+    ``filename`` carries a deliberate, narrow contract. Under ruling
+    **D-06-A = (b)** an accepted upload's artefact is *scratch space*: the
+    worker removes it on every terminal state (COMPLETED/FAILED), so no durable
+    filename or path exists anywhere and ``ProcessingLog`` stores none. This
+    field is therefore **display-only** best-effort text derived from the
+    processing log's ``message`` column (see ``DataService.get_processing_status``
+    and ``DataService.get_processing_result``); it names no artefact on disk and
+    **no code may use it to open or locate a file**. It is kept, with its name
+    and ``str`` type unchanged, purely for wire compatibility with existing
+    clients, which have always received a string here.
+    """
 
     task_id: UUID
     filename: str

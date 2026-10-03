@@ -265,34 +265,6 @@ async def process_upload_with_session(
     return cast(UUID, log.id)
 
 
-def find_task_file(task_id: UUID) -> str:
-    """Find temporary file for a processing task.
-
-    Args:
-        task_id: Processing log ID.
-
-    Returns:
-        str: Path to the task's temporary file.
-
-    Raises:
-        ValueError: If no file is found for the task.
-        ValueError: If multiple files match the task ID.
-    """
-    config = get_config()
-    upload_dir = Path(config.upload_temp_dir)
-    task_files = list(upload_dir.glob(f"{task_id}.csv*"))
-
-    if not task_files:
-        raise ValueError(f"File for task {task_id} not found in temp directory")
-
-    if len(task_files) > 1:
-        raise ValueError(
-            f"Multiple files found for task {task_id}: {[f.name for f in task_files]}"
-        )
-
-    return str(task_files[0])
-
-
 async def get_and_validate_processing_log(
     task_id: UUID,
     dashboard_id: UUID,

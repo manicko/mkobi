@@ -23,12 +23,7 @@ from mkobi.interfaces.repository_interfaces import (
 from mkobi.interfaces.service_interfaces import IDataService, IProcessingConfigService
 from mkobi.models.data import ProcessingResultData, ProcessingResult, ProcessingStatusResponse, UploadResponse
 from mkobi.models.enums import ErrorCode, ProcessingStatus, UploadMode
-from mkobi.services.file_processing import (
-    enqueue_processing_job,
-    find_task_file,
-    get_and_validate_processing_log,
-    process_upload_with_session,
-)
+from mkobi.services.file_processing import process_upload_with_session
 from mkobi.utils.exceptions import AppException
 
 logger = get_logger(__name__)
@@ -252,64 +247,6 @@ class DataService(IDataService):
                 dimensions.update(graph.dimensions)
         return list(dimensions)
 
-    async def trigger_processing(
-        self,
-        task_id: UUID,
-        dashboard_id: UUID,
-        user_id: UUID,
-        db: AsyncSession,
-        processing_config: dict[str, Any] | None = None,
-    ) -> ProcessingStatusResponse:
-        """Trigger processing of uploaded file."""
-        if user_id:
-            has_access = await check_dashboard_access(
-                user_id=user_id, dashboard_id=dashboard_id,
-                required_permission="edit", db=db,
-            )
-            if not has_access:
-                logger.warning(
-                    "Processing denied: user_id=%s, dashboard_id=%s",
-                    user_id, dashboard_id,
-                )
-                raise DashboardPermissionError("No permission to process data for this dashboard")
-        log = await get_and_validate_processing_log(
-            task_id=task_id, dashboard_id=dashboard_id,
-            log_repo=self.log_repo, db=db,
-        )
-        file_path = find_task_file(task_id)
-        await self.log_repo.update_status(
-            log_id=task_id, status=ProcessingStatus.PROCESSING,
-            message="Processing triggered manually", db=db,
-        )
-        await db.commit()
-        try:
-            queue_job_id = await enqueue_processing_job(
-                file_path=file_path, dashboard_id=dashboard_id,
-                task_id=task_id, mode="overwrite",
-                processing_config=processing_config,
-            )
-        except Exception as exc:
-            logger.error("Failed to enqueue processing job: %s", exc)
-            await self.log_repo.update_status(
-                log_id=task_id, status=ProcessingStatus.FAILED,
-                message=f"Failed to enqueue processing job: {exc}", db=db,
-            )
-            await db.commit()
-            raise
-        logger.info(
-            "Processing triggered: task_id=%s, queue_job_id=%s, dashboard_id=%s, config=%s",
-            task_id, queue_job_id, dashboard_id,
-            "present" if processing_config else "none",
-        )
-        return ProcessingStatusResponse(
-            task_id=task_id,
-            filename=log.message or "unknown",
-            dashboard_id=dashboard_id,
-            status=ProcessingStatus.PROCESSING,
-            progress=0,
-            message=f"Processing triggered (queue_job_id={queue_job_id})",
-        )
-
     async def get_processing_status(
         self,
         task_id: UUID,
@@ -334,6 +271,9 @@ class DataService(IDataService):
                 raise DashboardPermissionError("No permission to view this dashboard")
         return ProcessingStatusResponse(
             task_id=task_id,
+            # Display-only: under D-06-A = (b) no durable filename exists, so this
+            # best-effort text is derived from the log message and must never be
+            # used to open or locate an artefact (see ProcessingStatusResponse).
             filename=log.message or "unknown",
             dashboard_id=log.dashboard_id,
             status=log.status,

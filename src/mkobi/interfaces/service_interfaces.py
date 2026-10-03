@@ -452,18 +452,6 @@ class IDataService(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def trigger_processing(
-        self,
-        task_id: UUID,
-        dashboard_id: UUID,
-        user_id: UUID,
-        db: AsyncSession,
-        processing_config: dict[str, Any] | None = None,
-    ) -> ProcessingStatusResponse:
-        """Trigger processing of uploaded file."""
-        pass
-
-    @abc.abstractmethod
     async def get_processing_status(
         self,
         task_id: UUID,

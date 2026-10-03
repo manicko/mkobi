@@ -78,3 +78,34 @@ class TestProcessingSettingsBoundaryOpenAPI:
 
         assert settings_schema.get("additionalProperties") is False
         assert set(settings_schema["properties"]) == DECLARED_SETTINGS_KEYS
+
+
+class TestProcessingStatusResponseWireShape:
+    """``ProcessingStatusResponse.filename`` stays wire-compatible.
+
+    FAB-3 / ART-002 removed the false claim that the record names an artefact,
+    but it must not change the published shape. The field's **name and type are
+    unchanged**: it is still a required JSON ``string``. This asserts that
+    against the generated OpenAPI document rather than assuming it, because a
+    rename, a type change, or an emitted ``null`` would be a breaking change for
+    the frontend that consumes the payload.
+    """
+
+    def test_filename_is_a_required_string_in_the_published_schema(self) -> None:
+        """The field is still named ``filename`` and still requires a ``str``."""
+        from mkobi.main import app
+        from mkobi.models.data import ProcessingStatusResponse
+
+        # Model-level contract: required, and typed `str` (not `str | None`).
+        field = ProcessingStatusResponse.model_fields["filename"]
+        assert field.is_required(), "filename must stay a required field"
+        assert field.annotation is str, (
+            f"filename annotation changed from str to {field.annotation!r}"
+        )
+
+        # Document-level contract: the schema property is a plain string.
+        schema = app.openapi()
+        component = schema["components"]["schemas"]["ProcessingStatusResponse"]
+        filename_schema = component["properties"]["filename"]
+        assert filename_schema.get("type") == "string"
+        assert "filename" in component["required"]
