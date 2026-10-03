@@ -38,15 +38,16 @@ Accepts error details from the frontend for server-side logging.
 | **Method**     | `POST`                                     |
 | **Path**       | `/api/v1/client-errors`                    |
 | **Auth level** | Public                                     |
-| **Rate limit** | None (errors are expected to be rare)      |
+| **Rate limit** | 100 requests / 3600 s per `client-errors:{client_ip}` key (reflects the client address, not the caller identity; see phase 04 `AB-6`) |
 
 **Request body:**
 
 ```json
 {
   "error": {
+    "name": "TypeError",
     "message": "Cannot read properties of null (reading 'map')",
-    "name": "TypeError"
+    "stack": "TypeError: Cannot read properties of null (reading 'map')\n    at DashboardView (DashboardView.tsx:42:11)"
   },
   "componentStack": "in DashboardView\n  in App\n  in Router",
   "url": "/dashboard/550e8400-e29b-41d4-a716-446655440000",
@@ -57,32 +58,46 @@ Accepts error details from the frontend for server-side logging.
 
 **Request fields:**
 
-| Field            | Type                  | Required | Description                                      |
-| ---------------- | --------------------- | -------- | ------------------------------------------------ |
-| `error`          | `object`              | Yes      | Error object with `message` and `name` fields     |
-| `componentStack` | `string \| null`      | No       | React component stack trace (from Error Boundary) |
-| `url`            | `string`              | Yes      | Page URL where the error occurred                 |
-| `userAgent`      | `string`              | Yes      | Browser user agent string                         |
-| `timestamp`      | `string` (ISO 8601)   | Yes      | Client-side timestamp of the error                |
+| Field            | Type                  | Required | Bound (truncated, not rejected) | Description                                      |
+| ---------------- | --------------------- | -------- | ------------------------------- | ------------------------------------------------ |
+| `error`          | `object`              | Yes      | values capped at 32768 chars     | Error object with `name`, `message` and `stack` fields (the three the caller sends) |
+| `componentStack` | `string \| null`      | No       | 32768 chars                      | React component stack trace (from Error Boundary) |
+| `url`            | `string`              | Yes      | 32768 chars                      | Page URL where the error occurred                 |
+| `userAgent`      | `string`              | Yes      | 32768 chars                      | Browser user agent string                         |
+| `timestamp`      | `string` (ISO 8601)   | Yes      | 32768 chars                      | Client-side timestamp of the error                |
+
+The whole body is also bounded: a request that **declares** a `Content-Length`
+above 262 144 bytes is refused with **`413 CONTENT_TOO_LARGE`** before its
+values are parsed (Product Owner ruling `DP-11`, option (c), 2026-10-03). A
+chunked request declares no length and is instead held by the per-value caps
+above, which truncate rather than reject so the single first-party caller keeps
+reporting.
 
 **Response** (`204 No Content`)
 
 The endpoint returns an empty response with HTTP 204. No data is persisted to the database.
 
 **Side effects:**
-- The error is logged server-side via `logger.error()` with the format: `Client error: {message} | url={url} | componentStack={componentStack}`
+- The error is logged server-side via `logger.error()`. Each accepted string value is truncated to at most 32768 characters before the log call, and the untruncated length of every capped value is recorded in the same record (`truncated=<field>:<length>`), so a truncation is distinguishable from a genuinely short error. No accepted body can produce a log record beyond these caps.
 - No database write occurs — the error exists only in server logs
 
 ---
 
 ## Frontend Integration
 
-The React SPA should call this endpoint from:
-- **React Error Boundary** `componentDidCatch` — captures render-phase errors in the component tree
-- **Global `window.onerror`** — captures uncaught runtime errors
-- **Unhandled promise rejections** (`window.onunhandledrejection`)
+Of the three integrations this section names, **one is wired**: the **React Error
+Boundary** (`frontend/src/shared/components/ErrorBoundary.tsx::reportError`). The
+other two — **global `window.onerror`** and **unhandled promise rejections**
+(`window.onunhandledrejection`) — are **not** wired in this repository.
 
-This provides visibility into frontend issues that would otherwise go unnoticed by backend monitoring.
+The Error Boundary guards the reporter with `if (import.meta.env.DEV)`:
+`import.meta.env.DEV` is **true in development builds**, so the boundary logs to
+the console there and calls `reportError` only in the **`else` branch — i.e. in
+production builds**. The reporter therefore fires in production builds, not in
+development.
+
+This provides visibility into production frontend issues that would otherwise go
+unnoticed by backend monitoring.
 
 ---
 

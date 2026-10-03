@@ -1,5 +1,5 @@
-from typing import Any
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated, Any
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from datetime import datetime
 from uuid import UUID
 
@@ -37,6 +37,47 @@ __all__ = [
     "AggregatedDataResponse",
     "FilterValuesResponse",
     "ClientErrorPayload",
+    "MAX_CLIENT_ERROR_FIELD_LENGTH",
+    "MAX_CLIENT_ERROR_BODY_BYTES",
+    "CLIENT_ERROR_STACKED_FIELD_NAMES",
+]
+
+# Bound for every string value accepted by ClientErrorPayload, including the
+# values nested in its ``error`` object. Anonymous callers reach this endpoint,
+# and every accepted value is written to a log line, so the model declares a
+# ceiling here while the route truncates the parsed values before logging.
+MAX_CLIENT_ERROR_FIELD_LENGTH = 32768
+
+# Declared-length ceiling for the whole inbound body (DP-11, option (c)): a
+# body that announces a Content-Length above this is refused before parsing.
+# A chunked request declares no length and is instead held by the parsed-value
+# bounds above.
+MAX_CLIENT_ERROR_BODY_BYTES = 262144
+
+# The three fields the one first-party caller (``ErrorBoundary.tsx``) actually
+# sends inside ``error``. ``stack`` is the largest unbounded string in a React
+# error report; the route truncates all three on the parsed value.
+CLIENT_ERROR_STACKED_FIELD_NAMES = ("name", "message", "stack")
+
+
+def _truncate_client_error_value(value: Any) -> Any:
+    """Truncate an over-long client error string to the declared ceiling.
+
+    Applied as a ``BeforeValidator`` so the ceiling is enforced by truncation
+    rather than rejection: ``max_length`` alone would answer ``422`` for an
+    over-long value, and the sole caller swallows that failure silently.
+    """
+    if isinstance(value, str) and len(value) > MAX_CLIENT_ERROR_FIELD_LENGTH:
+        return value[:MAX_CLIENT_ERROR_FIELD_LENGTH]
+    return value
+
+
+# A bounded client-error string: truncate on the parsed value, then assert the
+# declared ``max_length`` (which the truncation has already satisfied).
+BoundedClientErrorStr = Annotated[
+    str,
+    BeforeValidator(_truncate_client_error_value),
+    Field(max_length=MAX_CLIENT_ERROR_FIELD_LENGTH),
 ]
 
 
@@ -518,13 +559,22 @@ class ClientErrorPayload(BaseModel):
 
     Used by the /client-errors endpoint to receive error details
     from the frontend for monitoring purposes.
+
+    This model is submitted by an anonymous caller and every value it carries is
+    written to a log line, so each declared string is bounded here. The bounds
+    are truncation ceilings, not rejection rules: the sole first-party caller
+    (``ErrorBoundary.tsx``) must keep reporting, and a rejection would be
+    swallowed by its ``.catch(() => {})``. ``error`` is a free-form
+    ``dict[str, Any]`` — a ``max_length`` here would bound the *key count* and
+    not the values, so the values inside it (``name``, ``message``,
+    ``stack``) are bounded where they are read and truncated by the route.
     """
 
     error: dict[str, Any]
-    componentStack: str | None = None
-    url: str
-    userAgent: str
-    timestamp: str
+    componentStack: BoundedClientErrorStr | None = None
+    url: BoundedClientErrorStr
+    userAgent: BoundedClientErrorStr
+    timestamp: BoundedClientErrorStr
 
     model_config = ConfigDict(
         from_attributes=True,
