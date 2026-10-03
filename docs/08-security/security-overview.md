@@ -100,7 +100,7 @@ The rate limiter depends on Redis. When Redis is unavailable, the system operate
 
 1. **Frontend (UX):** `react-dropzone` filters by MIME type; extension check on filename.
 2. **Backend (security boundary):**
-   - MIME type detection from file content using `python-magic` (server-side content sniffing from first 2KB of file bytes — does not trust the client `Content-Type` header). Falls back to extension-based detection if `libmagic` is unavailable.
+   - MIME type detection from file content using `python-magic` (server-side content sniffing from first 2KB of file bytes — does not trust the client `Content-Type` header). `libmagic` is a **hard startup dependency**: `main.check_dependencies` refuses to start the backend when it is unavailable, so there is **no fallback** and a host without libmagic cannot start the backend. The accepted set is `MimeTypeEnum`'s members alone; the `UPLOAD__ALLOWED_MIME_TYPES` key and its unread property were removed.
    - File extension validation (`.csv`, `.csv.gz`)
    - Maximum file size enforcement (cumulative byte tracking during streaming — applies even when the client does not provide `Content-Length`, preventing disk exhaustion attacks)
    - Rate limiting on upload endpoints

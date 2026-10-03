@@ -89,7 +89,7 @@ Returns the overall application status along with per-component health informati
     },
     "static_files": {
       "status": "available",
-      "path": "frontend/dist"
+      "path": "/app/frontend/dist"
     },
     "stale_processing_reconciler": {
       "status": "ok",
@@ -117,7 +117,7 @@ Returned when one or more components are unavailable. The overall `status` field
     },
     "static_files": {
       "status": "unavailable",
-      "path": "frontend/dist"
+      "path": "/app/frontend/dist"
     }
   }
 }
@@ -128,12 +128,12 @@ Returned when one or more components are unavailable. The overall `status` field
 | Component      | Check                                                      | Type        |
 | -------------- | ---------------------------------------------------------- | ----------- |
 | `database`     | Executes `SELECT 1` against PostgreSQL                     | Critical    |
-| `static_files` | Verifies `frontend/dist` directory exists on disk          | Non-critical|
+| `static_files` | Verifies the resolved bundle directory exists **and** carries `index.html` | Non-critical|
 | `stale_processing_reconciler` | Reports the background reconciler's lease state and last completed sweep | Observability only |
 
 **Behavior:**
 - Database check: same connectivity test as the basic endpoint; includes the error message in the response on failure
-- Static files check: verifies the `frontend/dist` directory exists (populated by `npm run build`); reports `"available"` or `"unavailable"`
+- Static files check: verifies the configured bundle directory (default `frontend/dist`, populated by `npm run build`) exists **and** contains an `index.html`; reports `"available"` only for that predicate, otherwise `"unavailable"`, and the `path` field carries the **resolved absolute path** rather than the configured literal. A `dist` directory without an `index.html` is reported `"unavailable"` because the app registers no catch-all routes in that state — the check and the SPA mount are driven by the same helper, so the health verdict and the route table cannot disagree
 - The overall `status` is `"unhealthy"` if any component reports a failure
 - The reconciler component never changes the overall `status` — see [below](#22-health-is-deliberately-unchanged)
 
@@ -172,7 +172,7 @@ The lease is a load-and-observability optimisation, never a correctness gate: on
   "status": "healthy",
   "components": {
     "database": { "status": "connected", "type": "postgresql" },
-    "static_files": { "status": "available", "path": "frontend/dist" },
+    "static_files": { "status": "available", "path": "/app/frontend/dist" },
     "stale_processing_reconciler": {
       "status": "ok",
       "lease_state": "holder",
