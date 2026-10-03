@@ -11,11 +11,13 @@ sibling_plans:
   - .ai/plans/03-db-concurrency-remediation.md
   - .ai/plans/05-data-pipeline-remediation-execution.md
 status: >-
-  open — D-06-A … D-06-P unruled. Executable with no ruling at all: FAB-0. With one ruling each:
-  FAB-8 (D-06-J) and FAB-7 (D-06-I). Everything else is blocked by a decision record below, by a
-  phase-03 block, by a phase-05 block, or by phase 10's disk budget.
-blocks: 10 (FAB-0 … FAB-9)
-decisions: 16 (D-06-A … D-06-P)
+  EXECUTING — all sixteen decisions ruled on 2026-10-03 against HEAD 85912d6 (see
+  "Coordinator rulings of 2026-10-03"). Nine were pre-empted or made moot by commits that landed
+  after this plan was written: phase-03 B2/B3/B9, ten phase-04 auth commits, and phase-05
+  PB-12/PB-13/PB-14. FAB-5 is DEFERRED to phase 10 (C06-04, the disk budget). The execution order is
+  FAB-0 → FAB-8 → FAB-7 → FAB-4 → FAB-2 → FAB-3 → FAB-1 → FAB-6 → FAB-9.
+blocks: 9 in execution (FAB-0 … FAB-4, FAB-6 … FAB-9); FAB-5 deferred to phase 10
+decisions: 16 (D-06-A … D-06-P) — all ruled; 5 pre-empted by landed code (B, F, H, L, N)
 id-namespace: >-
   Block IDs are FAB-*, decision records are D-06-*, coordination and hand-over IDs are C06-*.
   Taken and not reused: B0…B10 (phase 03), B0…B7 (phase 02), B1…B5 (phase 01) and PB-0…PB-16
@@ -53,6 +55,62 @@ is edited by any block.
 reservation: **ART-004 is CRITICAL**, it is the phase's first code block after the ruling that unlocks
 it, and it is the only block in this plan whose subject is *destroying the only copy of ingested
 input data with no detector and no reversal*.
+
+## Coordinator rulings of 2026-10-03 — BINDING ON EVERY BLOCK
+
+**Every decision below is ruled. No block starts without one; none is open.** These rulings were
+made after a Phase-1 re-audit of `HEAD` `85912d6`, because **nine of the sixteen records were
+pre-empted by commits that landed after this plan was written at `2174895`.** Where a landed
+commit already took one of a record's options, the record is marked **PRE-EMPTED** and the block's
+scope shrinks to what genuinely remains.
+
+| # | Ruling | Basis — what actually landed |
+| - | ------ | ------------------------------- |
+| **D-06-A** | **(b)** — the artefact is **scratch space, deleted on every terminal state**, and this is a *designed* property that must be written down. The unreachable `find_task_file` / `trigger_processing` pair is removed as the false claim it is. | `5e73e37` made all three deletion paths unconditional (success-after-commit, failure, enqueue-failure). Option (a) would need an unbounded area **and** a re-run path with no owner and no authorization decision; `trigger_processing` still has **no route caller**. |
+| **D-06-B** | **(b) PRE-EMPTED.** Remaining scope is the **naming rule** and the **reader boundary** only. | `5e73e37` widened the worker's handler to `except BaseException`. |
+| **D-06-C** | **(a)** — move `cleanup_stale_temp_files` into the **existing** lease-guarded `start_stale_processing_cleanup_task`. **One** loop, not two. | D-05-I already chose the lease-guarded periodic loop in `ee0f0f5`, and moved the orphan sweep into it. Option (b) would create the second lease loop C06-1 warns about. |
+| **D-06-D** | **(c)** — retry-only, no record. `cleanup_stale_temp_files` returns `deleted` / `failed` / `already_gone` so the count is a contract the periodic task's status consumes. **The commit body must state plainly that ART-005's recording half is NOT closed.** | Phase 14 owns all DDL (C06-3) and the frontend consumes `ProcessingStatusResponse`; a column cannot ship in this phase. |
+| **D-06-F** | **PRE-EMPTED — no phase-06 block.** | `6a2c04a` deleted `cleanup_task_files` and `cleanup_old_processing_logs`. `utils/file_utils.py`'s `platformdirs` pair stays with phase 02/08 (C06-12). |
+| **D-06-G** | **(c)** — accept the TTL and document the window as a **written risk acceptance**. | The token is minted (`uuid4`) **after** the commit and `RegistrationRequest` persists **no** token, so option (a) needs a second transaction or a pre-commit mint — the "strictly worse state" FAB-6's own risk table names. |
+| **D-06-H** | **PRE-EMPTED — (c).** `store` returns `bool`, commit-then-store. | `2de4156` + `7cf0623` + `478015b`. |
+| **D-06-I** | **(a)** — one configured, **resolved** bundle path consumed by both the mount and the health component, through **one shared predicate**. **`HEALTHCHECK` is NOT touched.** | Two disagreeing predicates exist today: health uses `os.path.isdir`, the mount uses `exists() and index.exists()`. Not touching `HEALTHCHECK` removes the "passing container turns unhealthy" rollout hazard outright. |
+| **D-06-J** | **(a)** — libmagic is a hard startup dependency; the `except ImportError` fallback is deleted. | Every shipped image already carries `libmagic1`, and the test image inherits it (`FROM base AS test`). `main.py::check_dependencies` is the project's own precedent. |
+| **D-06-K** | **(a)** — `app_data` stays read-write on `app` and `rq-worker`. | Smallest; no deploy-time named-volume migration and no rollback story to invent. D-06-E's log half stays open under C06-04. |
+| **D-06-L** | **MOOT — resolved by fact.** Option (b)'s shape is now the only one available; there is no concurrent editor left. | `907e052` (B3), `5e73e37` (PB-14), `916a021` (PB-12) all landed. |
+| **D-06-N** | **MOOT.** No `artifact_filename` column exists under D-06-A(b), so there is no divergence check to place; and option (b) already collapsed into (a) when `ee0f0f5` moved the orphan sweep into the periodic task. | |
+| **D-06-O** | **(c) is refuted; (b) is deferred with FAB-5.** No `ErrorCode` member covers storage, disk or quota — `models/enums.py` has 30 members and zero matches. The cheapest honest code if FAB-5 ever lands is `SERVICE_UNAVAILABLE`; a new member is authorised only by an explicit ruling, which this phase does not make. | |
+| **D-06-P** | **(a)** — the stored extension is derived from the **detector's verdict at admission**. `services.file_processing.validate_mime_type` returns the detected type and raises `AppException(ErrorCode.INVALID_FILE_TYPE)` instead of a bare `ValueError`. | One rule; the stored name can never disagree with the bytes. The `ValueError` is also a live deviation from AGENTS.md's error layer. |
+
+**FAB-5 is DEFERRED, not dropped — and its stated blocker has since been released.**
+`9568c98` adjudicated the Product Owner decision register and, under `DP-10-7` / `DP-11-H`, stated
+**"Unblocks phase 06 `FAB-5` / `C06-4`"** with a **50 GB** budget. So the disk budget that was the
+hard input to D-06-E **now exists**.
+
+FAB-5 is therefore no longer *blocked* — it is **outstanding**, and it is the phase's one
+un-discharged finding (ART-003). What it still needs is a ruling nobody has made: **the ceiling's
+number**. D-06-K is settled as (a) (no compose change) and D-06-O's option (c) is refuted — no
+`ErrorCode` member covers storage, so the honest cheap code is `SERVICE_UNAVAILABLE`. What remains
+is deciding what fraction of the 50 GB volume the artefact area may occupy, and expressing it
+against the **resolved** directory. **A fraction is an operations decision, not a deriveable
+constant**, and inventing one would be the guess this plan refused to ship. Under D-06-A = (b) the
+area does not grow from retention — every terminal path deletes — so the pressure on the number
+comes from in-flight uploads and the 24-hour age sweep, not from retained artefacts.
+
+## Execution order as ruled (supersedes the table further down)
+
+| # | Block | Gate — all now satisfied |
+| - | ----- | ------------------------- |
+| 1 | **FAB-0** | none |
+| 2 | **FAB-8** | D-06-J = (a) |
+| 3 | **FAB-7** | D-06-I = (a) |
+| 4 | **FAB-4** | D-06-C = (a), D-06-D = (c) |
+| 5 | **FAB-2** | D-06-A = (b) — no longer blocked on FAB-5 |
+| 6 | **FAB-3** | D-06-A = (b), D-06-N moot — **no column, no migration** |
+| 7 | **FAB-1** | D-06-P = (a), D-06-B remainder, PB-12 landed (`916a021`) |
+| 8 | **FAB-6** | D-06-G = (c), D-06-H pre-empted |
+| 9 | **FAB-9** | documentation, last by rule (R-06-6) |
+
+---
 
 ## Anchor authority
 
