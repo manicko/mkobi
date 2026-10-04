@@ -165,6 +165,13 @@ variable and the field (never the value); a name that resolves to no field at al
 at debug level. So a path-valued or list-valued setting is not read as a secret
 pointer.
 
+> **Per-process log file default removed.** No compose service sets
+> `LOGGING__LOG_FILE` anymore. It used to be set for `app` and `rq-worker`, so
+> four processes each opened one rotating handler against the same file
+> (`4 writers x 6 files x 10 MB ~= 240 MB`). The setting still works when an
+> operator supplies it explicitly in `.env`; it is simply no longer set for
+> everyone. See [Logging](logging.md) for the rotation arithmetic.
+
 > **Behaviour change.** Only the five names in the table above are honoured. A
 > `*_FILE` variable naming a real but non-secret field, for example
 > `DATABASE__USER_FILE`, used to be applied and is now ignored with a warning. The

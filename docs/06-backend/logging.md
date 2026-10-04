@@ -162,7 +162,15 @@ Logs are written to **stdout** by default. An optional rotating file handler can
 - **Backup count:** 5 rotated files
 - **Encoding:** UTF-8
 
-File output is enabled by setting the `log_file` configuration property.
+File output is enabled by setting the `log_file` configuration property
+(`LOGGING__LOG_FILE`). It is **not set by any compose service by default**: the
+docker services previously set it for `app` and `rq-worker`, which made four
+processes (app, rq-worker, migrate and the dev worker) each open one
+`RotatingFileHandler` against the same file. The rotation ceiling was therefore
+`4 writers x 6 files x 10 MB ~= 240 MB`, not the `~150 MB` a single writer would
+give. With the per-process default removed the ceiling is **zero** by default —
+one process owns the file only when an operator sets the key explicitly in
+`.env`. The setting itself is unchanged; it is simply no longer set for everyone.
 
 ## Code Comments
 

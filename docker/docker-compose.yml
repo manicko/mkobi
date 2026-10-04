@@ -135,7 +135,11 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME is required}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
       UPLOAD__TEMP_DIR: /app/data/tmp_uploads
-      LOGGING__LOG_FILE: /app/data/logs/app.log
+      # LOGGING__LOG_FILE is intentionally not set here. Setting it on every
+      # process made four rotating handlers (app, rq-worker, migrate and the
+      # dev worker) write the same file, so the rotation ceiling was
+      # 4 x 6 files x 10 MB ~= 240 MB. The setting still works when an operator
+      # supplies it explicitly in .env; it is simply no longer set for everyone.
       # Redis connection for rate limiting and token revocation (fail-closed).
       # Default host is "localhost" (config.py), which is the container itself,
       # so it must be overridden to the compose service name.
@@ -242,7 +246,6 @@ services:
       # placeholder and fails closed at settings construction.
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173"]}
       UPLOAD__TEMP_DIR: /app/data/tmp_uploads
-      LOGGING__LOG_FILE: /app/data/logs/app.log
       LOGGING__LEVEL: ${LOGGING__LEVEL:-INFO}
       # Redis connection for consuming jobs from the queue the app produces to.
       # Default host is "localhost" (config.py), which is the container itself,

@@ -177,7 +177,10 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME must be set}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
       UPLOAD__TEMP_DIR: /app/data/tmp_uploads
-      LOGGING__LOG_FILE: /app/data/logs/app.log
+      # LOGGING__LOG_FILE is intentionally not set here. The dev override used
+      # to give the worker a real path, so this process still opened a rotating
+      # handler and wrote the same file as app. The setting still works when an
+      # operator supplies it explicitly in .env.
       LOGGING__LEVEL: DEBUG
       AUTO_MIGRATE: "false"
     volumes:

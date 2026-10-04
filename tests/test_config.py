@@ -1432,6 +1432,87 @@ class TestLocallyBuiltImageIdentity:
             assert base_image == override_image, f"{service}: {base_image} != {override_image}"
 
 
+class TestLogFileNotSetByCompose:
+    """OPS-008/VAL-10-003: no compose service sets LOGGING__LOG_FILE by default.
+
+    Four processes (app, rq-worker, the migrate service and the dev worker) each
+    opened one RotatingFileHandler against the same file when the key was set for
+    everyone, so the rotation ceiling was 4 x 6 files x 10 MB ~= 240 MB instead
+    of ~150 MB. The setting is not deprecated: ``logging.log_file`` still accepts
+    an explicit operator value in .env and adds the handler. These tests read both
+    compose files directly and pin that neither tier sets the key for app or
+    rq-worker. This is the tripwire that fails if someone re-adds it.
+    """
+
+    @staticmethod
+    def _compose_files() -> dict:
+        from pathlib import Path
+
+        docker_dir = Path(__file__).resolve().parent.parent / "docker"
+        return {
+            "base": docker_dir / "docker-compose.yml",
+            "override": docker_dir / "docker-compose.override.yml",
+        }
+
+    @staticmethod
+    def _service_block(text: str, service: str) -> str:
+        """Return one top-level service block from a compose file's text."""
+        lines = text.splitlines()
+        start = None
+        for index, line in enumerate(lines):
+            if line.rstrip() == f"  {service}:":
+                start = index
+                break
+        assert start is not None, f"{service} service not found"
+        block = [lines[start]]
+        for line in lines[start + 1:]:
+            if line.startswith("  ") and not line.startswith("    ") and line.strip():
+                break
+            block.append(line)
+        return "\n".join(block)
+
+    def test_neither_tier_sets_log_file_for_app_or_worker(self) -> None:
+        """LOGGING__LOG_FILE is absent from app and rq-worker in both compose files.
+
+        Scope note: the dev override blanks the key for ``app`` with an empty
+        value (``LOGGING__LOG_FILE: ""``), which is falsy and therefore adds no
+        handler — that is the correct dev posture, not a live writer. The
+        rejectable case is a non-empty assignment, which is what the base file
+        set for both services and what the override set for ``rq-worker``.
+        """
+        for name, compose_path in self._compose_files().items():
+            text = compose_path.read_text(encoding="utf-8")
+            for service in ("app", "rq-worker"):
+                block = self._service_block(text, service)
+                assigns = [
+                    line
+                    for line in block.splitlines()
+                    if "LOGGING__LOG_FILE" in line and not line.strip().startswith("#")
+                ]
+                # A blank assignment creates no handler (falsy) and is allowed.
+                live = [
+                    line for line in assigns if line.split(":", 1)[1].strip() not in ('""', "''")
+                ]
+                assert not live, f"{name}:{service} sets LOGGING__LOG_FILE -> {live}"
+
+    def test_log_file_setting_still_works_when_supplied_explicitly(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The setting is not deprecated: an explicit value still resolves.
+
+        This pins that removing the compose default did not remove the setting
+        surface; an operator who wants file logging in their own .env can still
+        set ``LOGGING__LOG_FILE``.
+        """
+        from mkobi.config import clear_config_cache
+
+        explicit = tmp_path / "app.log"
+        monkeypatch.setenv("LOGGING__LOG_FILE", str(explicit))
+        clear_config_cache()
+        settings = Settings(_env_file=None)
+        assert settings.log_file == str(explicit)
+
+
 class TestRateLimiterOverrideWiring:
     """SECB-9: the dev override must declare the limiter posture for both services.
 
