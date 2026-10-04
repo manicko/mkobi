@@ -601,28 +601,34 @@ class TestSafeTestDatabaseNamePredicate:
         today because the primary guard's language is a strict subset of it.
         It is deliberately kept as defense in depth, so this test pins that
         property: an exhaustive enumeration over a fixed alphabet that includes
-        every character the primary admits, plus a few it rejects, must never
-        produce a string the primary accepts and the secondary rejects. A future
-        change that makes the secondary guard live (for example, letting the
-        primary admit a hyphen) fails here loudly.
+        every character the primary admits, plus characters a widened primary
+        might admit, must never produce a string the primary accepts and the
+        secondary rejects. A future change that makes the secondary guard live
+        (for example, letting the primary admit a hyphen) fails here loudly.
         """
         import itertools
-        import re
 
         primary = starter_module.TEST_DATABASE_NAME_PATTERN
-        secondary = re.compile(r"^[a-zA-Z0-9_]+\Z")
+        secondary = starter_module.SECONDARY_TEST_DATABASE_NAME_PATTERN
 
-        # The alphabet spans the accepted set plus characters designed to be
-        # refused; an accepted-and-refused-by-secondary pair can only arise from
-        # a character the secondary rejects.
-        alphabet = "abcZ09_.-\n ;"
+        # The alphabet spans every character class a future widening of the
+        # primary guard could plausibly admit: all ASCII letters and digits,
+        # plus '_ - . ; " \' * / \\' , a space and a newline. Every character
+        # the primary guard admits today is present, so a primary that starts
+        # accepting a hyphen, a quote or an asterisk is caught here.
+        alphabet = (
+            "abcdefghijklmnopqrstuvwxyz"
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            "0123456789"
+            "_-.;\"'*/ \\\n"
+        )
         counterexamples = []
-        for length in range(1, 5):
+        for length in range(1, 4):
             for chars in itertools.product(alphabet, repeat=length):
                 candidate = "bidb_test" + "".join(chars)
                 if primary.match(candidate) and not secondary.match(candidate):
                     counterexamples.append(candidate)
-        assert counterexamples == [], counterexamples
+        assert counterexamples == [], counterexamples[:10]
 
 
 class TestRecreateTestDatabaseGuards:

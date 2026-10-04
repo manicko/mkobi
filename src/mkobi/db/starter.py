@@ -114,6 +114,14 @@ def assert_safe_test_database_name(db_name: str | None) -> None:
 # the string.
 TEST_DATABASE_NAME_PATTERN = re.compile(r"^bidb_test(_[A-Za-z0-9]+)?\Z")
 
+# Secondary injection guard applied to the already-parsed database name just
+# before it is interpolated into DDL. It is unreachable today because the
+# primary guard's language is a strict subset of it; it is kept as defense in
+# depth. Exposed as a module-level constant so a test can bind the subset
+# property to the production pattern rather than to a local copy that could
+# silently diverge.
+SECONDARY_TEST_DATABASE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_]+\Z")
+
 
 class DatabaseStarterConfig:
     """Database starter configuration."""
@@ -310,7 +318,7 @@ class DatabaseStarter:
         # Validate database name against safe pattern to prevent SQL injection.
         # '\Z' anchors at the true end of the string; '\Z' is required because
         # '$' would let a trailing newline through.
-        if not re.match(r"^[a-zA-Z0-9_]+\Z", str(db_name)):
+        if not SECONDARY_TEST_DATABASE_NAME_PATTERN.match(str(db_name)):
             raise ValueError(f"Invalid database name: {db_name}")
 
         logger.info("Recreating test database...")
