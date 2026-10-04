@@ -166,6 +166,11 @@ server {
 }
 ```
 
+To enable, start the nginx service from `docker-compose.yml`:
+```bash
+docker compose -f docker/docker-compose.yml --profile production up -d
+```
+
 ### Where the API-documentation surface is protected in production
 
 The production control for the documentation surface is **nginx's `location`
@@ -185,10 +190,14 @@ caller can observe. The unreachable-path seam (nginx declares no `location` for
 these paths) is tracked as hand-over `HO-4`, owned by phase 12 for the
 `nginx.conf` file and phase 10 for the deployed composition.
 
-To enable, start the nginx service from `docker-compose.yml`:
-```bash
-docker compose -f docker/docker-compose.yml --profile production up -d
-```
+**This is scoped to the documentation surface, not to every URL nginx does not
+name.** Where a path *is* proxied (`location /api/`), nginx applies no rewriting
+of its own, so the application's behaviour is the control there. The four
+collection paths are the case in point: nginx proxies them unchanged, and the
+application's `redirect_slashes=False` (`app.py::create_app`) is what makes a
+no-slash request answer `404` instead of an anonymous `307`. That flag is the
+control for those paths, not defence in depth — see
+[Swagger UI Guide](../99-reference/swagger.md#collection-paths).
 
 ---
 

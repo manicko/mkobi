@@ -185,9 +185,19 @@ one). It can no longer undo the write, and its docstring says so.
 
 On startup, FastAPI runs initialization through `DatabaseStarter` (lifespan context manager, `src/mkobi/db/starter.py`):
 
-### Step 1: Dependency Check (`main.py`)
+### Step 1: Dependency Check (`startup.py`, called from `main.py`)
 
-Before any imports, `check_dependencies()` verifies that all required Python packages are importable. The application exits with a clear error message if any critical module is missing.
+`check_dependencies()` verifies that all required Python packages are importable. The application exits with a clear error message if any critical module is missing.
+
+The gate and both of its lists live in `src/mkobi/startup.py`, a module with no
+FastAPI application and no other import-time side effect. That is what lets the
+RQ worker entrypoint certify its own dependencies **without** constructing the
+web application: `main.py` calls `check_dependencies(APP_REQUIRED_MODULES)` at
+module scope and then imports `create_app`, while
+`mkobi.rq_worker_wrapper.start_rq_worker` calls
+`check_dependencies(WORKER_REQUIRED_MODULES)` and never imports `mkobi.main`.
+`main.py` re-exports `check_dependencies` and both lists for compatibility, so
+`main.check_dependencies` remains a valid symbol.
 
 The gate certifies two disjoint sets, one per entrypoint, so each process gates on the libraries it actually reaches rather than on a shared list:
 
@@ -195,6 +205,8 @@ The gate certifies two disjoint sets, one per entrypoint, so each process gates 
 - **Worker-required** — loaded by the RQ worker entrypoint (`mkobi.rq_worker_wrapper.start_rq_worker`): `rq`. It is a *worker* contract the API app never imports, which is why it is not in the app set.
 
 `httpx` is a **test-tier** contract (used by `tests/conftest.py` and the API test modules), not an application dependency, and is gated at neither entrypoint.
+
+**Hand-over `HO-7` — `pyproject.toml` is not reconciled with the gate (owned by phase 01).** Trimming the gate above did not trim the manifest, and the two now disagree. `pyproject.toml` still declares `plotly` and `tenacity` as runtime dependencies with zero references anywhere in `src/`, `tests/`, `docker/` or `alembic/`, and declares `httpx` as a runtime dependency while it is in fact the test-tier contract above. Alongside those, the manifest carries `requests` (unused, `httpx` is the HTTP client in use), `pyjwt` alongside `python-jose` (the project signs with `python-jose`), and `asgiref` in a stack with no Django. None of this is corrected here: the dependency surface is phase 01's, and a trimmed gate is not a trimmed manifest.
 
 ### Step 2: Database Connectivity Check
 

@@ -23,7 +23,7 @@ The health check API provides endpoints for monitoring application availability 
 
 **Base path:** `/`
 
-**Auth level:** Public for `/health`; `/health/detailed` requires an administrator (see [below](#2-detailed-health-check)).
+**Auth level:** Public for `/health`. `/health/detailed` is **also public today**: the administrator requirement below is stated ahead of the code and is **not yet enforced** (see [below](#2-detailed-health-check)).
 
 ---
 
@@ -71,13 +71,13 @@ Returned when the database is not reachable.
 
 Returns the overall application status along with per-component health information.
 
-| Attribute      | Value                          |
-| -------------- | ------------------------------ |
-| **Method**     | `GET`                          |
-| **Path**       | `/health/detailed`             |
-| **Auth level** | Requires an administrator      |
+| Attribute      | Value                                             |
+| -------------- | ------------------------------------------------- |
+| **Method**     | `GET`                                             |
+| **Path**       | `/health/detailed`                                |
+| **Auth level** | Public today; an administrator is required from phase 15 (`D-15-G` / `SECB-4`), not yet enforced |
 
-> **Documentation-ahead-of-code.** This document states that `/health/detailed` requires an administrator. The gate is **not built in this document's release**: it is implemented by phase 15's `D-15-G` / `SECB-4`. Until that block lands, the endpoint answers anonymously as it does today. The same phase's `D-15-H` moves the reconciler counters (`lease_state`, `unprotected_ticks`) out of the anonymous body. This is a deliberate documentation-ahead-of-code hazard, accepted by the `DP-1` ruling.
+> **Documentation-ahead-of-code.** `/health/detailed` **answers anonymously today**: the handler in `app.py::detailed_health_check` declares no authentication dependency, so no credential is examined. The administrator requirement is stated here ahead of the code and is **not built in this document's release**; it is implemented by phase 15's `D-15-G` / `SECB-4`. The same phase's `D-15-H` moves the reconciler counters (`lease_state`, `unprotected_ticks`) out of the anonymous body. This is a deliberate documentation-ahead-of-code hazard, accepted by the `DP-1` ruling — every "requires an administrator" statement in this document is therefore forward-looking, not a description of the running service.
 
 **Response** (`200 OK`):
 
@@ -205,7 +205,9 @@ The lease is a load-and-observability optimisation, never a correctness gate: on
 
 `/health` is what the container healthcheck curls and what `nginx` gates on via `depends_on: app: condition: service_healthy`. If reconciler or lease state fed that endpoint, then during any Redis blip three of the four workers would report unhealthy and the reverse proxy would refuse to start — turning a degraded background sweep into a total outage of the API. `/health` therefore keeps meaning one thing only: *the database is reachable*. Redis is deliberately **not** a key on `/health` either, even though every authenticated request depends on it (revocation reads fail closed, so a Redis outage is what makes `GET /api/v1/auth/me` answer `503`). Everything else belongs on `/health/detailed`, which returns `200` regardless and never withholds a component.
 
-**Release coupling (`DP-1`, 2026-10-03).** Because `/health/detailed` requires an administrator (see [above](#2-detailed-health-check)), an unauthenticated external monitor can no longer use it: such a monitor must poll `/health` or authenticate. `/health` remains the only anonymous probe.
+**Release coupling (`DP-1`, 2026-10-03) — a consequence phase 15 must decide, not a shipped behaviour.** Because `/health/detailed` is to require an administrator (see [above](#2-detailed-health-check)), an unauthenticated external monitor will no longer be able to use it once that gate lands: such a monitor will have to poll `/health` or authenticate. **Today it can still use `/health/detailed`, because the gate does not exist yet.** `/health` remains the only endpoint that is unconditionally anonymous.
+
+**The gate is Redis-dependent — phase 15 owns the fork.** The usable gate is `api/deps.py::require_admin_role` (not `require_dashboard_admin_access`, which requires a `dashboard_id` path parameter this endpoint has no way to supply). That dependency resolves the current user, which reads the revocation store from Redis: `require_admin_role` → `get_current_user_dependency` → `get_redis_client_dependency` → `RevocationStoreUnavailableError` → `503`. A gate built on it unchanged would therefore answer **`503` during the very Redis outage it exists to report** — while `/health` keeps answering `200`. Whoever implements `D-15-G` / `SECB-4` must choose between accepting that 503 and authenticating without a Redis revocation read (a deliberate, if small, weakening). Phase 07 records the choice and does not make it.
 
 **On the nginx layer.** The health `location` block forwards to the application and overrides only the `Host` header, so an application-level gate on `/health/detailed` **is** effective through nginx; there is no separate nginx access control to change. What becomes stale once the gate lands is nginx's own "no auth required" comment near that block — a phase-12 hand-over, not a claim that production is controlled by nginx rather than the application.
 
@@ -227,9 +229,11 @@ Returns basic API identification information.
 {
   "message": "BI Dashboard API",
   "status": "active",
-  "version": "1.0.0"
+  "version": "<the installed distribution's declared version>"
 }
 ```
+
+The `version` value is **not a literal**: it is resolved from the installed distribution's metadata (`pyproject.toml` declares `1.0.8`) and is overridable through `APP__VERSION`. See [Configuration](../06-backend/configuration.md) for the precedence chain. The same value is published as the schema document's `info.version`.
 
 ---
 
@@ -261,7 +265,7 @@ These endpoints are designed for integration with:
 - **Kubernetes:** Configure as `livenessProbe` and `readinessProbe` targets
 - **Load balancers:** Use `/health` for health check pings to determine instance availability
 - **Uptime monitors:** Poll `/health` at regular intervals; alert on non-200 responses
-- **Admin dashboards:** Use `/health/detailed` for a component-level status overview; since it requires an administrator, an anonymous uptime monitor cannot use it and must poll `/health` or authenticate
+- **Admin dashboards:** Use `/health/detailed` for a component-level status overview. It answers anonymously today; once phase 15's `D-15-G` / `SECB-4` gate lands it will require an administrator, and an anonymous uptime monitor will have to poll `/health` or authenticate (see [above](#22-health-is-deliberately-unchanged))
 
 **Recommended polling interval:** 10–30 seconds for `/health`.
 

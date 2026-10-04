@@ -102,6 +102,25 @@ All environment variables use the double-underscore (`__`) delimiter for nesting
 | `TEMP_PASSWORD_TTL_SECONDS`   | `temp_password_ttl_seconds` | `86400`     | Temp password Redis TTL (min 60s) |
 | `FRONTEND__DIST_DIR`          | `frontend.dist_dir`    | `frontend/dist` | Location of the built SPA bundle. The **single** configured source for both the static mount and the `static_files` component of `/health/detailed`: it is resolved to an absolute path once, and both read the one availability predicate, so the route table and the health verdict cannot disagree. The bundle counts as available only when the directory exists **and** carries an `index.html` — a `dist` directory without one is reported `unavailable` and is not mounted. Container `HEALTHCHECK` is unchanged. |
 
+> **Hand-over `HO-9` — two Redis transport paths are still undeclared (owned by phase 01).** The
+> socket bounds above are declared on `RedisSettings` and are applied by the shared factories in
+> `core/redis_client.py`. They do **not** reach the two places that build their own client instead
+> of using those factories, so "the Redis transport is bounded" is true of the shared factories only:
+>
+> - `src/mkobi/rq_worker_wrapper.py` constructs clients with `redis.Redis.from_url(...)` at three
+>   sites — `check_redis_connection`, `check_worker_registered` and `start_rq_worker`'s `rq.Queue` —
+>   with no `socket_timeout` and no pinned retry. It therefore inherits the library default *and*
+>   wraps it in its own `MAX_RETRIES = 3` loop, so its worst case is roughly 165 s, not the ~59 s the
+>   undeclared default produces on its own. Its **failure direction** is declared (3 attempts, then
+>   `ConnectionError` and exit); its **transport bound** is not.
+> - `src/mkobi/core/task_queue.py::get_rq_queue` is `functools.cache`d, has live callers on the
+>   upload enqueue path, and builds `redis.Redis(host=..., port=..., db=..., password=...)` with
+>   neither a timeout nor a pinned retry. Neither bound above reaches it.
+>
+> Both are phase 01's surface (the rq-worker and dependency/queue topology), so neither is corrected
+> here. Any statement elsewhere that a Redis operation is bounded must be read as bounded **through
+> `core/redis_client.py`**.
+
 ## Secrets Management
 
 ### Docker Secrets Support
