@@ -251,16 +251,23 @@ function Invoke-TestShell {
 # Quality gates
 # ---------------------------------------------------------------------------
 
+# Lint / format / typecheck run on the `tools` service, not on `app`: tools
+# carries the source tree and the tooling with an explicitly empty application
+# credential set, so a gate that executes against untrusted input cannot read
+# the database password, JWT secret, admin credentials or Redis password from
+# its own environment. `migration-new` and `migration-status` stay on `app`
+# because autogenerate and `alembic current` need a real database connection
+# and are not static analysis.
 function Invoke-Lint {
-    docker compose @DevCompose run --rm --no-deps app ruff check src/ tests/ alembic/env.py
+    docker compose @DevCompose run --rm --no-deps tools ruff check src/ tests/ alembic/env.py
 }
 
 function Invoke-Format {
-    docker compose @DevCompose run --rm --no-deps app ruff check --fix src/ tests/ alembic/env.py
+    docker compose @DevCompose run --rm --no-deps tools ruff check --fix src/ tests/ alembic/env.py
 }
 
 function Invoke-Typecheck {
-    docker compose @DevCompose run --rm --no-deps app mypy src/ alembic/env.py
+    docker compose @DevCompose run --rm --no-deps tools mypy src/ alembic/env.py
 }
 
 function Invoke-FeLint {

@@ -1568,3 +1568,148 @@ class TestRateLimiterOverrideWiring:
         for service in ("app", "rq-worker"):
             block = self._service_block(base_text, service)
             assert "RATE_LIMITER_FAIL_CLOSED" in block, service
+
+
+class TestQualityGateToolsService:
+    """OPS-009: the quality gates run without application credentials.
+
+    ``lint``, ``format`` and ``typecheck`` used to execute inside the ``app``
+    service, which holds the full credential set (database password, JWT secret,
+    admin credentials, Redis password). A gate is the code most likely to run
+    against untrusted input, so it must not be able to read those values from its
+    own environment. These tests read docker/docker-compose.override.yml directly
+    and pin two properties: the ``tools`` service declares **no** application
+    credential key, and the Makefile runs the three static-analysis gates against
+    ``tools`` rather than ``app``.
+
+    The database-dependent migration targets are pinned to ``app`` in the same
+    test class as a regression guard: a later cleanup must not quietly move a
+    gate that needs a live connection onto the credential-free runner, which has
+    none.
+    """
+
+    # The application credential keys the tools service must not declare. These
+    # are the actual secret names the compose files use, not a generic pattern.
+    _APPLICATION_CREDENTIALS = (
+        "DATABASE__PASSWORD",
+        "MKOBI_APP_PASSWORD",
+        "JWT__SECRET_KEY",
+        "ADMIN_USERNAME",
+        "ADMIN_PASSWORD",
+        "REDIS__PASSWORD",
+    )
+
+    @staticmethod
+    def _override_path():
+        from pathlib import Path
+
+        return Path(__file__).resolve().parent.parent / "docker" / "docker-compose.override.yml"
+
+    @staticmethod
+    def _makefile_path():
+        from pathlib import Path
+
+        return Path(__file__).resolve().parent.parent / "Makefile.ps1"
+
+    @staticmethod
+    def _service_block(text: str, service: str) -> str:
+        """Return one top-level service block from a compose file's text."""
+        lines = text.splitlines()
+        start = None
+        for index, line in enumerate(lines):
+            if line.rstrip() == f"  {service}:":
+                start = index
+                break
+        assert start is not None, f"{service} service not found"
+        block = [lines[start]]
+        for line in lines[start + 1:]:
+            if line.startswith("  ") and not line.startswith("    ") and line.strip():
+                break
+            block.append(line)
+        return "\n".join(block)
+
+    @classmethod
+    def _declared_credentials(cls, block: str) -> list[str]:
+        """Credential keys the block declares as live environment assignments.
+
+        Comment lines are ignored so an explanatory note that mentions a secret
+        name does not count as an assignment.
+        """
+        found: list[str] = []
+        for line in block.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            for key in cls._APPLICATION_CREDENTIALS:
+                # Match ``KEY:`` / ``KEY=`` at the line's head, so a substring
+                # mention inside another value does not count.
+                if stripped.startswith(f"{key}:") or stripped.startswith(f"{key}="):
+                    found.append(key)
+        return found
+
+    def test_tools_service_exists_in_dev_override(self) -> None:
+        """The dev override declares a ``tools`` service."""
+        text = self._override_path().read_text(encoding="utf-8")
+        block = self._service_block(text, "tools")
+        assert block, "tools service not found"
+
+    def test_tools_service_declares_no_application_credentials(self) -> None:
+        """Every application credential key is absent from the tools service."""
+        text = self._override_path().read_text(encoding="utf-8")
+        block = self._service_block(text, "tools")
+        declared = self._declared_credentials(block)
+        assert not declared, f"tools declares application credentials: {declared}"
+
+    def test_tools_service_keeps_caches_off_the_working_tree(self) -> None:
+        """RUFF_CACHE_DIR / MYPY_CACHE_DIR point inside the container, not /app.
+
+        The source tree is bind-mounted from the host, so a cache written to the
+        working directory would land in the developer's tree. The caches must be
+        redirected to a path outside the mounted tree.
+        """
+        text = self._override_path().read_text(encoding="utf-8")
+        block = self._service_block(text, "tools")
+        assert "RUFF_CACHE_DIR: /tmp/ruff_cache" in block
+        assert "MYPY_CACHE_DIR: /tmp/mypy_cache" in block
+
+    def test_static_analysis_gates_run_on_tools_not_app(self) -> None:
+        """lint / format / typecheck resolve against ``tools`` in the Makefile."""
+        makefile = self._makefile_path().read_text(encoding="utf-8")
+        for function in ("Invoke-Lint", "Invoke-Format", "Invoke-Typecheck"):
+            body = _function_body(makefile, function)
+            assert "--no-deps tools " in body, function
+            assert "--no-deps app " not in body, function
+
+    def test_database_dependent_gates_stay_on_app(self) -> None:
+        """migration-new / migration-status keep the credentialed ``app`` service.
+
+        Autogenerate and ``alembic current`` open a real database connection, so
+        they are not static analysis and must not move to the credential-free
+        runner. This is the regression guard against a later cleanup.
+        """
+        makefile = self._makefile_path().read_text(encoding="utf-8")
+        for function in ("Invoke-MigrationNew", "Invoke-MigrationStatus"):
+            body = _function_body(makefile, function)
+            assert "--no-deps app " in body or " app " in body, function
+            assert "--no-deps tools " not in body, function
+
+
+def _function_body(makefile_text: str, function_name: str) -> str:
+    """Return the body of a ``function <name> { ... }`` PowerShell definition.
+
+    The body starts at the ``function`` line and ends at the first line that is
+    exactly ``}`` at column zero.
+    """
+    lines = makefile_text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line.startswith(f"function {function_name} "):
+            start = index
+            break
+    assert start is not None, f"function {function_name} not found"
+    body = [lines[start]]
+    for line in lines[start + 1:]:
+        body.append(line)
+        if line.rstrip() == "}":
+            break
+    return "\n".join(body)

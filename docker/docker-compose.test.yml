@@ -164,6 +164,10 @@ services:
       # Path(__file__).parent.parent; without this the source-contract test
       # asserts against the baked copy, exactly like the docker/ mount above.
       - ../alembic:/app/alembic
+      # tests/test_config.py asserts the quality-gate wiring by reading
+      # Makefile.ps1 (which invariant runs against which compose service);
+      # without this mount the suite cannot see the file at all.
+      - ../Makefile.ps1:/app/Makefile.ps1
     ports:
       # Host port configurable for parallel checkouts (default 8001).
       - "${TEST_APP_HOST_PORT:-8001}:8000"

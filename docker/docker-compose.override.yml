@@ -8,6 +8,51 @@
 # =============================================================================
 
 services:
+  # Static-analysis runner: the credential-free home of the lint / format /
+  # typecheck gates. It carries the source tree, the Python environment and the
+  # tooling, and an explicitly empty application credential set: none of
+  # DATABASE__PASSWORD, MKOBI_APP_PASSWORD, JWT__SECRET_KEY, ADMIN_USERNAME,
+  # ADMIN_PASSWORD or REDIS__PASSWORD is declared here, so a gate that executes
+  # against untrusted input cannot read them from its own environment. Declaring
+  # the posture explicitly (rather than leaving the credential set absent by
+  # accident) is what tests/test_config.py asserts against the key names. The
+  # container is started only via `docker compose run`, never as a long-running
+  # service: it has no depends_on and no port.
+  tools:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: dev
+    # Static analysis needs no network, no database and no broker; keeping the
+    # tool container off the default network makes an accidental credential
+    # fetch from a peer service impossible rather than merely unlikely.
+    network_mode: none
+    environment:
+      # Only tooling configuration lives here -- no application credentials.
+      ENV: development
+      # The dev image drops to `USER app` (uid 100) but /app stays root-owned, so
+      # ruff and mypy cannot create their default caches. Both resolve
+      # ".ruff_cache" / ".mypy_cache" against the working directory (/app), never
+      # against $HOME, so a writable HOME alone does not help. Pointing them at
+      # /tmp keeps the caches off the bind-mounted working tree (the tree stays
+      # clean) and inside the container's ephemeral filesystem. Without this, the
+      # `lint`, `format`, `typecheck` and `check` targets abort with
+      # "Failed to initialize cache ... Permission denied (os error 13)" and exit 2.
+      RUFF_CACHE_DIR: /tmp/ruff_cache
+      MYPY_CACHE_DIR: /tmp/mypy_cache
+    volumes:
+      # The source tree and the configuration ruff and mypy read are mounted
+      # read-write because `format` fixes in place; the caches are redirected to
+      # /tmp above so the mounted tree stays free of tool artefacts.
+      - ../src:/app/src
+      - ../alembic:/app/alembic
+      - ../tests:/app/tests
+      - ../pyproject.toml:/app/pyproject.toml
+      - ../uv.lock:/app/uv.lock
+    # `docker compose run` uses this when no command is supplied; the Makefile
+    # always passes one explicitly.
+    command: ["ruff", "check", "src/", "tests/", "alembic/env.py"]
+
   # Migration service - runs alembic migrations before app starts (same as production)
   migrate:
     # Must agree byte-for-byte with the base file's image coordinate: an override
