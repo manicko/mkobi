@@ -303,8 +303,8 @@ Admin only.
 | Status | Condition                    | Detail                              |
 | ------ | ---------------------------- | ----------------------------------- |
 | `403`  | Caller is not admin          | `Only admins can create layouts`    |
-| `409`  | Duplicate name               | `Conflict: layout creation failed`  |
-| `422`  | Invalid request body         | Validation error                    |
+| `409`  | Duplicate name               | `A layout with the name '<name>' already exists` |
+| `422`  | Invalid request body         | `Request validation failed`         |
 
 ---
 
@@ -328,8 +328,8 @@ Admin only.
 | ------ | ---------------------------- | --------------------------------- |
 | `403`  | Caller is not admin          | `Only admins can update layouts`  |
 | `404`  | Layout not found             | `Layout not found`                |
-| `409`  | Duplicate name               | `Conflict: layout update failed`  |
-| `422`  | Invalid request body         | Validation error                  |
+| `409`  | Duplicate name               | `A layout with the name '<name>' already exists` |
+| `422`  | Invalid request body         | `Request validation failed`       |
 
 ---
 
