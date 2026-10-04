@@ -445,9 +445,9 @@ Share your dashboard with other users by granting access permissions.
 
 | Action | Method | Auth level |
 | ------ | ------ | ---------- |
-| Grant access | `POST` | Admin |
-| List access | `GET` | Admin |
-| Revoke access | `DELETE` | Admin |
+| Grant access | `POST` | Owner or administrator |
+| List access | `GET` | Owner or administrator |
+| Revoke access | `DELETE` | Owner or administrator |
 
 **Permission levels:**
 

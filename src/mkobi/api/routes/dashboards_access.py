@@ -1,7 +1,7 @@
 """Dashboard access management routes.
 
 This module provides endpoints for granting, revoking, and listing dashboard access.
-Managing access to a dashboard requires an `admin` permission on that dashboard — held by the dashboard's owner — or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.
+Managing access to a dashboard requires an `admin` permission on that dashboard or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.
 """
 
 import logging
@@ -33,7 +33,7 @@ router = APIRouter(tags=["dashboards"])
     "/{dashboard_id}/access",
     status_code=status.HTTP_200_OK,
     summary="Grant dashboard access",
-    description="Grants user access to dashboard. Managing access to a dashboard requires an `admin` permission on that dashboard — held by the dashboard's owner — or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.",
+    description="Grants user access to dashboard. Managing access to a dashboard requires an `admin` permission on that dashboard or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.",
     responses=admin_responses,
 )
 async def grant_dashboard_access_endpoint(
@@ -45,7 +45,7 @@ async def grant_dashboard_access_endpoint(
 ) -> dict[str, Any]:
     """Grant user access to dashboard.
 
-    Managing access to a dashboard requires an `admin` permission on that dashboard — held by the dashboard's owner — or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.
+    Managing access to a dashboard requires an `admin` permission on that dashboard or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.
 
     Args:
         dashboard_id: Dashboard ID.
@@ -59,7 +59,6 @@ async def grant_dashboard_access_endpoint(
 
     Raises:
         AppException 403: If user has no access management rights.
-        AppException 404: If dashboard not found.
         AppException 422: If data validation failed.
         AppException 500: On database error.
     """
@@ -133,7 +132,7 @@ async def grant_dashboard_access_endpoint(
     response_model=list[dict[str, Any]],
     status_code=status.HTTP_200_OK,
     summary="List dashboard access",
-    description="Returns all access records for a dashboard. Managing access to a dashboard requires an `admin` permission on that dashboard — held by the dashboard's owner — or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.",
+    description="Returns all access records for a dashboard. Managing access to a dashboard requires an `admin` permission on that dashboard or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.",
     responses=admin_responses,
 )
 async def get_dashboard_access_endpoint(
@@ -176,7 +175,7 @@ async def get_dashboard_access_endpoint(
     "/{dashboard_id}/access/{user_id}",
     status_code=status.HTTP_200_OK,
     summary="Revoke dashboard access",
-    description="Revokes user's access to a dashboard. Managing access to a dashboard requires an `admin` permission on that dashboard — held by the dashboard's owner — or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.",
+    description="Revokes user's access to a dashboard. Managing access to a dashboard requires an `admin` permission on that dashboard or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.",
     responses=admin_responses,
 )
 async def revoke_dashboard_access_endpoint(

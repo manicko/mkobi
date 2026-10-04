@@ -738,7 +738,7 @@ Editor and above.
 
 ## Dashboard Access Management
 
-Managing access to a dashboard requires an `admin` permission on that dashboard — held by the dashboard's owner — or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.
+Managing access to a dashboard requires an `admin` permission on that dashboard or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.
 
 ### 24. Grant Dashboard Access
 
@@ -776,7 +776,7 @@ Managing access to a dashboard requires an `admin` permission on that dashboard 
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
 | `200`  | A grant for this `(user_id, dashboard_id)` already exists — idempotent no-op | `Access granted` (same body as a first grant) |
-| `403`  | Caller is neither the owner nor an administrator | Forbidden                    |
+| `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | Forbidden                    |
 | `422`  | Admitted caller (owner or administrator) and the dashboard does not exist | permission validation error |
 | `422`  | `permission` outside `view` / `edit` / `admin` | permission validation error |
 | `422`  | dashboard_id mismatch        | `dashboard_id in body doesn't match URL` |
@@ -799,7 +799,7 @@ The absent-dashboard case is role-dependent: an admitted caller (owner or admini
 
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
-| `403`  | Caller is neither the owner nor an administrator | Forbidden                    |
+| `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | Forbidden                    |
 
 ---
 
@@ -823,7 +823,7 @@ The absent-dashboard case is role-dependent: an admitted caller (owner or admini
 
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
-| `403`  | Caller is neither the owner nor an administrator | Forbidden                    |
+| `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | Forbidden                    |
 | `404`  | No access record exists for this `(user_id, dashboard_id)` | `Access record not found`    |
 
 ---
