@@ -548,3 +548,64 @@ class TestRepositoryFactories:
 
         repo = get_access_repository()
         assert isinstance(repo, AccessRepository)
+
+
+class TestExportSurface:
+    """Contract for the public export surface of ``api/deps.py``.
+
+    ``__all__`` is the module's public API contract. Unlike a type annotation,
+    it is runtime-observable: a symbol added to the module and left out of
+    ``__all__`` silently disappears from the export surface, and no lint, mypy
+    or import gate reports the omission. This test derives the module's public
+    names by inspection so it fails the moment a public symbol is defined
+    without being exported -- the one defect in this module that no gate catches.
+    """
+
+    def test_all_matches_public_module_surface(self) -> None:
+        """Every public defined symbol is exported; ``__all__`` has no duplicates."""
+        import inspect
+        import types
+
+        import mkobi.api.deps as deps
+
+        exported = list(deps.__all__)
+
+        # 1. ``__all__`` must be duplicate-free -- the export contract is a set.
+        duplicates = sorted({name for name in exported if exported.count(name) > 1})
+        assert duplicates == [], f"duplicate entries in __all__: {duplicates}"
+
+        # 2. Alphabetised-within-groups is a convention, not the contract, so we
+        #    only require that every name in ``__all__`` is actually defined.
+        undefined = sorted(name for name in exported if not hasattr(deps, name))
+        assert undefined == [], f"__all__ references undefined names: {undefined}"
+
+        # 3. Derive the public callables the module defines itself. Imported
+        #    names (``Any``, ``Depends``, ``AsyncSession``, ...) live in other
+        #    modules and are excluded by the ``__module__`` check. Symbols with
+        #    a leading underscore are explicitly private.
+        public_defined: set[str] = set()
+        for name, obj in vars(deps).items():
+            if name.startswith("_"):
+                continue
+            if getattr(obj, "__module__", None) != deps.__name__:
+                continue
+            if inspect.isfunction(obj) or inspect.iscoroutinefunction(obj):
+                public_defined.add(name)
+            elif isinstance(obj, types.GeneratorType):
+                public_defined.add(name)
+
+        # The four ``Annotated`` convenience aliases are public values, not
+        # functions, and are defined in this module by assignment.
+        for name in ("CurrentUser", "AdminUser", "EditorUser", "ViewerUser"):
+            assert name in vars(deps), f"expected alias {name!r} to be defined"
+            public_defined.add(name)
+
+        # ``security = HTTPBearer()`` is a module-internal singleton, not a
+        # FastAPI dependency or an exported callable.
+        known_internal = {"security"}
+
+        unexported = sorted(public_defined - set(exported) - known_internal)
+        assert unexported == [], (
+            "public symbols defined in deps.py are missing from __all__: "
+            f"{unexported}"
+        )
