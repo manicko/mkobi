@@ -21,6 +21,7 @@ from mkobi.utils.validators import (
     validate_string,
     validate_uuid,
 )
+from mkobi.core.security import MAX_PASSWORD_LENGTH
 
 
 class TestValidateEmail:
@@ -108,36 +109,6 @@ class TestValidatePassword:
         assert validate_password("Short1", min_length=8) is False
 
 
-class TestValidatePasswordOrRaise:
-    """Tests for validate_password_or_raise function."""
-
-    def test_valid_password_no_exception(self):
-        """Test valid password does not raise."""
-        validate_password_or_raise("SecurePass123")  # Should not raise
-
-    def test_invalid_password_too_short_raises(self):
-        """Test short password raises ValueError."""
-        with pytest.raises(ValueError) as exc_info:
-            validate_password_or_raise("short")
-        assert "at least" in str(exc_info.value).lower()
-
-    def test_invalid_password_no_digit_raises(self):
-        """Test password without digit raises ValueError."""
-        with pytest.raises(ValueError) as exc_info:
-            validate_password_or_raise("NoDigitsHere")
-        assert "digit" in str(exc_info.value).lower()
-
-    def test_invalid_password_no_letter_raises(self):
-        """Test password without letter raises ValueError."""
-        with pytest.raises(ValueError) as exc_info:
-            validate_password_or_raise("12345678")
-        assert "letter" in str(exc_info.value).lower()
-
-    def test_invalid_password_empty_raises(self):
-        """Test empty password raises ValueError."""
-        with pytest.raises(ValueError) as exc_info:
-            validate_password_or_raise("")
-        assert "required" in str(exc_info.value).lower()
 
 
 class TestValidateRole:
@@ -262,3 +233,71 @@ class TestRaiseIfInvalid:
         with pytest.raises(ValueError) as exc_info:
             raise_if_invalid(False, "test error message")
         assert "test error message" in str(exc_info.value)
+
+class TestValidatePasswordOrRaise:
+    """Tests for validate_password_or_raise function."""
+
+    def test_valid_password_no_exception(self):
+        """Test valid password does not raise."""
+        validate_password_or_raise("SecurePass123")  # Should not raise
+
+    def test_invalid_password_too_short_raises(self):
+        """Test short password raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            validate_password_or_raise("short")
+        assert "at least" in str(exc_info.value).lower()
+
+    def test_invalid_password_no_digit_raises(self):
+        """Test password without digit raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            validate_password_or_raise("NoDigitsHere")
+        assert "digit" in str(exc_info.value).lower()
+
+    def test_invalid_password_no_letter_raises(self):
+        """Test password without letter raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            validate_password_or_raise("12345678")
+        assert "letter" in str(exc_info.value).lower()
+
+    def test_invalid_password_empty_raises(self):
+        """Test empty password raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            validate_password_or_raise("")
+        assert "required" in str(exc_info.value).lower()
+
+
+class TestPasswordByteBudget:
+    """SECB-10: the mint validator must measure the bcrypt byte budget.
+
+    The bound is bytes, not characters: a 72-character multibyte password is over
+    the budget and must be refused, while a 72-byte ASCII password is accepted.
+    """
+
+    def test_72_byte_ascii_password_accepted(self):
+        """Exactly the byte budget is accepted."""
+        password = "a" * (MAX_PASSWORD_LENGTH - 1) + "1"
+        assert len(password.encode("utf-8")) == MAX_PASSWORD_LENGTH
+        validate_password_or_raise(password)  # Should not raise
+
+    def test_73_byte_ascii_password_refused(self):
+        """One byte over the budget is refused."""
+        password = "a" * MAX_PASSWORD_LENGTH + "1"
+        assert len(password.encode("utf-8")) == MAX_PASSWORD_LENGTH + 1
+        with pytest.raises(ValueError) as exc_info:
+            validate_password_or_raise(password)
+        assert "too long" in str(exc_info.value).lower() or "byte" in str(
+            exc_info.value
+        ).lower()
+
+    def test_72_character_multibyte_password_refused(self):
+        """A 72-character password over 72 bytes is refused.
+
+        Each 'я' is 2 bytes in UTF-8, so 69 Cyrillic characters plus 'ab1'
+        is 72 characters and 141 bytes: over the budget even though the
+        character count equals the limit and the strength rules are met.
+        """
+        password = ("я" * 69) + "ab1"
+        assert len(password) == 72
+        assert len(password.encode("utf-8")) > MAX_PASSWORD_LENGTH
+        with pytest.raises(ValueError):
+            validate_password_or_raise(password)

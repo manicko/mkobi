@@ -183,13 +183,29 @@ def validate_password(password: str, min_length: int = 8) -> bool:
 def validate_password_or_raise(password: str, min_length: int = 8) -> None:
     """Validate password and raise ValueError if invalid.
 
+    Enforces the bcrypt byte budget in addition to the strength rules, because
+    the hasher cannot represent more than ``MAX_PASSWORD_LENGTH`` bytes: a value
+    beyond it would be silently truncated at mint time, letting a later submitter
+    who supplies only the truncated prefix authenticate. The check is bytes, not
+    characters, so a multibyte password under the character limit but over the
+    byte budget is refused.
+
+    The byte constant is read from its owning module (``mkobi.core.security``) at
+    call time rather than imported at module load: ``mkobi.config`` imports
+    ``mkobi.models`` during its own import, and this module is reached from
+    ``mkobi.models.auth``, so a top-level import of ``mkobi.core.security`` (which
+    imports ``mkobi.config``) would close a circular import.
+
     Args:
         password: Password to validate.
         min_length: Minimum password length.
 
     Raises:
-        ValueError: If password does not meet strength requirements.
+        ValueError: If password does not meet strength requirements or exceeds
+            the bcrypt byte budget.
     """
+    from mkobi.core.security import MAX_PASSWORD_LENGTH
+
     if not password or not isinstance(password, str):
         raise ValueError("Password is required")
 
@@ -202,8 +218,12 @@ def validate_password_or_raise(password: str, min_length: int = 8) -> None:
     if not re.search(r"[a-zA-Z]", password):
         raise ValueError("Password must contain at least one letter")
 
-    return None
+    if len(password.encode("utf-8")) > MAX_PASSWORD_LENGTH:
+        raise ValueError(
+            f"Password is too long: at most {MAX_PASSWORD_LENGTH} bytes are allowed"
+        )
 
+    return None
 
 def raise_if_invalid(condition: bool, message: str, exception_type: type = ValueError) -> None:
     """Raise exception if condition is false.

@@ -14,6 +14,8 @@ from mkobi.core.security import (
     _truncate_password,
 )
 from mkobi.config import get_config
+from mkobi.core.security import MAX_PASSWORD_LENGTH
+
 
 
 class TestTruncatePassword:
@@ -365,3 +367,29 @@ class TestIntegration:
         decoded = decode_token(token)
         assert decoded is not None
         assert decoded["user_id"] == "999"
+
+
+
+class TestVerifyTruncationUnchanged:
+    """SECB-10: verification still truncates a legacy over-length credential.
+
+    The mint path refuses a password the hasher cannot represent; the verify path
+    must stay byte-symmetric with hashing so a user who already holds a stored
+    hash of a >72-byte password can still authenticate with the same value.
+    """
+
+    def test_legacy_over_length_password_still_verifies(self):
+        """A >72-byte password hashed before the mint bound still verifies."""
+        legacy_password = "z" * (MAX_PASSWORD_LENGTH + 28)
+        assert len(legacy_password.encode("utf-8")) > MAX_PASSWORD_LENGTH
+        stored_hash = hash_password(legacy_password)
+
+        assert verify_password(legacy_password, stored_hash) is True
+
+    def test_legacy_password_matches_its_truncated_prefix(self):
+        """The stored hash is over the first 72 bytes, as it always was."""
+        legacy_password = "z" * (MAX_PASSWORD_LENGTH + 28)
+        stored_hash = hash_password(legacy_password)
+
+        prefix = "z" * MAX_PASSWORD_LENGTH
+        assert verify_password(prefix, stored_hash) is True

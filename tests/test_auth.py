@@ -520,3 +520,80 @@ class TestRateLimiting:
         )
         assert allowed is True, "IP2 should be allowed (different rate limit key)"
         assert retry_after is None
+
+
+
+class TestPasswordByteBudgetMint:
+    """SECB-10: minting refuses a password the hasher cannot represent.
+
+    The byte budget is enforced at the request-model boundary for every field
+    that mints a new credential, while the verify path stays symmetric with
+    hashing so a pre-existing over-length credential still authenticates.
+    """
+
+    _OVER_LENGTH = "a" * 73 + "1"
+
+    def test_register_request_refuses_over_length_password(self) -> None:
+        from pydantic import ValidationError
+
+        from mkobi.models.auth import RegisterRequest
+
+        with pytest.raises(ValidationError):
+            RegisterRequest(
+                email="user@example.com", password=self._OVER_LENGTH
+            )
+
+    def test_change_password_request_refuses_over_length_new_password(self) -> None:
+        from pydantic import ValidationError
+
+        from mkobi.models.auth import ChangePasswordRequest
+
+        with pytest.raises(ValidationError):
+            ChangePasswordRequest(
+                current_password="CurrentPass123!",
+                new_password=self._OVER_LENGTH,
+                confirm_password=self._OVER_LENGTH,
+            )
+
+    def test_user_create_request_refuses_over_length_password(self) -> None:
+        from pydantic import ValidationError
+
+        from mkobi.models.user import UserCreateRequest
+
+        with pytest.raises(ValidationError):
+            UserCreateRequest(
+                email="user@example.com",
+                password=self._OVER_LENGTH,
+                role=UserRole.VIEWER,
+            )
+
+    async def test_legacy_over_length_password_can_still_log_in(
+        self, async_client: AsyncClient, async_db_session
+    ) -> None:
+        """A stored >72-byte hash must still authenticate through the API.
+
+        The hash is produced exactly as a pre-change deployment produced it (the
+        mint path truncated it); the login must succeed with the original value,
+        proving the verify path still truncates rather than the login field
+        refusing it.
+        """
+        from mkobi.core.security import hash_password
+        from mkobi.db.repositories.user_repo import UserRepository
+
+        email = f"legacy_{__import__('uuid').uuid4().hex[:8]}@example.com"
+        legacy_password = "z" * 100
+
+        repo = UserRepository()
+        await repo.create(
+            db=async_db_session,
+            email=email,
+            password_hash=hash_password(legacy_password),
+            role=UserRole.VIEWER,
+        )
+        await async_db_session.commit()
+
+        response = await async_client.post(
+            "/auth/login",
+            json={"email": email, "password": legacy_password},
+        )
+        assert response.status_code == status.HTTP_200_OK, response.text

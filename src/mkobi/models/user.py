@@ -1,8 +1,9 @@
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict, EmailStr, computed_field
+from pydantic import BaseModel, ConfigDict, EmailStr, computed_field, field_validator
 from uuid import UUID
 
 from mkobi.models.enums import UserRole
+from mkobi.utils.validators import validate_password_or_raise
 
 
 class UserBase(BaseModel):
@@ -37,6 +38,13 @@ class UserCreate(UserBase):
             }
         },
     )
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_field(cls, v: str) -> str:
+        """Refuse a password the hasher cannot represent (SECB-10)."""
+        validate_password_or_raise(v)
+        return v
 
 
 class UserRead(UserBase):
@@ -112,6 +120,14 @@ class UserUpdate(BaseModel):
         },
     )
 
+    @field_validator("password")
+    @classmethod
+    def validate_password_field(cls, v: str | None) -> str | None:
+        """Refuse a password the hasher cannot represent (SECB-10)."""
+        if v is not None:
+            validate_password_or_raise(v)
+        return v
+
 
 class UserCreateRequest(BaseModel):
     """Request model for creating a new user."""
@@ -130,6 +146,13 @@ class UserCreateRequest(BaseModel):
             }
         },
     )
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_field(cls, v: str) -> str:
+        """Refuse a password the hasher cannot represent (SECB-10)."""
+        validate_password_or_raise(v)
+        return v
 
 
 class UserUpdateRequest(BaseModel):
