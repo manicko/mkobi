@@ -9,10 +9,12 @@ undeclared path answers ``404``.
 
 The remedy is the application-level ``redirect_slashes=False`` on the ``FastAPI``
 constructor, set in ``create_app``. It must be there and not on the routers: the
-redirect is decided by the top-level router on the full path, so the twelve
-per-router ``redirect_slashes`` declarations elsewhere cannot suppress it. These
-tests assert the outcome against the application object the tests ship with, and
-pin it so the ``307`` cannot silently return.
+redirect is decided by the top-level router on the full path, so per-router
+``redirect_slashes`` declarations cannot suppress it. Phase 08's ``D-08-7``
+removed the twelve redundant per-router declarations, so the routers now carry
+the constructor default and the application decision is the only one left.
+These tests assert the outcome against the application object the tests ship
+with, and pin it so the ``307`` cannot silently return.
 """
 
 from fastapi import FastAPI, status
@@ -152,49 +154,113 @@ class TestServedAndDeclaredPathsAgree:
 
 
 class TestApplicationLevelRedirectGoverns:
-    """The application-level default governs; the per-router flags cannot.
+    """The application-level default governs; the per-router flags are gone.
 
     This is the regression guard for the mechanism. The twelve per-router
-    ``redirect_slashes=False`` declarations are inert for this direction: the
+    ``redirect_slashes=False`` declarations were inert for this direction: the
     redirect is decided by the top-level router on the full path, so a
-    per-router flag cannot reintroduce the ``307``. The application must carry
-    the disabled behaviour itself, and the per-router flags must still be
-    present unchanged (phase 08's D-08-7 owns their removal).
+    per-router flag cannot reintroduce the ``307``. Phase 08's ``D-08-7``
+    removed those declarations, so the routers now carry the constructor
+    default and the application must carry the disabled behaviour itself.
     """
 
     def test_application_router_has_redirects_disabled(self) -> None:
         app = _app()
         assert app.router.redirect_slashes is False
 
-    def test_per_router_flags_are_inert(self) -> None:
-        """The collection routers keep their per-router flag, unchanged."""
-        from mkobi.api.routes.users import router as users_router
-        from mkobi.api.routes.dashboards_crud import router as dashboards_crud_router
-        from mkobi.api.routes.graphs import router as graphs_router
-        from mkobi.api.routes.processing_logs import router as processing_logs_router
+    def test_route_modules_no_longer_declare_redirect_slashes(self) -> None:
+        """No route module carries a per-router ``redirect_slashes`` flag.
 
-        for router in (
-            users_router,
-            dashboards_crud_router,
-            graphs_router,
-            processing_logs_router,
-        ):
-            assert router.redirect_slashes is False
-
-    def test_router_flag_alone_does_not_disable_the_app_default(self) -> None:
-        """A per-router ``redirect_slashes=False`` cannot set the app default.
-
-        Constructing a fresh application with the default behaviour and
-        including the collection routers proves the flag is inert at that level:
-        the application router remains ``True``, which is precisely why the
-        constructor argument is required.
+        The twelve declarations phase 08's ``D-08-7`` removed are absent from
+        the live routers: each reflects the ``APIRouter`` constructor default.
+        Asserted on the imported router objects, not on source text, so a
+        reintroduced declaration fails here even if it is written indirectly.
         """
-        from mkobi.api.routes.users import router as users_router
+        from mkobi.api.routes import (
+            admin,
+            auth,
+            client_errors,
+            dashboards,
+            dashboards_access,
+            dashboards_crud,
+            dashboards_filters,
+            dashboards_graphs,
+            data,
+            filter_values,
+            graphs,
+            layouts,
+            processing_configs,
+            processing_logs,
+            upload,
+            users,
+        )
 
-        default_app = FastAPI()
-        default_app.include_router(users_router, prefix="/api/v1")
+        modules = (
+            admin,
+            auth,
+            client_errors,
+            dashboards,
+            dashboards_access,
+            dashboards_crud,
+            dashboards_filters,
+            dashboards_graphs,
+            data,
+            filter_values,
+            graphs,
+            layouts,
+            processing_configs,
+            processing_logs,
+            upload,
+            users,
+        )
 
-        # The per-router flag is False, yet the application router keeps the
-        # default True — the flag does not propagate upward.
-        assert users_router.redirect_slashes is False
-        assert default_app.router.redirect_slashes is True
+        for module in modules:
+            router = module.router
+            assert router.redirect_slashes is True, (
+                f"{module.__name__} still declares redirect_slashes="
+                f"{router.redirect_slashes!r}; the constructor default is True"
+            )
+
+    def test_no_route_module_passes_redirect_slashes_to_apirouter(self) -> None:
+        """Structural backstop: the argument is absent from every route module.
+
+        The live-router assertion above is the primary check; this confirms the
+        deletion reached the source uniformly, so a module that set the flag on
+        a child router rather than the exported one is still caught.
+        """
+        import ast
+        from pathlib import Path
+
+        routes_dir = Path(__file__).resolve().parent.parent / "src" / "mkobi" / "api" / "routes"
+        offenders: list[str] = []
+        for path in sorted(routes_dir.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if not (isinstance(func, ast.Name) and func.id == "APIRouter"):
+                    continue
+                if any(kw.arg == "redirect_slashes" for kw in node.keywords):
+                    offenders.append(f"{path.name}:{node.lineno}")
+        assert offenders == [], (
+            f"route modules still pass redirect_slashes to APIRouter: {offenders}"
+        )
+
+    async def test_application_flag_gives_404_without_location_on_both_paths(
+        self, async_client: AsyncClient
+    ) -> None:
+        """The application flag governs a dashboards and a non-dashboards path.
+
+        A no-slash variant of a path declared with the trailing slash must
+        answer ``404`` with no ``Location`` header. This is the behaviour the
+        twelve deletions were proven not to change: the application router, not
+        the per-router flags, decides the redirect.
+        """
+        for path in ("/dashboards", "/graphs"):
+            response = await async_client.get(path, follow_redirects=False)
+            assert response.status_code == status.HTTP_404_NOT_FOUND
+            assert "location" not in response.headers, (
+                f"{path} returned a Location header: "
+                f"{response.headers.get('location')!r}"
+            )
