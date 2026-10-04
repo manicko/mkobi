@@ -514,3 +514,67 @@ class TestAsyncRateLimiterUnit:
         allowed, retry_after = await limiter.check_rate_limit(key, max_attempts=5, ttl=60)
         assert allowed is False
         assert retry_after is not None
+
+
+
+class _FailingRedis:
+    """Redis double whose commands raise, modelling an outage.
+
+    The methods are synchronous raisers so the same double works for both the
+    sync and async limiter: the call raises before any await or coroutine is
+    created.
+    """
+
+    def get(self, *args, **kwargs):
+        raise ConnectionError("redis unavailable")
+
+    def ttl(self, *args, **kwargs):
+        raise ConnectionError("redis unavailable")
+
+    def pipeline(self):
+        raise ConnectionError("redis unavailable")
+
+
+class TestRateLimiterFailClosedDefault:
+    """SECB-2: the shipped posture is fail-closed and must be the class default.
+
+    The declared posture is ``config.rate_limiter_fail_closed`` (default ``True``).
+    A construction site that omits the argument must therefore get the safe
+    behaviour, not the fail-open one the classes used to default to.
+    """
+
+    async def test_async_limiter_defaults_to_fail_closed(self) -> None:
+        """AsyncRateLimiter rejects when Redis fails, with no explicit argument."""
+        from mkobi.core.security import AsyncRateLimiter
+
+        limiter = AsyncRateLimiter(_FailingRedis())
+
+        allowed, retry_after = await limiter.check_rate_limit(
+            "test_key:fail_closed_default", max_attempts=5, ttl=60
+        )
+        assert allowed is False, "the default posture must fail closed"
+        assert retry_after == 60
+
+    def test_sync_limiter_defaults_to_fail_closed(self) -> None:
+        """RateLimiter rejects when Redis fails, with no explicit argument."""
+        from mkobi.core.security import RateLimiter
+
+        limiter = RateLimiter(_FailingRedis())
+
+        allowed, retry_after = limiter.check_rate_limit(
+            "test_key:fail_closed_default", max_attempts=5, ttl=60
+        )
+        assert allowed is False, "the default posture must fail closed"
+        assert retry_after == 60
+
+    async def test_explicit_false_still_fails_open(self) -> None:
+        """An explicit ``fail_closed=False`` is still expressible."""
+        from mkobi.core.security import AsyncRateLimiter
+
+        limiter = AsyncRateLimiter(_FailingRedis(), fail_closed=False)
+
+        allowed, retry_after = await limiter.check_rate_limit(
+            "test_key:fail_open_explicit", max_attempts=5, ttl=60
+        )
+        assert allowed is True
+        assert retry_after is None

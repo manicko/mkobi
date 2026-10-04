@@ -16,9 +16,7 @@ from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.core.logging_config import get_logger
-from mkobi.core.redis_client import get_async_redis_client
 from mkobi.core.security import (
-    AsyncRateLimiter,
     create_access_token,
     decode_token,
     hash_password,
@@ -63,10 +61,6 @@ class AuthService(IAuthService):
             config = get_config()
         self.config = config
         self.blocked_domains_set = set(domain.lower() for domain in config.email.blocked_domains)
-        self._rate_limiter = AsyncRateLimiter(
-            get_async_redis_client(),
-            fail_closed=config.rate_limiter_fail_closed,
-        )
 
     def _validate_role(self, role: str) -> None:
         """Validate that role is allowed.

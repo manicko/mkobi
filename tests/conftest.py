@@ -451,18 +451,16 @@ def _auto_mock_redis(monkeypatch):
     monkeypatch.setattr(redis_client_module, "get_async_redis_client", mock_get_async_redis_client)
     monkeypatch.setattr(redis_client_module, "get_redis_client", mock_get_redis_client)
 
-    # Patch auth service rate limiter to always allow (backward compatibility)
+    # The service previously constructed a limiter that no production path read;
+    # it has been removed (SECB-2). Route rate limiting is built per request from
+    # get_async_redis_client(), which this fixture already mocks, so no AuthService
+    # patching is needed to bypass it for ordinary tests.
     import mkobi.services.auth_service as auth_service_module
 
     original_init = _get_original_auth_init()
 
     def patched_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
-        # Make check_rate_limit always return True (allow all)
-        async def always_true(*a, **kw):
-            return (True, None)
-
-        self._rate_limiter.check_rate_limit = always_true
 
     monkeypatch.setattr(auth_service_module.AuthService, "__init__", patched_init)
 
@@ -484,18 +482,14 @@ def mock_redis(monkeypatch):
 
     monkeypatch.setattr(redis_client_module, "get_async_redis_client", mock_get_async_redis_client)
 
-    # Patch auth service rate limiter to always allow
+    # The AuthService no longer holds a limiter (SECB-2); this fixture only has to
+    # give the route's per-request limiter a mock Redis, which the patch above does.
     import mkobi.services.auth_service as auth_service_module
 
     original_init = auth_service_module.AuthService.__init__
 
     def patched_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
-        # Make check_rate_limit always return True (allow all)
-        async def always_true(*a, **kw):
-            return (True, None)
-
-        self._rate_limiter.check_rate_limit = always_true
 
     monkeypatch.setattr(auth_service_module.AuthService, "__init__", patched_init)
 

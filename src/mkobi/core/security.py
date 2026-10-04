@@ -68,7 +68,7 @@ def _generate_jti() -> str:
 
 
 class RateLimiter:
-    def __init__(self, redis_client: redis.Redis, fail_closed: bool = False) -> None:
+    def __init__(self, redis_client: redis.Redis, fail_closed: bool = True) -> None:
         self._redis = redis_client
         self._fail_closed = fail_closed
 
@@ -116,7 +116,7 @@ class RateLimiter:
 
 
 class AsyncRateLimiter:
-    def __init__(self, redis_client: aioredis.Redis, fail_closed: bool = False) -> None:
+    def __init__(self, redis_client: aioredis.Redis, fail_closed: bool = True) -> None:
         self._redis = redis_client
         self._fail_closed = fail_closed
 
