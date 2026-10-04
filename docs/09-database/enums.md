@@ -94,6 +94,12 @@ class DashboardPermission(StrEnum):
 **PostgreSQL ENUM:** `dashboard_permission_level`
 **Table:** `dashboard_access.permission`
 
+`read` and `write` are **rejected at the boundary, not normalised**: the API
+body model declares ``permission`` as ``DashboardPermission``, so a value
+outside ``view``/``edit``/``admin`` fails validation (422) before any handler
+runs, and the service never rewrites one spelling into another. The stored
+labels are exactly the three above.
+
 ---
 
 ### 3. `GraphType`

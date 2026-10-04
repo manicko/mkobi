@@ -760,9 +760,11 @@ class TestAccessRepository:
     ) -> None:
         """The upsert stores the enum ``.value``, asserted by raw SELECT.
 
-        The ORM round-trip would pass even if the upsert bound ``.name``,
-        because the result processor maps both spellings back to the member.
-        Only a raw query proves the stored label is the lowercase value.
+        It pins the stored label exactly. Column ``permission`` is a native
+        PostgreSQL enum whose label is ``admin``; a typed ORM read normalises
+        either spelling back to the member, so only a raw query can show which
+        label is stored. Binding ``.name`` would render ``ADMIN``, which
+        PostgreSQL rejects rather than silently accepting.
         """
         dashboard_repo = DashboardRepository()
         dashboard = await dashboard_repo.create(

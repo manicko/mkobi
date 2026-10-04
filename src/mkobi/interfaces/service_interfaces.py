@@ -279,7 +279,7 @@ class IDashboardService(abc.ABC):
         self,
         dashboard_id: UUID,
         user_id: UUID,
-        permission: str,
+        permission: DashboardPermission,
         db: AsyncSession,
     ) -> bool:
         """Grant access to dashboard."""

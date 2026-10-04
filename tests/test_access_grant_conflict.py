@@ -32,7 +32,7 @@ from mkobi.interfaces.repository_interfaces import IAccessRepository
 from mkobi.models.enums import DashboardPermission, UserRole
 
 # The inverse of the grant endpoint's success status, kept explicit here so the
-# discrimination between "no-op" and "conflict" is visible in the test itself.
+# discrimination between a re-grant and a conflict is visible in the test itself.
 _LOCK_TIMEOUT_SQLSTATE = "55P03"
 _UNIQUE_VIOLATION_SQLSTATE = "23505"
 
@@ -218,6 +218,16 @@ class TestGrantTwiceAppliesTheRequestedPermission:
             # permission is the requested ADMIN, and the returned row reflects
             # the stored state after the write.
             assert second.permission == DashboardPermission.ADMIN
+
+            # The upsert on the pair's primary key updates in place rather than
+            # inserting a second row, so exactly one row exists after the re-grant.
+            stored = await second_session.execute(
+                select(DashboardAccess).where(
+                    DashboardAccess.user_id == user.id,
+                    DashboardAccess.dashboard_id == dashboard.id,
+                )
+            )
+            assert len(stored.scalars().all()) == 1
         finally:
             cleanup = async_session_maker()
             try:
@@ -455,9 +465,10 @@ class TestExistingRowBranchContract:
                     permission=DashboardPermission.ADMIN,
                 )
                 assert isinstance(result, DashboardAccess)
-                # check_access re-reads the row through the same session; the
-                # equality proves the returned instance reflects the updated
-                # value, which is what populate_existing=True buys.
+                # check_access re-reads the row through the same session, so it
+                # returns the same identity-mapped instance and the equality is
+                # not independent evidence. ``result.permission == ADMIN`` below
+                # is what pins the refreshed value.
                 permission = await repo.check_access(user.id, dashboard.id, session)
                 assert permission == result.permission
                 assert result.permission == DashboardPermission.ADMIN

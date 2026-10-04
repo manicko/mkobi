@@ -773,6 +773,8 @@ Managing access to a dashboard requires an `admin` permission on that dashboard 
 
 A grant for a `(user_id, dashboard_id)` pair that already exists **applies the requested permission**: the stored permission becomes the requested one and the response body carries it, so a re-grant of `admin` over an existing `view` returns `"permission": "admin"` and updates the stored row. This is a write, not a no-op.
 
+The response echoes the **requested** permission, and that equals the stored value because the boundary rejects any other: the request model admits only `view`/`edit`/`admin`, so the echoed value is necessarily what the upsert wrote. This is a boundary guarantee, not a structural one — the handler cannot read the stored row back and does not claim to.
+
 **Error responses:**
 
 | Status | Condition                    | Detail                       |

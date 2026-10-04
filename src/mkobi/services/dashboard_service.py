@@ -383,12 +383,7 @@ class DashboardService(IDashboardService):
             result.append(await self._dashboard_to_read(dashboard, db, DashboardPermission.VIEW))
         return result
 
-    # The interface declares ``permission: str``; this implementation narrows it
-    # to the enum so typed callers cannot pass an arbitrary string. The interface
-    # module is a deliberate non-edit, so mypy reports the narrower parameter as
-    # an override; the ignore is scoped to that single artifact. At runtime the
-    # resolver below still accepts a raw string defensively.
-    async def grant_access(  # type: ignore[override]
+    async def grant_access(
         self,
         dashboard_id: UUID,
         user_id: UUID,
