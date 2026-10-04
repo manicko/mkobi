@@ -1215,4 +1215,523 @@ does not get two owners.
 - **Nine `VAL-08-*` defects applied, none edited.** The audit corpus is not an implementation target.
 - **`ruff` and `mypy` are green at `cea2d06` and that is not evidence for any block in this phase.**
 
+---
+
+## Phase-0 drift re-scope — audit at `f1606f0`
+
+> **Added by the Tech Lead on Phase-0 audit, before any block executed.** The plan above was written
+> against `source_head: cea2d06`. HEAD is now **`f1606f0`** — **81 commits ahead** — and a Phase-0
+> audit found material drift. This section is the **authoritative execution ledger**; where it
+> contradicts anything above, **it wins**. Everything above it is preserved verbatim as the plan of
+> record, because the drift is evidence about the tree, not authority to re-rule a decision record.
+>
+> **The plan's own drift rule is applied, not reinterpreted:** *"a later implementor who finds the
+> tree has moved must re-read the named symbol and record the drift — never silently re-rule a
+> `D-08-1 … D-08-11` record."* Two auditors read the backend anchors and the config/documentation
+> anchors; a Planner re-scoped against both. **No audit file, no sibling plan, and no code was
+> changed to produce this section.**
+
+### Baseline at `f1606f0`
+
+`8953bf7` is **still an ancestor**, so the standing baseline holds: `uv run ruff check src/ tests/` →
+`All checks passed!`; `uv run mypy src/` → `Success: no issues found in 119 source files`, plus the
+live `pyproject.toml: note: unused section(s): module = ['tests.*']`. `Makefile.ps1` still names
+`alembic/env.py` in both `Invoke-Lint` and `Invoke-Typecheck`. **A green gate is still a
+precondition of every block and never its evidence.**
+
+`git status --porcelain`: **41 entries, every one ` D` (tracked-but-uncommitted deletion) or `??`
+(untracked `.ai/tasks/*.yaml`) — zero `M`.** The four files this plan recorded as "concurrent
+uncommitted work" (`src/mkobi/config.py`, `docs/06-backend/configuration.md`,
+`src/mkobi/workers/data_worker.py`, `tests/test_data_worker.py`) are **clean**. The plan's
+"concurrent work observed in the worktree" note is **historical, not live**.
+
+### `DRIFT_REGISTER` — `DR-08-01` … `DR-08-12`
+
+| ID | Drift | Block(s) | Plan clause now false or unsatisfiable | Corrected fact at `f1606f0` | Verdict |
+| -- | ----- | -------- | --------------------------------------- | ---------------------------- | ------- |
+| **`DR-08-01`** | `grant_access`'s insert path was hardened by phase-01 `B4` | `CQLT-1` | *"the fix is an actual upsert"* — the no-op branch itself is **still live**, but the precedent that exists is `on_conflict_do_nothing`, **not** `do_update` | `AccessRepository.grant_access`'s `if existing:` early return survives; `_conflict_tolerant_access_insert` (`on_conflict_do_nothing(index_elements=["user_id","dashboard_id"])`) now exists and both insert branches converge on a re-read. The `VAL-08-008` 200/500 divergence **survives**, and the Researcher's enum-column question is now **sharper** because an in-repo precedent must be priced against | `RE_SCOPE` |
+| **`DR-08-02`** | The owner ruling's `AZ-3` premise is **refuted** | `CQLT-2` | *"the `require_dashboard_admin_access` / `check_dashboard_access` asymmetry is corrected or explicitly accounted for — implementing the audience while leaving the asymmetry in place is option (c) wearing this option's name"* | `require_dashboard_admin_access` is a **pure passthrough** to `check_dashboard_access(..., required_permission="admin")`, and `_check_access_with_session` carries the **admin bypass before the grant read** — so an administrator who is neither owner nor grantee **is** granted. **The named asymmetry does not exist, and the clause is unsatisfiable as written.** The real divergence is the **absence of an existence probe**, against `docs/SPEC.md`'s 403/404 dual-signal row | **`BLOCKS_EXECUTION`** |
+| **`DR-08-03`** | `D-08-7` option (c) **already landed** | `CQLT-8` | *"`app.py::create_app`'s `FastAPI(...)` constructor — **the only site that decides the value**, and it passes no `redirect_slashes` argument"* | `create_app` **now passes `redirect_slashes=False`** (phase-07 `EB-4`). The twelve router declarations now **agree** with the application decision. `docs/SPEC.md` row **3.39** already publishes that they are doubly inert and assigns their deletion to **phase 08's `D-08-7` / `C08-7`** — an obligation created outside this plan | **`BLOCKS_EXECUTION`** |
+| **`DR-08-04`** | `docs/14-schema-migrations/` never existed; `alembic/env.py` materially changed | `CQLT-6` | *"`docs/14-schema-migrations/*` … so it is the SSOT for it"* · *"the first execution is itself a finding"* | The directory **does not exist** (`docs/` has `00`–`11`, `90`, `99`). The migration workflow lives in `docs/10-deployment/deployment.md`, `docs/99-reference/run-guide.md`, `docs/11-guides/docker.md`, `docs/06-backend/architecture.md`. `alembic/env.py` now takes a **bounded `pg_try_advisory_lock`** (30 × 10.0 s, refusal raises `RuntimeError`) with a `finally` unlock, via `mkobi.db.migration_lock`. `tests/test_starter.py::TestStarter` **does not exist**, and **there is no schema-drift test in the suite** | `RE_SCOPE` |
+| **`DR-08-05`** | `CQLT-7`'s consumer enumeration is wrong on both named files | `CQLT-7` | *"`git checkout` restores both the manifest and the tooling that needs it — `.ai/builders/front/package.json` and `.ai/builders/back/run.md` are exactly the consumers"* | The real consumers are **`.ai/builders/build.bat`** and **`.ai/builders/front/run.md`**, both `npx ts-node`. `front/package.json` names no dependency; `back/run.md` is Python. `build.bat` also **writes `.ai\structure\map.md`** — the file `AGENTS.md` links to. `.ai/context/commands.md` still publishes *"ALWAYS run `…\.ai\builders\build.bat`"* — a live instruction naming a deleted file and the **only** surviving published reference to `.ai/builders/` | `RE_SCOPE` |
+| **`DR-08-06`** | `barmode`'s census origin was missed | `CQLT-5` | *"the search for `barmode` across `frontend/src` returns exactly two hits"* | **Three.** `frontend/src/shared/types/api.types.ts` declares `barmode?: string` — the unconstrained server-facing type and the **actual origin** of the widening. **Narrowing `ChartRenderer.tsx`'s cast alone is cosmetic.** The plan also says "six further server families" and then lists **nine** | `RE_SCOPE` |
+| **`DR-08-07`** | `D-08-8`'s stated mechanism is wrong | `CQLT-10` | *"three settings shadowed by the function-scoped `[[tool.mypy.overrides]] module = ["mkobi.*"]` … the more specific match for `tests.*`"* | **`mkobi.*` cannot match a `tests.*` module.** The block is unused because **every invocation is scoped to `src/`** (plus `alembic/env.py`) — the mypy `unused section(s)` note is a **scope** signal, not shadowing. The **conclusion** (leave-and-record) is unchanged; the **recorded reason** changes | `RE_SCOPE` |
+| **`DR-08-08`** | `D-08-2`'s option set needs re-pricing, and the auditors' own correction is wrong | `CQLT-4` | *"under the concrete-class or `TYPE_CHECKING` options the member checking is only as good as the class's own module, which is **not** suppressed"* | `pyproject.toml` has **four** overrides, including `module = ["mkobi.db.models.*"] ignore_errors = true`. **A Phase-0 auditor asserted this suppresses option (b) as well; the Planner refuted that** — the repository classes live in `mkobi.db.repositories.*`, which is **not** suppressed, and `ignore_errors` suppresses diagnostics *inside* a module rather than degrading its exported types. **The Planner's correction is the one recorded, and the block's Auditor settles it by execution, not by argument.** New gap: `get_registration_request_repository` is **absent from `deps.__all__`** | `RE_SCOPE` |
+| **`DR-08-09`** | "the in-body import goes too" is half wrong | `CQLT-3` | *"`AccessRepository()` is no longer constructed inside a route handler body on these two paths (the in-body import goes too)"* | Only `graphs.py` imports `AccessRepository` **in-body**. `layouts.py` imports it at **module level**, so its clause becomes "the module-level import becomes unused". `require_dashboard_read_access` is still path-parameter-shaped and unusable for a collection route | `RECORD_ONLY` |
+| **`DR-08-10`** | `CQLT-10`'s anchors and its documentation census | `CQLT-10` | *"four sequential `return`-on-failure guards"* · *"§Grant Dashboard Access … carries no error row"* | `Invoke-Check` has **three** guards, then an unguarded `Invoke-FeTest`. `docs/02-dashboards/dashboards-api.md` **already** carries a `403 Caller is not admin` row; what is genuinely missing is the **out-of-vocabulary-permission `422`** and the **list/revoke `403`** rows | `RECORD_ONLY` |
+| **`DR-08-11`** | `CQLT-2`'s documentation surface is partly better than filed | `CQLT-2` | *"§Grant Dashboard Access … **no error row** for an out-of-vocabulary permission"* (the 403 half is refuted) | Grant carries 403/404/422; revoke carries only 404; list carries **no error table at all**. Bonus defect: revoke's `200 OK` example is a **layout** body, copy-pasted. `docs/08-security/access-control.md`'s endpoint tables have **no row for the access-management endpoints or their enforcement point** — which is `QLT-002` restated in the documentation | `RE_SCOPE` |
+| **`DR-08-12`** | `C06-15`'s anchors confirmed; the rule citation is wrong | `CQLT-11` | *"`AGENTS.md` rule 13 (the rule whose absence leaves the gap)"* | **`AGENTS.md` has no numbered rules.** Rule 13 lives at **`.kilo/rules/project.md`**. `config.py::UploadSettings.temp_dir` defaults to `user_data_dir("mkobi", "ZOO") / "tmp_uploads"` — user **data**, while the field alias, the docstring and `AGENTS.md` all call it temp — and `file_utils.py::get_user_temp_dir` uses `user_cache_dir`. Both `AGENTS.md` structure links are **broken absolute Windows paths** to a tracked-uncommitted `map.md`, and `build.bat` is what regenerates it — so the dead builder and the broken link are **one fact** (`DR-08-05`) | `RE_SCOPE` |
+
+### `CORRECTED_FACTS` — the register `CQLT-0` now carries
+
+**Superseding rows of the `CQLT-0` corrected-facts register:**
+
+| Fact | Value at `cea2d06` (plan) | **Value at `f1606f0`** |
+| ---- | ------------------------- | ---------------------- |
+| `required_permission=` bare-literal call sites in `src/mkobi` | 21 | **20** — `deps.py` 6, `graphs.py` 4, `processing_configs.py` 3, `dashboards_crud.py` 2, `layouts.py` 1, `data.py` 1, `data_service.py` **3** |
+| Layout `definition=` call sites in tests | 20 across four files (11/4/5/5) | **29–30 across four files (11/8–9/5/5)** — the two auditors disagree by one; **re-derive by symbol at implementation time** |
+| `barmode` occurrences in `frontend/src` | 2, both in `ChartRenderer.tsx` | **3** — `api.types.ts` (`barmode?: string`), plus two in `ChartRenderer.tsx` |
+| Server enum families with no client counterpart | "six" (then nine listed) | **nine** — `BarmodeEnum`, `OrientationEnum`, `YoyModeEnum`, `EnvironmentEnum`, `MimeTypeEnum`, `FileExtensionEnum`, `FilterOperatorEnum`, `ButtonVariant`, `ComponentSize` |
+| `mypy` file count | 116 | **119** |
+| `.ai/builders/**` root-manifest consumers | `front/package.json`, `back/run.md` | **`build.bat`, `front/run.md`** — the two the plan named are not consumers |
+| `httpx` in tests | "2 files" | **33 import statements across 32 test modules** — a 2-file list was read as a count |
+
+**Unchanged and re-confirmed:** twelve `redirect_slashes` router declarations · seven root
+`devDependencies` · `backend` and `src/mkobi/interfaces_old` both absent · the coverage floor
+**inert on `test`, live on `test-all`** · **two** production callers of `grant_access` ·
+`Backend/src` never existed.
+
+**New rows this register gains:**
+
+- `docs/14-schema-migrations/` **does not exist** — phase 14's documentation home is uncreated.
+- `tests/test_starter.py::TestStarter` **does not exist**; `-k "TestStarter"` silently matches one class.
+- **No schema-drift test exists in the suite.** `alembic check`, `command.check` and
+  `compare_metadata` have **zero occurrences repo-wide**. `docker/Dockerfile` invokes alembic **zero**
+  times (three stages only `COPY` it).
+- `get_registration_request_repository` is **not exported** in `deps.__all__` — an export-surface gap
+  no finding names.
+- `check_dashboard_access` has **no existence probe** — the documented 404 comes from route/service
+  existence checks, not from the permission helper.
+- **`require_dashboard_admin_access` has zero production references**, yet
+  `data/logs/app.json.log.1` holds ~20 of its denial entries under message text the current body
+  does not emit: it **executed in a prior implementation**. "Never executed" is **refuted**;
+  "never referenced by live code" **stands**.
+- `AGENTS.md` carries **no numbered rules**; rule 13 is `.kilo/rules/project.md`.
+- Both `AGENTS.md` structure links are **broken absolute Windows paths**.
+- `.ai/context/commands.md` publishes **~14 command spellings** that are not `Makefile.ps1` target
+  spellings, and **35 `Makefile.ps1` targets** are published nowhere in `docs/**` or `.ai/context/**`.
+- `docs/SPEC.md`'s version table is **append-only**, last row **3.41** — **phase 08 appends `3.42`**.
+
+### `DECISION_RECORDS` — status at `f1606f0`
+
+| ID | Status | Still decidable? | Effect of the drift | Chooser must act |
+| -- | ------ | ---------------- | ------------------- | ---------------- |
+| `D-08-1` | Open | **YES** | None; the baseline holds | **Coordinator** |
+| `D-08-2` | Open | **YES** | (a) protocols suppressed **stands**; (b) is **not** shown suppressed — the named module is wrong (`DR-08-08`). The "what evidence substitutes for the checker" clause must be **re-specified**, and now also covers the `deps.__all__` gap | **Tech Lead** |
+| `D-08-3` | **RULED** (cluster 12) | **Survives intact** | The drift **confirms** the amend branch's premise: both documents still *assert* server-side validation, and the target state exists in neither | already acted |
+| `D-08-4` | **RULED** (cluster 1) | **NO — PREMISE REFUTED** | The **audience** half stands and is unaffected. The `AZ-3` **asymmetry clause** rests on an asymmetry that does not exist. **Not re-ruled.** The real divergence to resolve is the missing existence probe against the 403/404 dual-signal | **Product Owner** (escalation) |
+| `D-08-5` | Open | **YES** | `B4` supplies a `do_nothing` precedent; option (b)'s "intermediate 500" is now scoped to the existing-row branch only | **Tech Lead** |
+| `D-08-6` | Open | **YES** | Manifest residue re-derived; options unchanged | **Tech Lead** |
+| `D-08-7` | Open | **Partly — (c) is CLOSED** | The application-level decision has shipped. (a) tags-only and (b) tags + delete the twelve remain. **Record-only is no longer free**: `SPEC.md` 3.39 already publishes `D-08-7` as the owner of those deletions, so declining contradicts a released row | **Tech Lead** (phase 07 informed) |
+| `D-08-8` | Open | **YES** | Mechanism wrong (`DR-08-07`); conclusion intact; the recorded **reason** changes | **Coordinator** (phase 09) |
+| `D-08-9` | Open | **YES** | Unchanged merge point | **Tech Lead** |
+| `D-08-10` | Open | **YES** | **New coupling**: `env.py`'s advisory lock. Option (c) would run the check **through the same lock** in `starter.py`'s own path — a blocking interaction the plan does not contain | **Tech Lead** (phase 14, phase 03/04 informed) |
+| `D-08-11` | Open | **YES** | Options unchanged. `api.types.ts` must be **in scope** or the narrowing is cosmetic — an added target, not a new option | **Tech Lead** (phase 16 informed) |
+
+### `RE_SCOPED_BLOCKS`
+
+| Block | Verdict | Changed semantic targets (by symbol) | DoD: survives / void / added |
+| ----- | ------- | ----------------------------------- | ---------------------------- |
+| `CQLT-0` | `RE_SCOPE` | none — registers only | Survives. **Added:** the `f1606f0` supersession, the ten new absence facts, and the `D-08-4` escalation note |
+| `CQLT-1` | `RE_SCOPE`, **runs** | `AccessRepository.grant_access`'s `if existing:` early return; **`_conflict_tolerant_access_insert`** is now the upsert seam; `DashboardService._validate_permission`; `models/access.py::AccessGrant.permission` / `::AccessCheck.required_permission`; `core/permissions.py::PERMISSION_LEVELS` + the inline ladder in `_check_access_with_session`; `IAccessRepository` | Survives: **the 422-on-both-paths proof**, the independent-session re-read, the corrected `permissions.py` comment, the "no stored row rewritten" note. **Added:** re-base the Researcher question onto `ON CONFLICT DO UPDATE` versus the shipped `do_nothing`, and record that `_validate_permission` is the **second** un-normalised site |
+| `CQLT-2` | **`SUSPEND`** on escalation | unchanged — the three declarations, the `current_user` fact and the create-path scope are all confirmed | **Void:** the asymmetry-correction clause. **Added:** the missing existence probe against the 403/404 dual-signal, as a named choice for the Product Owner |
+| `CQLT-3` | `EXECUTE_AS_PLANNED` + one correction | none added | **Corrected:** "the in-body import goes too" applies to `graphs.py` only; for `layouts.py` it is the module-level import that becomes unused. Admin-sees-all **and** non-admin-sees-only tests both required, unchanged |
+| `CQLT-4` | `RE_SCOPE` | the ten factories, plus `get_registration_request_repository`'s **missing `__all__` export** | **Re-specify** the evidence clause: (a) protocol members unchecked; (b) concrete members **expected** checked — **confirmed by probe, not by argument**. Both probes stay mandatory |
+| `CQLT-5` | `RE_SCOPE` | **add `frontend/src/shared/types/api.types.ts`'s `barmode?: string` as a first-class target**; correct the family list to **nine** | Assert against `BarmodeEnum`'s members; the cross-tier test must read `src/mkobi/models/enums.py` and must read an **external** file |
+| `CQLT-6` | `RE_SCOPE` | `docs/14-schema-migrations/*` is **void** — the surfaces are `docs/10-deployment/deployment.md` and `docs/99-reference/run-guide.md`; the rule is `.kilo/rules/project.md` | **Pin by real class name**, not `TestStarter`. **Unchanged and load-bearing:** `alembic check` **must not** enter the one-shot `migrate` service. **Added:** the advisory-lock interaction as the Researcher's question |
+| `CQLT-7` | `RE_SCOPE` | corrected consumer list — **`build.bat`, `front/run.md`** | **Sequencing constraint unchanged** (8 tracked-uncommitted deletions). The `I001` conflict is unchanged: `Makefile.ps1`'s `format` runs `ruff check --fix` and `.kilo/rules/commands.md` names ruff as the `I001` owner, so deleting `[tool.isort]` **flips a documented convention** — the `E501`/`I001` disposition is part of the block's answer, not a free edit |
+| `CQLT-8` | `RE_SCOPE` | **what is left:** the five children's tags; the twelve declarations under `D-08-7`(b) | **Void:** option (c) and every risk row describing `create_app` as passing no argument. **Added:** the twelve now **agree** with the application decision, and `SPEC.md` 3.39 assigns their deletion here |
+| `CQLT-9` | `EXECUTE_AS_PLANNED` | none | Ruling survives. Census corrected to **29–30**. Both documents in **one** commit; the grep assertion is the deliverable |
+| `CQLT-10` | `RE_SCOPE` | `Invoke-Check` has **three** guards | `run-guide.md` correction **plus** the corrected `tests.*` reason (**scope, not shadowing**). Coverage-floor sentence unchanged |
+| `CQLT-11` | `RE_SCOPE` | cite **`.kilo/rules/project.md`**, not "`AGENTS.md` rule 13" | **Record** the two broken structure links as one fact with `build.bat`; **do not fix them.** §5 step 2 correction and §4 preservation unchanged |
+
+### `EXECUTION_ORDER` — the revised single-implementor queue
+
+| # | Block | Why it sits here |
+| - | ----- | ----------------- |
+| 1 | **`CQLT-0`** | Nothing starts without it; it now carries the `f1606f0` supersession and the escalation note |
+| 2 | **`CQLT-2` escalation** | A **decision, not execution** — raised before any code, because `D-08-4`'s DoD is unsatisfiable as written |
+| 3 | **`CQLT-9`** | **Moved up from 10.** The only released-gate block, touches no shared file, and would otherwise waste implementor time sitting eleventh |
+| 4 | **`CQLT-2`** (on escalation) → 5. **`CQLT-1`** | Order depends on `D-08-9`; `CQLT-1` must precede `CQLT-2` under option (b), since the refusal path needs the typed value |
+| 6 | **`CQLT-3`** | Independent of the above; `graphs.py` / `layouts.py` only |
+| 7 | **`CQLT-8`** | **Moved ahead of `CQLT-7`.** Now the smallest mechanical tag edit, and its twelve deletions are a **published obligation**. It no longer needs `pyproject.toml` settled, because option (c) is closed |
+| 8 | **`CQLT-4`** | After `CQLT-3` — both touch `api/deps.py` |
+| 9 | **`CQLT-5`** | Independent; frontend |
+| 10 | **`CQLT-6`** | After `D-08-10` |
+| 11–12 | **`CQLT-10`**, **`CQLT-7`** | `CQLT-7` is **suspended on a commit**: it runs only once `.ai/builders/**`'s tracked deletion is committed as removed, or the manifest deletion lands in the same commit |
+| 13 | **`CQLT-11`** | Last, by rule — documentation follows the code it describes |
+
+**Descoped or suspended:** `CQLT-2`'s code work — suspended on escalation · `CQLT-7` — suspended on a
+commit · `CQLT-8` option (c) — **descoped, landed** · `CQLT-6` option (c) — suspended on `D-08-10`
+plus the new advisory-lock coupling. **Moves relative to the plan:** `CQLT-9` 10→3, `CQLT-8` 9→7,
+`CQLT-7` 8→12 (suspended), `CQLT-2` 3→4.
+
+### `AGENT_REQUIREMENTS` — changes only
+
+`CQLT-1` and `CQLT-6` **retain** their Researcher; `CQLT-1`'s question is unchanged and sharpened by
+the `do_nothing` precedent, and `CQLT-6`'s **scope changed** from `command.check` semantics to the
+**advisory-lock interaction** under `env.py`'s new guarded run. Every other block's agent set is
+**unchanged** — `CQLT-4`, `CQLT-5`, `CQLT-7` and `CQLT-8` still do **not** get a Researcher, because the
+drift did not turn a local convention question into an external-knowledge one. `CQLT-8`'s option (c)
+disappearing **removes work, not agents**.
+
+### Owner rulings recorded at Phase 0 — all four questions answered 2026-10-04
+
+Every option below is the **recommended** option; the Product Owner answered *"all recommended - a"*
+and confirmed both Coordinator-chosen records. **These are decisions, recorded once, not re-opened
+here.**
+
+| ID | Question | **RULED** | Consequence for the queue |
+| -- | -------- | --------- | ------------------------- |
+| **`DR-08-02` / `D-08-4`** | The `AZ-3` asymmetry clause rests on an asymmetry that **does not exist** | **(a) — the clause is satisfied vacuously.** The audience half of the ruling stands untouched; no code change depends on the dead clause. `AZ-3` proceeds, and `CQLT-2`'s real work is **wiring `require_dashboard_admin_access` into the three handlers** — the finding that replaced the refuted one, and a stronger one: the dependency has **zero production references**. `CQLT-2` is **RELEASED** | **`CQLT-2` unblocked.** The missing existence probe against the 403/404 dual-signal is recorded as a live divergence for `CQLT-2` to state, **not** a clause to invent |
+| **`DR-08-05`** | `.ai/context/commands.md` publishes *"ALWAYS run `…\.ai\builders\build.bat`"* — a deleted file | **(a) — phase 08 records it and hands it to the `.ai/` owner.** No code change, and **no** edit to that line: the `.ai/builders` deletion commit is not phase 08's to make, and coupling to it would import the very sequencing constraint `CQLT-7` is suspended on | New **record-only** row owed by `CQLT-7`'s commit body |
+| **`DR-08-04`** | `CQLT-6` needs a documentation home; `docs/14-schema-migrations/` never existed | **(a)** — document the drift-check target in **`docs/10-deployment/deployment.md`** and **`docs/99-reference/run-guide.md`** | Option (b) rejected: creating the directory would pre-empt **phase 14's** ownership. **`CQLT-6` unblocked** once `D-08-10` is ruled |
+| **`QLT-009`** | The integration half — *the accepted shape of a valid layout configuration* — has no owner | **(a)** — keep it **explicitly open** in `QLT-009`'s ledger, owner named as **Product Owner**, requiring a supplied valid-layout shape before any enforcement | `CQLT-9` **unblocked**; its residual is named in the commit body, not closed |
+| **`D-08-1`** | `QLT-003` — register here, residue to phase 09 | **confirmed — phase 08 corrects the published gate commands and records the residue; `Invoke-Check` stays phase 09's** (`O-01`, `O-23`, `C08-10`). `VAL-08-007`'s ordering constraint remains **already satisfied** by `8953bf7` | `CQLT-10` runs as planned |
+| **`D-08-8`** | The inert `tests.*` mypy override | **confirmed — leave and record.** The **recorded reason changes** from *"shadowed by `mkobi.*`"* to **"out of scope for every invocation the project runs"** (`Makefile.ps1` scopes both gates to `src/`; `uv run mypy src/` likewise). Conclusion unchanged; the mypy `unused section(s)` note is a **scope** signal | `CQLT-10` records the corrected reason |
+
+**Still open, and still this role's to rule at the block:** `D-08-2`, `D-08-5`, `D-08-6`, `D-08-7`,
+`D-08-9`, `D-08-10`, `D-08-11` — each is ruled from its block's `Researcher` / `Planner` evidence, and
+each ruling is written into that block's commit body in the words the plan already requires.
+
+### `DR-08-13` — the **test suite is red at HEAD**, and the plan never claimed otherwise
+
+Measured on the full suite immediately after `CQLT-9` landed (`CQLT-9` was documentation-only and
+cannot have caused any of these): **`9 failed, 1401 passed, 33 warnings in 356.40s`.**
+
+**The plan's standing baseline statement covers `ruff` and `mypy` only** — *"green gates"* names
+those two tools, and the plan was never silent about the limits of that claim. But its "Named suites
+that must stay green unmodified" table assumes a **green suite** as the thing a block is measured
+against, and that assumption is false. **Recorded as a finding, not repaired** — no `QLT-*` finding
+covers any of it, and none of the nine sits in a phase-08 block's named pin.
+
+| Group | Tests | Mechanism | Named home |
+| ----- | ----- | --------- | ---------- |
+| **1** | `tests/test_auth.py::TestRateLimiting` — `test_rate_limiter_allows_under_limit`, `::test_rate_limiter_blocks_over_limit`, `::test_rate_limiter_fail_open_on_redis_error`, `::test_rate_limiter_fail_closed_on_redis_error`, `::test_rate_limiter_different_ips_independent` (5) | Rate-limiter state does not reset between tests — `IP1 attempt 1 should be allowed` fails on the **first** attempt, and the fail-closed case does not block. Phase 07's `HO-1` already ruled rate-limit key identity and proxy trust | **phase 07 `HO-1`** → **phase 09** (`O-16` already routes rate-limit test quality) |
+| **2** | `tests/test_layouts.py::TestLayoutsAPI` — `test_create_layout_missing_name_returns_422`, `test_create_layout_missing_definition_returns_422`, `test_create_layout_duplicate_name_returns_400` (3) | **Stale pre-RFC-7807 assertions.** Two assert `isinstance(response.json()["detail"], list)` — the legacy FastAPI shape — while the project now returns `detail` as a **string**. The third expects **400** from `ValueError` and now receives **422** | **phase 09** — the RFC 7807 migration's test fallout, against the contract in `docs/08-security/error-format.md` |
+| **3** | `tests/test_pydantic_models.py::TestUserModels::test_user_db_valid` (1) | `UserDB` gained a required field the test payload omits: `updated_at Field required` | **phase 09** (model/test drift, `models/user.py::UserDB`) |
+
+**Consequences, binding on every remaining block.**
+
+1. **"All gates green" is unachievable in this phase** and must never be claimed. The
+   definition-of-done row *"all gates green"* means **`ruff` and `mypy` green**, plus **every named
+   pin passing** — not a green suite.
+2. **Every block reports a delta, never an absolute.** The baseline to compare against is
+   **`9 failed / 1401 passed`**. A block that finishes at `9 failed / 1401 passed` has introduced
+   nothing; a block that finishes at `8 failed` has *fixed* something and must say so; a block that
+   finishes at `10 failed` has broken something and is not done.
+3. **Verified against this baseline:** none of the nine sits in a phase-08 block's pin.
+   `CQLT-3`'s pin `test_get_layouts_list` **passes**; `CQLT-2`'s critical pin
+   `test_resource_access_control.py` **passes** (8); `CQLT-6`'s `test_starter.py` **passes** (31);
+   `CQLT-1`'s `test_repositories.py` (36) and `test_dashboard_access.py` pass. **No block is blocked.**
+4. **`CQLT-9`'s three named layout tests were already failing when it ran.** That block chose the
+   documentation branch, so the tests are its *branch-inapplicable* obligations rather than its
+   proof — the Implementor correctly left them unmodified and recorded the drift instead of
+   "fixing" them. **That was the right call and the commit stands.**
+5. **Do not repair them here.** Three unrelated areas, one of them phase 07's rate limiting and two
+   of them RFC 7807 fallout, is a separate programme. Repairing them inside phase 08 would violate
+   minimal scope and would touch `tests/test_layouts.py` — a **named pin** — while other phases are
+   live. Routed as **`O-25`**.
+
+### `D-08-9` RULED — **two ordered commits, `CQLT-1` then `CQLT-2`** (Tech Lead, 2026-10-04)
+
+The plan's merge point, and the plan left it open. **Option (b) is ruled**, on a ground the plan's
+three options did not weigh: **revert granularity.**
+
+`CQLT-1` and `CQLT-2` are not one correction. `CQLT-1` is a **silent-correctness** fix — a re-grant
+returns **200** while the stored permission is never written. `CQLT-2` is the phase's **only
+user-visible authorization change** — **200 → 403 on three documented endpoints**, with
+`dashboard_access` rows requiring operator reconciliation. **Bundled into one commit, reverting the
+disruptive half also reverts the correctness half and re-installs the 200-no-op** — the operator
+cannot back out the 403 without also re-opening the data-integrity defect, and cannot back out the
+data-integrity defect without losing the 403. Different blast radii, different decisions.
+
+The plan's objection to (b) — *"the second reads against a diff the first just made, which is exactly
+the churn the project rule against overlapping work is meant to avoid"* — is answered by
+**sequencing**, not by merging: one implementor, `CQLT-1` fully landed and committed before `CQLT-2`
+opens, so the second review reads a settled file rather than an overlapping one.
+
+`CQLT-1` first, for the plan's own stated reason: its `DashboardPermission` typing is what gives
+`CQLT-2`'s refusal path a typed value to report. **This corrects the Phase-0 `EXECUTION_ORDER`, which
+had `CQLT-2` at position 4 and `CQLT-1` at 5; the ruling makes it `CQLT-1` → `CQLT-2`.** The two
+release notes stay **separate**, and `CQLT-2`'s is the one carrying the operator reconciliation.
+
+### `D-08-9` **CORRECTED** — the order is **`CQLT-2` → `CQLT-1`**, not the reverse (Tech Lead, 2026-10-04)
+
+The ruling above put `CQLT-1` first for the plan's stated reason. **Both Researchers refuted that
+reason**, and the correction is not cosmetic — it closes a security window the fix would otherwise
+open.
+
+**The plan's reason is gone.** *"CQLT-1`'s typing of `DashboardPermission` is what gives `CQLT-2`'s
+refusal path a typed value to report."* `CQLT-2`'s Researcher established the handler **bodies are
+unchanged** — the gate makes the whole owner-or-administrator decision, the refusal path reports no
+permission value, and the refusal code path already ships (`ErrorCode.PERMISSION_DENIED → 403`).
+**The dependency the plan relied on does not exist.**
+
+**The correction.** `CQLT-1` converts a **silent no-op into a real setter**. `CQLT-2`'s Researcher
+named the consequence as *"the highest-severity risk and it is invisible to every pin"*: today the
+write never lands, so the absence of authorization is **inert**. `CQLT-1` alone makes it **live** —
+any authenticated user of any role can then raise any grant to `admin`, because
+`dashboards_access.py` resolves `current_user` and uses it only for logging. **`CQLT-1` before
+`CQLT-2` ships a privilege-escalation vulnerability created by the fix itself.** The gate must land
+first, so that when the setter goes live it is already fenced.
+
+**Both commits stand; only the order reverses.** Revert granularity — the reasoning above — is
+unaffected: the disruptive 403 change and the silent-correctness change remain separately
+revertible. **`CQLT-2` is now first in the queue.**
+
+### Block rulings from the Researcher evidence
+
+| Record | **RULED** | Evidence it rests on |
+| ------ | --------- | --------------------- |
+| **`CQLT-2` enforcement shape** | **Option A** — in all three handlers, **replace** `current_user: CurrentUser` with `current_user: UserRead = Depends(require_dashboard_admin_access)`; body untouched; **no `deps.py` edit**, no new symbol, no second enforcement point | The ruled single site (`C08-2`); the live in-repo precedent is **`dashboards_filters.py::get_dashboard_filters_endpoint`**, which *replaces* rather than combines. **The precedent the plan cited — `graphs.py` — does not exist**: `graphs.py` has zero `require_dashboard_*` references, and `grep require_dashboard_ src/` returns six hits, all inside `deps.py` |
+| **`CQLT-2` the 404 branch** | **No 404 branch. Adding one would be wrong.** The 403/404 dual-signal **does not exist on these three routes** to be preserved: grant's `DASHBOARD_NOT_FOUND` branch is **unreachable** (`DashboardService.grant_access` raises `ValueError`, never returns `False`, so absent dashboards render **422**); list has no error table and returns `200 []`; revoke's only 404 is a missing *access record*. It is implemented on `GET /dashboards/{id}` alone. A probe would break `test_unknown_dashboard_still_returns_422` and pre-empt `AZ-5` | By symbol, plus `docs/08-security/access-control.md` scoping the dual-signal to `GET /api/v1/dashboards/:id`. **Net effect: the gate *closes* two live existence oracles rather than opening one.** The 403-on-absent divergence is a live item owned by `AZ-5` — exactly what `DR-08-02` concluded |
+| **`CQLT-2` create path** | **Zero code. A co-signature recorded in the commit body, not an exemption.** `DashboardService.create_dashboard` already writes an `ADMIN`-level grant to `owner_id`, which is always an `AdminUser` — so the ruled rule holds over it **by construction**. Adding a check would be a **second enforcement point**, forbidden by `C08-2` | `VAL-08-005` confirmed by symbol: `grant_access` has exactly **two** production callers — `create_dashboard`'s owner-grant and `DashboardService.grant_access` |
+| **`CQLT-2` list audience** | **Admin gate**, per `D-08-4`'s audience — **with the tension recorded, not resolved.** `DP-12-A` counts four *write* surfaces; `GET …/access` is a **read**. `require_dashboard_read_access` is **not** an improvement: it admits any `view` grantee, and the ACL list *is* the membership map. Two of three documents say admin; none says viewer. **Open notice to `DP-12-B`/`AZ-5`** | Do **not** open a new read-shaped dependency — `C08-2` forbids a second enforcement point |
+| **`CQLT-1` write path** | **Option (i)** — extend `_conflict_tolerant_access_insert` to `on_conflict_do_update(index_elements=["user_id","dashboard_id"], set_={"permission": permission})` and **delete the `if existing:` early return**. **Keep the leading `SELECT`** | `index_elements` infers the real `dashboard_access_pkey`; PostgreSQL guarantees an atomic INSERT-or-UPDATE, which wins the TOCTOU window `B4` was written to close. **(ii) is racy** — two racers can both take the insert branch. **(iii) is strictly worse** — two statements, row churn, duplicates `revoke_access`. **The leading `SELECT` must stay:** `test_access_grant_conflict.py` counts `execute` calls and commits its competitor after the *first* one — removing it inverts lock ordering and deadlocks |
+| **`CQLT-1` the enum crux** | **Resolved, no trap.** `values_callable` builds `_valid_lookup` so **`.value` is bound, never `.name`**, and the PostgreSQL compiler re-wraps a literal `set_` value in `BindParameter(type_=c.type)` — so the conflict path **does** get the bind processor. Compiled against the real model, the SET bind renders `$4::dashboard_permission_level` | The only wrong spelling is `.ADMIN.name`, which passes SQLAlchemy silently and surfaces as a **500** from PostgreSQL, not a 422. The new test must assert the **stored label** by raw `SELECT`, not merely that the ORM object round-trips |
+| **`CQLT-1` normalisation** | **Option (a)** — `_validate_permission` → **`_resolve_permission`**, returning a `DashboardPermission` member, following the existing idiom | The idiom is **`aggregation_service.py::_resolve_metric_agg`**: accept member-or-str, `strip().lower()`, return the **member**, raise `AppException(VALIDATION_ERROR)` on failure. **`normalise_agg` does not exist.** Option (b) — delete the dead computation and trust the boundary — leaves the service and repository callable with any string, which is the gap `QLT-001` exists to close |
+| **`CQLT-1` the 422 layer — plan refuted** | **The endpoint returns 422 either way; the plan misattributes the layer.** **Today** the rejecting layer is the **service** (`DashboardPermission(normalized)` → `ValueError` → caught → `VALIDATION_ERROR` → 422). **After narrowing**, Pydantic rejects → `RequestValidationError` → 422. **PostgreSQL never rejects in either state** — `validate_strings=False` lets an unknown string pass through SQLAlchemy untouched; the database's `22P02` is unreachable from the API | `VAL-08-008`'s 200/500 divergence **survives** and is unaffected: the 200 is the no-op branch, not acceptance |
+| **`CQLT-1` a missing pin** | **`tests/test_access_grant_conflict.py` is scheduled.** It is **not** in the plan's pin list and **will go red**: four assertions encode the defect as the contract, one comment reading literally *"On CONFLICT DO UPDATE would flip this to ADMIN"*. `TestAccessRepository` has **no** re-grant test at all, so the named pins are safe and the damage is entirely in this unlisted file | Phase-01 `B4` wrote those assertions deliberately. They are the **defect's** contract, not the product's — updating them is part of the fix, and their docstrings must be rewritten with them |
+
+**Two notices carried forward to plan 12, unresolved here and not resolved here by design:**
+`DP-12-B`/`AZ-5`'s `200 []` ruling was decided on the premise that the gate is **not yet installed** —
+once installed, an unauthorised caller gets `403` on the absent-dashboard list, and that ruling's own
+reasoning inverts. And `AZ-5` is load-bearing: the 403-on-absent divergence ships indefinitely if it
+slips, because no test fails.
+
+### `DR-08-14` — the test database is **single-tenant**. Only one suite may run at a time.
+
+**Binding on every block from here.** `tests/conftest.py::setup_test_database` has **every** session
+call `DatabaseStarter.recreate_test_database()` — a **`DROP DATABASE` / `CREATE DATABASE`**. Two
+concurrent suites therefore destroy each other's state mid-run.
+
+**How it was found, because the symptom is deceptive.** `CQLT-2`'s Implementor reported a full suite of
+`2 failed / 1416 passed` with **rotating** failures — run 1 failed
+`test_users_api.py::TestDeleteAccount::test_admin_cannot_delete_self`, run 2 failed
+**`test_deps.py::TestDashboardAccessDependencies::test_read_access_without_permission`**, both passing
+in isolation. `TestDashboardAccessDependencies` is a **named pin**, and it concerns dashboard access —
+the exact area `CQLT-2` changed. The Validator reproduced it *deliberately* by launching two suites at
+once: `51 failed` and `59 failed`, with **both** rotating tests in the lists. Two **uncontended** runs
+at HEAD are identical at **`1 failed / 1417 passed`** — the single failure being the pre-existing
+`test_layouts.py::TestLayoutsAPI::test_create_layout_duplicate_name_returns_400`.
+
+**Rules, from here on:**
+1. **One suite at a time on `mkobi-test`.** If another agent is running a suite, wait — do not start one.
+2. **A rotating failure is not a delta.** Re-run with no other suite active before recording anything.
+   A failure that moves between runs is contamination, not a regression.
+3. **Structural non-involvement is the strongest evidence.** `git grep '/access' -- tests/` matches
+   **`tests/test_dashboards_access_api.py` only**, so no other module can be moved by a change to those
+   three routes. Prefer that argument over re-running.
+4. **The measured baseline is now `1 failed / 1417 passed`.** Three commits from other agents
+   (`558b195 test(enums)`, `3585ea1 test(seeders)`, `e4bd273 build(frontend)`) landed after
+   `b95ba52` and **fixed 8 of the original 9** failures. The remaining one is
+   `test_layouts.py::TestLayoutsAPI::test_create_layout_duplicate_name_returns_400` — stale
+   pre-RFC-7807, `O-25` group 2. `DR-08-13` stands as the record of what the 9 were.
+
+### `CQLT-2` — validated: **ACCEPT WITH FINDINGS** (Validator, `9218fe9`)
+
+No BLOCKER, no MAJOR, four MINOR — **all four the same species: prose asserting what the code does not
+do**, which is precisely the defect `QLT-002` exists to remove. Leaving them would mean the block
+fixed the finding while adding new instances of it, so all four go to one Implementor.
+
+Independently reproduced by the Validator: with the `core/permissions.py::_check_access_with_session`
+admin short-circuit deleted, `test_administrator_who_is_neither_owner_nor_grantee_is_admitted` fails
+`assert 403 == 200`; restored, **12 passed**. Gate reachability was proven **differentially** rather
+than inferred — the same route returns **403** for a `view` grantee and **200** for an `admin` grantee,
+which is only possible if `dashboard_id` binds from the path; an unbound parameter would have produced
+a **422**.
+
+| # | Finding | Correction |
+| - | ------- | ---------- |
+| **1** | The `403` **Condition** cells in all three sections read `Caller is neither the owner nor an administrator`, but the block's **own test** admits a `role=EDITOR` caller who is not the owner and holds only an `admin` **grant**. The cell is *sufficient*, not *necessary* — so not strictly false, but in a block whose purpose is prose/enforcement agreement it reads as excluding a case the suite certifies | `Caller holds neither an `admin` grant on this dashboard nor the `admin` role` |
+| **2** | The RULE sentence's appositive *"held by the dashboard's owner"* reads as **exclusive** and is not — `grant_access` lets **any** user hold an `admin` grant. True for service-created dashboards, false as a general statement, and replicated in **all six** locations | Drop the appositive, or make it non-exclusive |
+| **3** | Two documents **outside** the writable set still assert the old rule — `docs/SPEC.md`'s dashboard-access-management row and `docs/11-guides/create-dashboard.md`'s Grant/List/Revoke **Auth level** cells. The hand-off named only the SPEC **version row**, so as committed the drift is **unowned** | Name both in the hand-over |
+| **4** | The grant handler's `Raises:` docstring still declares `AppException 404: If dashboard not found.` while the branch is unreachable, and this block **deleted the corresponding `404` row** from `dashboards-api.md` §24 — sharpening the contradiction inside the one production file it owned | State the 422, or drop the line |
+
+**On the Implementor's one declared deviation — upheld, no finding.** It used `commit()` rather than
+`flush()` after inserting the pre-existing target grant in the two revoke tests, because
+`async_db_session` is built with `expire_on_commit=False` and a flushed-only row lives inside the
+fixture's `SAVEPOINT` inside an uncommitted root transaction, which an independent session cannot see
+under READ COMMITTED. **Without the commit the survival assertions could not mean anything.** No
+leakage: both `finally` blocks call `_cleanup` for the dashboard, its `dashboard_access` rows and all
+three users, each ending in `commit()`, and the tests do not request `test_user`.
+
+**Remaining risk the Validator named, recorded not closed:** the `commit()` deviation is correct for
+the **current** shared-session fixture and would break if `get_db_dependency` were ever overridden with
+a *separate* session — the dependency on that override is documented only as an inline comment. · A
+role-admin revoking on a dashboard with **no** pre-existing grant row (`404`) is documented but
+untested. · The owner path is proven only **through the admin-grant path**, not through ownership per
+se; no test creates a dashboard through the service and then access-manages it through the route. ·
+`_dashboard_access_row_exists` returns `bool`, not the row, so no test pins that a re-grant does not
+silently overwrite a higher permission — **`CQLT-1`'s job.** · Nothing pins the `403` body beyond
+`code == "PERMISSION_DENIED"`.
+
+### `CQLT-2` closed — `9218fe9` + `add1e8ca`
+
+`add1e8ca` `docs(api): align the access audience prose with what the gate admits` corrects all four
+MINOR findings: the `403` Condition cells in §24/§25/§26 now read **`Caller holds neither an `admin`
+grant on this dashboard nor the `admin` role`** (edited in place, not duplicated — naming both
+admitted classes, since an `admin` **grant** holder need not be the owner); the RULE's **non-exclusive
+appositive** was dropped from **all six** occurrences, verified byte-identical by exact-string match
+(6 before → 6 after); `docs/11-guides/create-dashboard.md`'s Grant/List/Revoke **Auth level** cells and
+`docs/SPEC.md`'s dashboard-access-management row were corrected and **handed over by name**; and the
+grant handler's unreachable `Raises: 404` line was dropped. **Test delta 0** — `1 failed / 1417
+passed`, the single failure the pre-existing baseline. `tests/test_dashboards_access_api.py` appears
+nowhere in the diff. `ruff` and `mypy` green, no gate widened.
+
+**`CQLT-2` discharges `QLT-002` and `VAL-08-005`.** `QLT-001` may now proceed: the gate is in place, so
+the escalation window `D-08-9`'s correction was written to close is closed.
+
+### `O-26` — `docs/11-guides/create-dashboard.md` is committed with **unresolved merge-conflict markers**
+
+**Found incidentally** by `CQLT-2`'s follow-up fix, which had to edit that file. **Not phase-08's to
+resolve** — the repair requires deciding which of two parties' content was intended in twenty places,
+which is editorial judgment this phase has no standing to make.
+
+| Fact | Value |
+| ---- | ----- |
+| File | `docs/11-guides/create-dashboard.md` — **718 lines** |
+| Damage | **40 marker lines = 20 conflict blocks**, i.e. ~28 % of the file |
+| Labels | `<<<<<<< HEAD` / `>>>>>>> abe868d (doc dash)` |
+| Introduced by | `79c7b6c "doc dash"` — **pre-existing**, long before phase 08 |
+| Scope | **Exactly one file.** `git grep -E '^(<<<<<<< \|=======$\|>>>>>>> )'` over all tracked files returns this path and nothing else |
+| Handling | The `HEAD` side of each block is coherent, which is why `add1e8ca`'s Auth-level edit applied cleanly. **The structural corruption was left untouched and is unowned** |
+
+**Named home: the `docs/11-guides/` owner** — the same owner `C08-9` names for the rules-file question.
+Recorded here so it is not silently absorbed, and so the Phase-4 documentation pass sees it. **No
+phase-08 block edits it beyond the one Auth-level cell `add1e8ca` already corrected.**
+
+### `CQLT-1` closed — `7fb4d05` + `0370c61`. **A Tech Lead ruling was refuted by evidence.**
+
+`7fb4d05` `fix(access): apply the granted permission instead of discarding it` — 19 files, +625/−179,
+**delta +10 passing / 0 new failing**. The Validator accepted the defect as genuinely fixed and found
+no hole in it, having **measured** two things rather than inferring them: that `index_elements` resolves
+to `dashboard_access_pkey` alone (a foreign-key violation still raises `23503`), and that
+**`populate_existing=True` is load-bearing, not cosmetic** — after the Core upsert a plain re-read
+returned `view` from the identity map while the database held `admin`.
+
+**`D-08-5` is RULED: one commit, typing and write path together.** And **ruling 10 was wrong.**
+The ruling asserted that narrowing an implementation's parameter type *"widens the accepted set
+(contravariant)"*. **Parameter types are contravariant, so narrowing an override's parameter
+*restricts* what the implementation accepts and is a genuine Liskov violation** — mypy's `[override]`
+diagnostic was correct. Because the ruling put `interfaces/service_interfaces.py` on the forbidden
+list on that false premise, the Implementor was forced into a `# type: ignore[override]`, which is a
+defect under `.kilo/rules/project.md` 9 and under `AGENTS.md`'s "mypy should pass without errors" —
+and under `warn_unused_ignores = true` a suppression is a live claim that the interface is wrong when
+the interface is merely out of date. `0370c61` retypes `IDashboardService.grant_access` to
+`DashboardPermission`, deletes the suppression (**`type: ignore` count in that file: 1 → 0**), and
+drops the false premise from the prose. The sibling `IAccessRepository` had already been retyped in
+`7fb4d05`, so the two interface modules are consistent again. **No drift is being recorded — there
+is none.**
+
+**Recorded for future blocks: this ruling failed because a contravariance claim was accepted without
+being checked.** Where a ruling asserts a type-theoretic property, the Implementor must verify it
+against the checker's actual diagnostic rather than inherit it.
+
+**Seven further findings fixed in `0370c61` — every one a false claim in prose, none a code defect:**
+a `"no-op"` comment the previous body claimed was rewritten · a docstring claiming an exactly-one-row
+assertion that did not exist (**a real pre-cleanup assert was added**) · a comment overstating what
+its assertion pair proves (both reads share the session identity map) · **an inaccurate justification
+for the raw-`SELECT` test, in a docstring and in the body** — the claim that "the ORM round-trip would
+pass even if the upsert bound `.name`" is false for a **native** enum, where a `.name` spelling is
+**rejected by PostgreSQL** rather than silently normalised; the accurate reason is that the test pins
+the **stored label**, which a typed ORM read normalises away · `docs/09-database/enums.md` now records
+that **`read`/`write` are rejected at the boundary, not normalised** · §24 now records that
+requested-equals-stored is a **boundary guarantee, not a structural one** · and the false `C08-11`
+citation, which names `repository_interfaces.py` and points the other way, is dropped.
+
+**Two items recorded, deliberately not fixed.** `dashboards_access.py`'s `except ValueError` is now
+**unreachable** for a permission failure — `_resolve_permission` raises `AppException`, re-raised by
+the later `except AppException: raise`, so the 422 still results and **nothing is broken**; the file
+is `CQLT-2`'s and the branch is `AZ-5`'s. And the **`docs/SPEC.md` version row is deferred to the
+phase documentation pass**: the table is append-only and **other phases are appending to it
+concurrently** (`3.42` was `CQLT-9`'s and three commits have landed since), so **one phase-level row
+for phase 08** is cleaner than one per block. `CQLT-2` shares that gap.
+
+### `CQLT-3` closed — `ef7650d`. **A plan premise was refuted, and a mutation test is undiscriminable by design.**
+
+`refactor(access): route both collection lists through the shared dashboard filter` — four files,
+**delta +8 passing / 0 new failing** (`1 failed / 1427 passed` → `1 failed / 1435 passed`).
+
+**The plan claimed there was no shared helper for the collection-shaped question.** There is:
+`DashboardService.get_user_dashboards(user_id, db, user_role)` already carries the admin bypass and
+already has a production caller at `GET /dashboards/my`, and its non-admin branch is the *same query*
+as `AccessRepository.get_user_dashboards`. So **no repository or service edit was required** — the
+block only *calls* it, wrapped in `deps.py::get_accessible_dashboard_ids` with a **`None` sentinel** so
+the role test exists **once** instead of twice. Raw option (b) would have left the role test in both
+route bodies, because a flat list cannot distinguish "all dashboards" from "the ones I was granted" —
+which is precisely why the wrapper is a dependency and not a route helper.
+
+**The bypass does not survive for free and was added deliberately**, in exactly one place: a
+collection route never reaches `check_dashboard_access`, so `_check_access_with_session`'s bypass is
+irrelevant here. Per endpoint, `accessible_dashboards is None` ⇒ `graph_repo.get_all` and
+`layout_service.get_all_layouts`. Neither route body contains a role comparison any more.
+
+**The layouts admin branch had to stay `get_all_layouts`, and that was load-bearing rather than
+cosmetic:** `get_layouts_by_dashboard_ids` joins `Dashboard`, while `Dashboard.layout_id` is a
+**nullable** FK with `ondelete="SET NULL"` — so **unbound** layouts exist, are visible to an admin and
+to nobody else, and `tests/test_layouts.py::TestLayoutsAPI::test_get_layouts_list` creates one and
+asserts `len(data) >= 1`. Routing the admin branch through the filtered call breaks a named pin.
+
+**Mutation proof — two of three tests failed, and the third provably cannot.** The short-circuit in
+`deps.py` was deleted; `test_admin_role_caller_yields_no_dashboard_filter` failed with *"admin bypass
+must not query the dashboard service"*, and `test_admin_role_caller_sees_every_layout_including_unbound`
+failed with the unbound layout missing from the result set. Restored byte-for-byte — SHA-256 identical
+before and after — and `core/permissions.py` was **never edited**.
+
+**`test_admin_role_caller_sees_every_graph` did not fail, and that is a property of the code, not a
+weak test.** `DashboardService.get_user_dashboards` **independently re-applies** the admin bypass, and
+`Graph.dashboard_id` is `NOT NULL`, so `None` and "every dashboard id" are **observationally
+identical** for graphs. **The graphs endpoint has defence in depth: the bypass is applied twice**, and
+no behavioural test can discriminate between the two applications. **Recorded rather than
+manufactured** — no test was distorted and no production code was bent to force a third failure. The
+layouts endpoint is the discriminating one, and it proved the point.
+
+### The remaining blocks, closed — `CQLT-4`, `CQLT-5`, `CQLT-6`, `CQLT-8`, `CQLT-9`, `CQLT-10`, `CQLT-11`
+
+> **Added after Phase 5.** The queue section this replaces said six of these were "Remaining, in
+> order" and that Phases 4 and 5 "still to run". All had landed. A ledger that tells a reader to
+> re-execute finished work is the *"vanished without a ruling"* failure mode, inverted — so the
+> closures are recorded here.
+
+| Block | Commits | Ruling applied | Measured delta |
+| ----- | ------- | -------------- | -------------- |
+| **`CQLT-8`** | `45e3569`, `2c79422` | **`D-08-7`(b).** A Researcher established by experiment, against **fastapi 0.136.3 / starlette 1.3.1**, that `include_router` has **no** `redirect_slashes` parameter and `starlette.routing.Router.app` reads the **dispatching router's** attribute at request time — routes carry none (0/66). The twelve declarations were therefore **redundant**, and deleting them a provable no-op. The tag half was real: **15 operations** carried `tags: ["dashboards","dashboards"]`; fixed by **one** line on the parent | +3 tests; **0 new failing** |
+| **`CQLT-4`** | `fa6d823` | **`D-08-2` = option (b), the concrete classes**, settled **by probe**. Both prior audit positions were unevidenced; the concrete option fires `[attr-defined]` on a bogus member *and* gives real return precision, while the protocol option **cannot type `get_dashboard_filter_repository` at all** (no interface exists). The plan's "what evidence substitutes for the checker" clause is **void** — the checker was retained and strengthened | +1 test; **0 new failing** |
+| **`CQLT-5`** | `ea1061a` | **`D-08-11` — mirror one family, record the rest.** `api.types.ts` was in scope because it is the **origin** of the widening; narrowing the renderer's cast alone would have been cosmetic. **Asymmetry is two-directional** — `SERVER_ONLY_FAMILIES` (11) and `CLIENT_ONLY_FAMILIES` (1) were created by this block; there was no asymmetry record before | frontend-only; `fe-test` 175/1 pre-existing |
+| **`CQLT-6`** | `043ab69` | **`D-08-10` = option (a).** Options (b) and (c) were ruled out **on evidence**: no `.github`/`.gitlab-ci.yml`/`azure-pipelines.yml`/`.circleci`/`.pre-commit-config.yaml` exists, so there is no CI to extend; and (c) would put a drift failure **inside the one-shot `migrate` service while it holds the advisory lock**, making a rollback depend on a diagnostic. **First-ever `alembic check` in this repository — passes with no drift.** Wrote **four** documents, not the two ruled | backend untouched; **0 new failing** |
+| **`CQLT-9`** | `b95ba52` | **`D-08-3`** — amend both documents. The finding named **three** claim sites; there were **five** — both `## Detailed Definitions` prose sections asserted enforcement just as plainly, and their *"Used in frontend"* clauses were **false** (zero `frontend/src` references). Integration half left **open**, owner **Product Owner** | docs-only |
+| **`CQLT-10`** | `b26b6cf` | **`D-08-1` + `D-08-8`.** Only `run-guide.md` was actually wrong; `docker.md` and `06-backend/testing.md` were checked and left alone. The coverage floor's real nuance: `--cov-fail-under=65` sits in `addopts` with **no `--cov`**, so it is **inert on `test` and live on `test-all`**. The `tests.*` override is inert because every invocation is scoped to `src/` — **not** "shadowed", which is impossible | docs-only |
+| **`CQLT-11`** | `e60f8a4` | `AGENTS.md` §5 step 2 named `platformdirs` (right) and a temp folder (**wrong**): the code uses `user_data_dir` for `UploadSettings.temp_dir` and `user_cache_dir` for the per-user tree, and **neither is `tempfile.gettempdir()`**. **§4's cleanup requirement preserved verbatim.** Rule provenance corrected to **`.kilo/rules/project.md` rule 13** — `AGENTS.md` has no numbered rules. The two broken `.ai/structure/` links **recorded as one fact with `build.bat`** and **not fixed** | one line |
+
+**Phase 4 — `9f4bc17` + `ea4fdf0`.** The single owed **`docs/SPEC.md` version row `3.43`** (derived
+from the table's actual last row, `3.42`), covering all ten findings plus `CQLT-7`'s suspension. Three
+recorded documentation gaps fixed: `fsd-structure.md`'s **false blanket-mirroring claim** (the path is
+`docs/07-frontend/`, not `docs/11-guides/frontend/`; and the mirrored count is **8 → 9**, not 9 → 10) ·
+the **missing `GET /layouts` row** in `access-control.md` · the **`dashboard_id` query parameter** that
+`GET /graphs/` does not accept. `.ai/context/commands.md` **recorded, not edited** — it is the `.ai/`
+owner's. `dashboards-api.md` confirmed at **1016 lines**, over the 1000-line hard threshold —
+**recorded, not split**, out of scope. `docs/11-guides/create-dashboard.md` **left untouched**
+(`O-26`).
+
+**Phase 5 — final validation: ACCEPT WITH FINDINGS.** Every finding disposition verified **by symbol
+in the tree, not by commit body**. `ruff` `All checks passed!`; `mypy src/` **119 files**,
+`mypy src/ alembic/env.py` **120 files**; backend suite **`1 failed / 1441 passed`** — exactly the
+recorded baseline, delta **0**; `fe-lint` **9** (baseline 9), `fe-test` **1 failed / 175 passed**. The
+single backend failure is the recorded `O-25` stale pre-RFC-7807 assertion; the `fe-test` failure is a
+pre-existing `formSchemas.test.ts` case in a file this phase never touched. **No gate widened**, the
+four `[[tool.mypy.overrides]]` blocks byte-unchanged, and **no phase commit touched `.ai/**` or
+`.ai/audit/**`**. The commit ordering held: `CQLT-2` (`9218fe9`) landed before `CQLT-1` (`7fb4d05`), so
+**the escalation window was never open**. `require_dashboard_admin_access` has exactly **three**
+production references — **one enforcement point**.
+
+### Open after Phase 5 — one block, and what the final pass routed
+
+**`CQLT-7` (`QLT-005`) is the only unfinished block**, **suspended by ruling**: it may run only once
+the `.ai/builders/**` tracked deletion is committed as removed, or the manifest deletion lands in the
+same commit. Verified still true — 8 paths still ` D` — and `pyproject.toml`'s `[tool.black]`,
+`[tool.isort]`, the `interfaces_old` per-file-ignore and `pandas-stubs` all remain. **A recursive grep
+of `docs/**` and `AGENTS.md` for `QLT-005`/`CQLT-7` returns exactly one hit: the `3.43` row saying it
+is suspended.** Nothing claims discharge.
+
+**Routed elsewhere, deliberately:** the pre-existing **red suite** (`O-25`: phase 07's rate limiter,
+the RFC 7807 fallout, one model/test drift) → phase 09 · the **20 merge-conflict blocks** in
+`create-dashboard.md` (`O-26`) → the `docs/11-guides/` owner · `.ai/context/commands.md`'s ~14
+non-`Makefile.ps1` spellings and 35 unpublished targets → the `.ai/` owner · **`deps.__all__`**
+(still not complete, still one duplicate) · `OrientationEnum`'s identical widening → phase 16 ·
+`sqlalchemy.ext.mypy.plugin` absent → phase 09 · `Invoke-Check` not invoking `Invoke-Test` and not
+invoking `migration-check` → phase 09 · `QLT-009`'s integration half → **Product Owner** ·
+`403`/`404` dual-signal on the access routes → `AZ-5`, plan 12 · `AZ-3` installation → plan 12.
+
 <!-- PLAN-COMPLETE -->
