@@ -188,7 +188,7 @@ def _drop_test_database_if_owned() -> None:
     logger = logging.getLogger(__name__)
 
     async def _drop() -> None:
-        from sqlalchemy import text
+        from sqlalchemy import DDL, text
         from sqlalchemy.ext.asyncio import create_async_engine
 
         from mkobi.config import get_config
@@ -206,8 +206,18 @@ def _drop_test_database_if_owned() -> None:
                     ),
                     {"name": TEST_DB_NAME},
                 )
+                # Bind the identifier through the dialect's preparer instead of
+                # interpolating it into the statement: mirroring the DROP in
+                # src/mkobi/db/starter.py, this keeps raw SQL free of f-strings
+                # (AGENTS.md rule 3) at zero behavioural cost.
+                quoted_db_name = conn.dialect.identifier_preparer.quote(
+                    TEST_DB_NAME
+                )
                 await conn.execute(
-                    text(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}"')
+                    DDL(
+                        "DROP DATABASE IF EXISTS %(name)s",
+                        context={"name": quoted_db_name},
+                    )
                 )
         finally:
             await engine.dispose()
