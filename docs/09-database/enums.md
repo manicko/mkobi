@@ -45,8 +45,8 @@ All fixed values in the system are defined as `StrEnum` classes in `src/mkobi/mo
 | 13 | `OrientationEnum`        | `v`, `h`                                        | —                     | Graph config (JSONB)     |
 | 14 | `BarmodeEnum`            | `group`, `stack`                                | —                     | Graph config (JSONB)     |
 | 15 | `YoyModeEnum`            | `absolute`, `percent`                           | —                     | Graph config (JSONB)     |
-| 16 | `ButtonVariant`          | `primary`, `secondary`, `success`, `danger`, `warning`, `info`, `light`, `dark` | — | Layout config validation (JSONB) |
-| 17 | `ComponentSize`          | `sm`, `md`, `lg`                                | —                     | Layout config validation (JSONB)            |
+| 16 | `ButtonVariant`          | `primary`, `secondary`, `success`, `danger`, `warning`, `info`, `light`, `dark` | — | `Layout vocabulary only (not enforced)` |
+| 17 | `ComponentSize`          | `sm`, `md`, `lg`                                | —                     | `Layout vocabulary only (not enforced)` |
 
 ---
 
@@ -356,7 +356,7 @@ class ButtonVariant(StrEnum):
     DARK = "dark"
 ```
 
-**Not a PostgreSQL ENUM** — defined in backend for server-side validation of layout configurations stored in `layouts.definition` JSONB. This represents a frontend concept leaking into the backend for validation purposes. The values are validated when layouts are created/updated to ensure only valid button variants are stored. Used in frontend for button styling.
+**Not a PostgreSQL ENUM** — declared in `src/mkobi/models/enums.py` as the shared vocabulary for dashboard layout presentation, and **not enforced by the server**: `layouts.definition` is unconstrained `JSONB` and `LayoutService.create_layout` performs no variant check, so a definition carrying an unknown variant is stored unchanged. Server-side validation of layout definitions is a stated intent, not an implemented capability, and the accepted shape of a valid definition is undecided. The values match the frontend's button-styling vocabulary; the frontend declares its own literals and does not import this enum.
 
 ---
 
@@ -371,7 +371,7 @@ class ComponentSize(StrEnum):
     LARGE = "lg"
 ```
 
-**Not a PostgreSQL ENUM** — defined in backend for server-side validation of layout configurations stored in `layouts.definition` JSONB. This represents a frontend concept leaking into the backend for validation purposes. The values are validated when layouts are created/updated to ensure only valid sizes are stored. Used in frontend for component sizing.
+**Not a PostgreSQL ENUM** — declared in `src/mkobi/models/enums.py` as the shared vocabulary for dashboard layout presentation, and **not enforced by the server**: `layouts.definition` is unconstrained `JSONB` and `LayoutService.create_layout` performs no size check, so a definition carrying an unknown size is stored unchanged. Server-side validation of layout definitions is a stated intent, not an implemented capability, and the accepted shape of a valid definition is undecided. The values match the frontend's component-sizing vocabulary; the frontend declares its own literals and does not import this enum.
 
 ---
 
