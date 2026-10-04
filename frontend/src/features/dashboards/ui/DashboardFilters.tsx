@@ -181,15 +181,17 @@ function FilterField({ filter, value, onChange, dashboardId }: FilterFieldProps)
         config.min || 0,
         config.max || 100,
       ]
+      const labelId = `filter-range-label-${filter.id}`
       return (
         <Box>
-          <Typography variant="caption">{filter.name}</Typography>
+          <Typography variant="caption" id={labelId}>{filter.name}</Typography>
           <Slider
             value={rangeValue}
             min={config.min || 0}
             max={config.max || 100}
             onChange={(_, newValue) => onChange(newValue)}
             valueLabelDisplay="auto"
+            aria-labelledby={labelId}
           />
         </Box>
       )
