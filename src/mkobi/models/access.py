@@ -2,13 +2,15 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from mkobi.models.enums import DashboardPermission
+
 
 class AccessCheck(BaseModel):
     """Model for checking dashboard access."""
 
     user_id: UUID
     dashboard_id: UUID
-    required_permission: str = "view"
+    required_permission: DashboardPermission = DashboardPermission.VIEW
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -27,7 +29,7 @@ class AccessGrant(BaseModel):
 
     user_id: UUID
     dashboard_id: UUID
-    permission: str = "view"
+    permission: DashboardPermission = DashboardPermission.VIEW
 
     model_config = ConfigDict(
         from_attributes=True,

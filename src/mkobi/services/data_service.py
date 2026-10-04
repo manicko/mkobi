@@ -22,7 +22,7 @@ from mkobi.interfaces.repository_interfaces import (
 )
 from mkobi.interfaces.service_interfaces import IDataService, IProcessingConfigService
 from mkobi.models.data import ProcessingResultData, ProcessingResult, ProcessingStatusResponse, UploadResponse
-from mkobi.models.enums import ErrorCode, ProcessingStatus, UploadMode
+from mkobi.models.enums import DashboardPermission, ErrorCode, ProcessingStatus, UploadMode
 from mkobi.services.file_processing import process_upload_with_session
 from mkobi.utils.exceptions import AppException
 
@@ -114,7 +114,7 @@ class DataService(IDataService):
             has_access = await check_dashboard_access(
                 user_id=user_id,
                 dashboard_id=dashboard_id,
-                required_permission="edit",
+                required_permission=DashboardPermission.EDIT,
                 db=db,
             )
             if not has_access:
@@ -265,7 +265,7 @@ class DataService(IDataService):
         if user_id:
             has_access = await check_dashboard_access(
                 user_id=user_id, dashboard_id=log.dashboard_id,
-                required_permission="view", db=db,
+                required_permission=DashboardPermission.VIEW, db=db,
             )
             if not has_access:
                 raise DashboardPermissionError("No permission to view this dashboard")
@@ -302,7 +302,7 @@ class DataService(IDataService):
         if user_id:
             has_access = await check_dashboard_access(
                 user_id=user_id, dashboard_id=log.dashboard_id,
-                required_permission="view", db=db,
+                required_permission=DashboardPermission.VIEW, db=db,
             )
             if not has_access:
                 raise DashboardPermissionError("No permission to view this dashboard")

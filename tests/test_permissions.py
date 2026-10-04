@@ -283,6 +283,112 @@ class TestCheckDashboardAccess:
             )
 
 
+class TestCheckDashboardAccessPermissionVocabulary:
+    """The narrowed permission type and the single permission ladder.
+
+    ``check_dashboard_access`` now declares ``DashboardPermission`` and compares
+    through ``PERMISSION_LEVELS``. Members are the supported spelling; the
+    retired ``read``/``write`` aliases are refused by the vocabulary guard.
+    """
+
+    @pytest.mark.asyncio
+    async def test_member_permission_grants_sufficient_access(
+        self, async_db_session
+    ) -> None:
+        """An ``admin`` member satisfies a required ``view`` member."""
+        from mkobi.core.security import hash_password
+        from mkobi.db.repositories.access_repo import AccessRepository
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+        from mkobi.db.repositories.user_repo import UserRepository
+        from mkobi.models.enums import DashboardPermission
+
+        user_repo = UserRepository()
+        viewer = await user_repo.create(
+            db=async_db_session,
+            email=f"member_perm_{uuid4().hex[:8]}@example.com",
+            password_hash=hash_password("Pass123!"),
+            role=UserRole.VIEWER,
+        )
+        await async_db_session.commit()
+
+        dashboard_repo = DashboardRepository()
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"Member Perm Dashboard {uuid4().hex[:8]}",
+        )
+        await async_db_session.commit()
+
+        access_repo = AccessRepository()
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=viewer.id,
+            dashboard_id=dashboard.id,
+            permission=DashboardPermission.ADMIN,
+        )
+        await async_db_session.commit()
+
+        assert await check_dashboard_access(
+            user_id=viewer.id,
+            dashboard_id=dashboard.id,
+            required_permission=DashboardPermission.VIEW,
+            db=async_db_session,
+        )
+
+    @pytest.mark.asyncio
+    async def test_ladder_refuses_insufficient_member(
+        self, async_db_session
+    ) -> None:
+        """A ``view`` grant does not satisfy a required ``edit`` member."""
+        from mkobi.core.security import hash_password
+        from mkobi.db.repositories.access_repo import AccessRepository
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+        from mkobi.db.repositories.user_repo import UserRepository
+        from mkobi.models.enums import DashboardPermission
+
+        user_repo = UserRepository()
+        viewer = await user_repo.create(
+            db=async_db_session,
+            email=f"ladder_perm_{uuid4().hex[:8]}@example.com",
+            password_hash=hash_password("Pass123!"),
+            role=UserRole.VIEWER,
+        )
+        await async_db_session.commit()
+
+        dashboard_repo = DashboardRepository()
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"Ladder Perm Dashboard {uuid4().hex[:8]}",
+        )
+        await async_db_session.commit()
+
+        access_repo = AccessRepository()
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=viewer.id,
+            dashboard_id=dashboard.id,
+            permission=DashboardPermission.VIEW,
+        )
+        await async_db_session.commit()
+
+        assert not await check_dashboard_access(
+            user_id=viewer.id,
+            dashboard_id=dashboard.id,
+            required_permission=DashboardPermission.EDIT,
+            db=async_db_session,
+        )
+
+    @pytest.mark.asyncio
+    async def test_retired_alias_is_refused(self, async_db_session) -> None:
+        """The ``read`` alias is not in the vocabulary and raises ``ValueError``."""
+        with pytest.raises(ValueError, match="Allowed values"):
+            await check_dashboard_access(
+                user_id=uuid4(),
+                dashboard_id=uuid4(),
+                required_permission="read",  # type: ignore[arg-type]
+                db=async_db_session,
+            )
+
+
 class TestGetCurrentUser:
     """Tests for get_current_user function with real db session."""
 

@@ -48,7 +48,7 @@ from mkobi.interfaces.repository_interfaces import IDashboardFilterValuesReposit
 from mkobi.core.temp_password_store import TempPasswordStore
 from mkobi.db.session import get_db, get_session  # noqa: F401
 from mkobi.db.repositories.user_repo import UserRepository
-from mkobi.models.enums import ErrorCode, UserRole
+from mkobi.models.enums import DashboardPermission, ErrorCode, UserRole
 from mkobi.models.user import UserRead
 from mkobi.services.auth_service import AuthService
 from mkobi.utils.exceptions import AppException
@@ -809,7 +809,7 @@ async def require_dashboard_read_access(
     if not await check_dashboard_access(
         user_id=user.id,
         dashboard_id=dashboard_id,
-        required_permission="view",
+        required_permission=DashboardPermission.VIEW,
         db=db,
     ):
         logger.warning(
@@ -853,7 +853,7 @@ async def require_dashboard_write_access(
     if not await check_dashboard_access(
         user_id=user.id,
         dashboard_id=dashboard_id,
-        required_permission="edit",
+        required_permission=DashboardPermission.EDIT,
         db=db,
     ):
         logger.warning(
@@ -897,7 +897,7 @@ async def require_dashboard_admin_access(
     if not await check_dashboard_access(
         user_id=user.id,
         dashboard_id=dashboard_id,
-        required_permission="admin",
+        required_permission=DashboardPermission.ADMIN,
         db=db,
     ):
         logger.warning(
@@ -952,19 +952,19 @@ async def get_dashboard_permissions(
         "can_read": await check_dashboard_access(
             user_id=user.id,
             dashboard_id=dashboard_id,
-            required_permission="view",
+            required_permission=DashboardPermission.VIEW,
             db=db,
         ),
         "can_write": await check_dashboard_access(
             user_id=user.id,
             dashboard_id=dashboard_id,
-            required_permission="edit",
+            required_permission=DashboardPermission.EDIT,
             db=db,
         ),
         "can_admin": await check_dashboard_access(
             user_id=user.id,
             dashboard_id=dashboard_id,
-            required_permission="admin",
+            required_permission=DashboardPermission.ADMIN,
             db=db,
         ),
     }

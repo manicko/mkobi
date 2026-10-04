@@ -23,7 +23,7 @@ from mkobi.models.processing_configs import (
     ProcessingConfigRead,
     ProcessingConfigUpdate,
 )
-from mkobi.models.enums import ErrorCode
+from mkobi.models.enums import DashboardPermission, ErrorCode
 from mkobi.utils.exceptions import AppException
 from mkobi.core.permissions import check_dashboard_access
 from mkobi.services.processing_config_service import ProcessingConfigService
@@ -82,7 +82,7 @@ async def get_config_endpoint(
             user_id=current_user.id,
             dashboard_id=dashboard_id,
             db=db,
-            required_permission="view",
+            required_permission=DashboardPermission.VIEW,
         ):
             logger.warning(
                 "Access denied to processing config: user_id=%s, dashboard_id=%s",
@@ -162,7 +162,7 @@ async def upsert_config_endpoint(
             user_id=current_user.id,
             dashboard_id=dashboard_id,
             db=db,
-            required_permission="edit",
+            required_permission=DashboardPermission.EDIT,
         ):
             logger.warning(
                 "Edit access denied to processing config: user_id=%s, dashboard_id=%s",
@@ -246,7 +246,7 @@ async def delete_config_endpoint(
             user_id=current_user.id,
             dashboard_id=dashboard_id,
             db=db,
-            required_permission="edit",
+            required_permission=DashboardPermission.EDIT,
         ):
             logger.warning(
                 "Edit access denied to delete processing config: user_id=%s, dashboard_id=%s",

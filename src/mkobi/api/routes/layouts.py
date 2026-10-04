@@ -26,7 +26,7 @@ from mkobi.api.schemas.responses import (
 )
 from mkobi.core.permissions import check_dashboard_access
 from mkobi.db.repositories.access_repo import AccessRepository
-from mkobi.models.enums import ErrorCode, UserRole
+from mkobi.models.enums import DashboardPermission, ErrorCode, UserRole
 from mkobi.models.layout import (
     LayoutRead,
     LayoutUpdate,
@@ -243,7 +243,7 @@ async def get_layout_endpoint(
                 user_id=current_user.id,
                 dashboard_id=dashboard_id,
                 db=db,
-                required_permission="view",
+                required_permission=DashboardPermission.VIEW,
             )
             if not has_access:
                 logger.warning(

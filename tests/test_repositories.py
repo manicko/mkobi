@@ -4,7 +4,9 @@
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import delete, text
 
+from mkobi.db.models import Dashboard, DashboardAccess
 from mkobi.db.repositories.access_repo import AccessRepository
 from mkobi.db.repositories.aggregated_data_repo import AggregatedDataRepository
 from mkobi.db.repositories.dashboard_repo import DashboardRepository
@@ -19,6 +21,19 @@ from mkobi.models.enums import (
     GraphType,
     UserRole,
 )
+
+
+async def _delete_committed_rows(session, dashboard_id) -> None:
+    """Remove rows a cross-session test committed; the owner user row stays.
+
+    ``async_db_session``'s SAVEPOINT cannot isolate rows committed through other
+    sessions, so the cross-session repository tests own this cleanup.
+    """
+    await session.execute(
+        delete(DashboardAccess).where(DashboardAccess.dashboard_id == dashboard_id)
+    )
+    await session.execute(delete(Dashboard).where(Dashboard.id == dashboard_id))
+    await session.commit()
 
 
 class TestUserRepository:
@@ -684,6 +699,122 @@ class TestAccessRepository:
         assert len(access_records) == 1
         assert access_records[0].user_id == test_user["id"]
         assert access_records[0].dashboard_id == dashboard.id
+
+    async def test_regrant_writes_the_requested_permission(
+        self, async_db_session, async_session_maker, test_user: dict
+    ) -> None:
+        """A second grant applies the requested permission rather than a no-op.
+
+        Three sessions: ``expire_on_commit=False`` makes a read-back on the
+        writing session cached, so only a third session can distinguish "never
+        wrote" from "wrote and already knew".
+        """
+        dashboard_repo = DashboardRepository()
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"regrant_dashboard_{uuid4().hex[:8]}",
+            created_by=test_user["id"],
+        )
+        # Commit so the dashboard is durable and visible to the separate
+        # sessions the cross-session re-grant needs.
+        await async_db_session.commit()
+
+        access_repo = AccessRepository()
+        first = async_session_maker()
+        try:
+            await access_repo.grant_access(
+                db=first,
+                user_id=test_user["id"],
+                dashboard_id=dashboard.id,
+                permission=DashboardPermission.VIEW,
+            )
+            await first.commit()
+        finally:
+            await first.close()
+
+        second = async_session_maker()
+        try:
+            await access_repo.grant_access(
+                db=second,
+                user_id=test_user["id"],
+                dashboard_id=dashboard.id,
+                permission=DashboardPermission.ADMIN,
+            )
+            await second.commit()
+        finally:
+            await second.close()
+
+        third = async_session_maker()
+        try:
+            permission = await access_repo.check_access(
+                test_user["id"], dashboard.id, third
+            )
+            assert permission == DashboardPermission.ADMIN
+        finally:
+            await third.close()
+
+        await _delete_committed_rows(async_db_session, dashboard.id)
+
+    async def test_regrant_stores_the_lowercase_enum_label(
+        self, async_db_session, async_session_maker, test_user: dict
+    ) -> None:
+        """The upsert stores the enum ``.value``, asserted by raw SELECT.
+
+        The ORM round-trip would pass even if the upsert bound ``.name``,
+        because the result processor maps both spellings back to the member.
+        Only a raw query proves the stored label is the lowercase value.
+        """
+        dashboard_repo = DashboardRepository()
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"regrant_label_dashboard_{uuid4().hex[:8]}",
+            created_by=test_user["id"],
+        )
+        # Commit so the dashboard is durable and visible to the separate
+        # sessions the cross-session re-grant needs.
+        await async_db_session.commit()
+
+        access_repo = AccessRepository()
+        first = async_session_maker()
+        try:
+            await access_repo.grant_access(
+                db=first,
+                user_id=test_user["id"],
+                dashboard_id=dashboard.id,
+                permission=DashboardPermission.VIEW,
+            )
+            await first.commit()
+        finally:
+            await first.close()
+
+        second = async_session_maker()
+        try:
+            await access_repo.grant_access(
+                db=second,
+                user_id=test_user["id"],
+                dashboard_id=dashboard.id,
+                permission=DashboardPermission.ADMIN,
+            )
+            await second.commit()
+        finally:
+            await second.close()
+
+        third = async_session_maker()
+        try:
+            result = await third.execute(
+                text(
+                    "SELECT permission FROM dashboard_access "
+                    "WHERE user_id = :uid AND dashboard_id = :did"
+                ),
+                {"uid": test_user["id"], "did": dashboard.id},
+            )
+            row = result.fetchone()
+            assert row is not None
+            assert row[0] == "admin"
+        finally:
+            await third.close()
+
+        await _delete_committed_rows(async_db_session, dashboard.id)
 
 
 @pytest.mark.asyncio

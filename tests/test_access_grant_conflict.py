@@ -1,11 +1,16 @@
-"""Tests that a duplicate dashboard access grant is the repository's own no-op.
+"""Tests that a duplicate dashboard access grant applies the requested permission.
 
-Four concerns, in order: the sequential no-op contract in a single session, the
-race forced deterministically with two sessions from the session maker, a
-committed conflict forced through the production method's INSERT statement, and
-the declared interface contract. No test races two coroutines through
-SQLAlchemy's greenlet bridge: that hangs. A holder session and a second session
-with a fixed ordering are deterministic instead.
+Four concerns, in order: the sequential re-grant in a single session, the race
+forced deterministically with two sessions from the session maker, a committed
+conflict forced through the production method's upsert statement, and the
+declared interface contract. No test races two coroutines through SQLAlchemy's
+greenlet bridge: that hangs. A holder session and a second session with a fixed
+ordering are deterministic instead.
+
+The production statement is ``INSERT ... ON CONFLICT DO UPDATE`` on
+``dashboard_access_pkey``: a conflict applies the requested permission and
+``RETURNING`` yields the updated row, so a conflict is absorbed without raising
+``IntegrityError``/``23505`` and the requested value is what survives.
 """
 
 import inspect
@@ -101,24 +106,26 @@ class _CommitConflictingRowAfterFirstExecute:
 
 
 class TestCommittedConflictReachesTheProductionInsert:
-    """The production INSERT is reached with a conflict already committed.
+    """The production upsert is reached with a conflict already committed.
 
     The other production-method test commits the winner before calling
-    ``grant_access``, so the leading SELECT sees it and returns through the fast
-    path -- it never reaches the INSERT and cannot detect a broken INSERT.
-    Here the competitor commits *after* the leading SELECT and *before* the
-    INSERT, so only the conflict-tolerant INSERT can absorb it.
+    ``grant_access``. Here the competitor commits *after* the leading SELECT
+    and *before* the upsert, so only the conflict-tolerant statement can absorb
+    it. The point is that a conflict committed inside the TOCTOU window is
+    absorbed rather than raising ``IntegrityError``/``23505``, and the requested
+    permission is applied.
     """
 
     @pytest.mark.asyncio
     async def test_committed_conflict_is_absorbed_by_the_production_insert(
         self, async_session_maker, test_user: dict
     ) -> None:
-        """A conflict committed inside the TOCTOU window is a no-op, not a 500.
+        """A conflict committed inside the TOCTOU window is absorbed, not a 500.
 
         Against a read-then-insert implementation the INSERT raises
         ``IntegrityError``/``23505`` on ``dashboard_access_pkey``; against the
-        conflict-tolerant INSERT it is absorbed and the stored row is returned.
+        conflict-tolerant upsert it is absorbed and the requested ADMIN is
+        applied to the stored row.
         """
         repo = AccessRepository()
         setup = async_session_maker()
@@ -152,9 +159,9 @@ class TestCommittedConflictReachesTheProductionInsert:
             assert isinstance(result, DashboardAccess)
             assert result.user_id == user.id
             assert result.dashboard_id == dashboard.id
-            # The committed winner's permission survives; the requested ADMIN
-            # never overwrites it.
-            assert result.permission == DashboardPermission.VIEW
+            # The committed winner's row is updated by the conflict action, so
+            # the requested ADMIN is what the production statement applies.
+            assert result.permission == DashboardPermission.ADMIN
         finally:
             await loser.rollback()
             await loser.close()
@@ -165,14 +172,14 @@ class TestCommittedConflictReachesTheProductionInsert:
                 await cleanup.close()
 
 
-class TestGrantTwiceIsANoOp:
-    """The sequential duplicate: no concurrency, no exception, stored value wins."""
+class TestGrantTwiceAppliesTheRequestedPermission:
+    """The sequential re-grant: no concurrency, no exception, requested value wins."""
 
     @pytest.mark.asyncio
-    async def test_second_grant_returns_the_stored_row_unchanged(
+    async def test_second_grant_writes_the_requested_permission(
         self, async_session_maker, test_user: dict
     ) -> None:
-        """Granting twice keeps the first permission and leaves exactly one row."""
+        """Granting twice applies the second permission and leaves exactly one row."""
         repo = AccessRepository()
         setup = async_session_maker()
         dashboard, user = await _make_dashboard_and_user(setup, test_user["id"])
@@ -207,10 +214,10 @@ class TestGrantTwiceIsANoOp:
             assert isinstance(second, DashboardAccess)
             assert second.user_id == user.id
             assert second.dashboard_id == dashboard.id
-            # The no-op contract: the stored permission is the first request's,
-            # never the requested downgrade/upgrade. On CONFLICT DO UPDATE would
-            # flip this to ADMIN.
-            assert second.permission == DashboardPermission.VIEW
+            # On CONFLICT DO UPDATE applies the second request: the stored
+            # permission is the requested ADMIN, and the returned row reflects
+            # the stored state after the write.
+            assert second.permission == DashboardPermission.ADMIN
         finally:
             cleanup = async_session_maker()
             try:
@@ -351,8 +358,9 @@ class TestGrantAcrossTwoSessions:
             await loser.commit()
 
             assert isinstance(result, DashboardAccess)
-            # A's permission wins, not B's requested ADMIN.
-            assert result.permission == DashboardPermission.EDIT
+            # The upsert updates the winner's committed row to B's requested
+            # ADMIN; the leading read was not the correctness mechanism.
+            assert result.permission == DashboardPermission.ADMIN
         finally:
             await winner.rollback()
             await winner.close()
@@ -368,10 +376,12 @@ class TestGrantAcrossTwoSessions:
     async def test_committed_conflict_is_absorbed_without_an_exception(
         self, async_session_maker, test_user: dict
     ) -> None:
-        """The sharpest discriminator: a committed conflict returns no row, no error.
+        """The sharpest discriminator: a committed conflict completes, with a row.
 
-        No concurrency is needed. Pre-fix the same statement raises
-        ``IntegrityError``/``23505``.
+        No concurrency is needed. Pre-fix the same statement raised
+        ``IntegrityError``/``23505``. Under ``ON CONFLICT DO UPDATE ... RETURNING``
+        the committed conflict returns the updated row carrying the requested
+        permission, so the test asserts both facts.
         """
         setup = async_session_maker()
         dashboard, user = await _make_dashboard_and_user(setup, test_user["id"])
@@ -393,10 +403,12 @@ class TestGrantAcrossTwoSessions:
             try:
                 result = await loser.execute(
                     _conflict_tolerant_access_insert(
-                        user.id, dashboard.id, DashboardPermission.VIEW
+                        user.id, dashboard.id, DashboardPermission.ADMIN
                     )
                 )
-                assert result.first() is None
+                updated_row = result.first()
+                assert updated_row is not None
+                assert updated_row.permission == DashboardPermission.ADMIN
                 await loser.commit()
             finally:
                 await loser.close()
@@ -408,14 +420,14 @@ class TestGrantAcrossTwoSessions:
                 await cleanup.close()
 
 
-class TestNoOpBranchContract:
-    """The defined no-op branch still exists and returns what the interface declares."""
+class TestExistingRowBranchContract:
+    """The existing-row path returns a DashboardAccess reflecting the stored state."""
 
     @pytest.mark.asyncio
     async def test_existing_row_branch_returns_a_dashboard_access(
         self, async_session_maker, test_user: dict
     ) -> None:
-        """A pre-existing pair comes back as a DashboardAccess, unchanged."""
+        """A pre-existing pair comes back as a DashboardAccess carrying the new value."""
         repo = AccessRepository()
         setup = async_session_maker()
         dashboard, user = await _make_dashboard_and_user(setup, test_user["id"])
@@ -443,9 +455,12 @@ class TestNoOpBranchContract:
                     permission=DashboardPermission.ADMIN,
                 )
                 assert isinstance(result, DashboardAccess)
+                # check_access re-reads the row through the same session; the
+                # equality proves the returned instance reflects the updated
+                # value, which is what populate_existing=True buys.
                 permission = await repo.check_access(user.id, dashboard.id, session)
                 assert permission == result.permission
-                assert result.permission == DashboardPermission.VIEW
+                assert result.permission == DashboardPermission.ADMIN
             finally:
                 await session.close()
         finally:

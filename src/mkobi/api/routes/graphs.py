@@ -35,7 +35,7 @@ from mkobi.models.graph import (
     GraphRead,
     GraphUpdate,
 )
-from mkobi.models.enums import ErrorCode, UserRole
+from mkobi.models.enums import DashboardPermission, ErrorCode, UserRole
 from mkobi.utils.exceptions import AppException
 
 logger = logging.getLogger(__name__)
@@ -98,7 +98,7 @@ async def create_graph_endpoint(
             user_id=current_user.id,
             dashboard_id=graph.dashboard_id,
             db=db,
-            required_permission="admin",
+            required_permission=DashboardPermission.ADMIN,
         ):
             logger.warning(
                 "Admin access denied to create graph: user_id=%s, dashboard_id=%s",
@@ -261,7 +261,7 @@ async def get_graph_endpoint(
             user_id=current_user.id,
             dashboard_id=graph.dashboard_id,
             db=db,
-            required_permission="view",
+            required_permission=DashboardPermission.VIEW,
         ):
             logger.warning(
                 "Access denied to graph: user_id=%s, graph_id=%s, dashboard_id=%s",
@@ -349,7 +349,7 @@ async def update_graph_endpoint(
             user_id=current_user.id,
             dashboard_id=existing_graph.dashboard_id,
             db=db,
-            required_permission="admin",
+            required_permission=DashboardPermission.ADMIN,
         ):
             logger.warning(
                 "Admin access denied to graph: user_id=%s, graph_id=%s, dashboard_id=%s",
@@ -459,7 +459,7 @@ async def delete_graph_endpoint(
             user_id=current_user.id,
             dashboard_id=existing_graph.dashboard_id,
             db=db,
-            required_permission="admin",
+            required_permission=DashboardPermission.ADMIN,
         ):
             logger.warning(
                 "Admin access denied to graph: user_id=%s, graph_id=%s, dashboard_id=%s",

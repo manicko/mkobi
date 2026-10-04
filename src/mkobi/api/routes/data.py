@@ -27,7 +27,7 @@ from mkobi.api.schemas.responses import (
 )
 from mkobi.core.permissions import check_dashboard_access, DashboardPermissionError
 from mkobi.models.data import ProcessingResultData, AggregatedDataResponse, GraphDataResponse
-from mkobi.models.enums import ErrorCode
+from mkobi.models.enums import DashboardPermission, ErrorCode
 from mkobi.services.data_service import DataService
 from mkobi.utils.exceptions import AppException
 
@@ -88,7 +88,7 @@ async def get_aggregated_data_endpoint(
     if not await check_dashboard_access(
         user_id=current_user.id,
         dashboard_id=dashboard_id,
-        required_permission="view",
+        required_permission=DashboardPermission.VIEW,
         db=db,
     ):
         logger.warning(

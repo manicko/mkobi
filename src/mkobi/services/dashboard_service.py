@@ -25,11 +25,41 @@ from mkobi.models.dashboard import (
     DashboardRead,
     DashboardSummary,
 )
-from mkobi.models.enums import DashboardPermission, UserRole
+from mkobi.models.enums import DashboardPermission, ErrorCode, UserRole
 from mkobi.models.layout import LayoutRead
-from mkobi.utils.exceptions import PermissionDeniedException
+from mkobi.utils.exceptions import AppException, PermissionDeniedException
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_permission(permission: DashboardPermission | str) -> DashboardPermission:
+    """Normalise and validate a dashboard permission name.
+
+    Accepts either a :class:`DashboardPermission` member or the stored string.
+    The string is normalised (``strip()`` + ``lower()``) and resolved against
+    the enum. An unrecognised name **fails loudly** with :class:`AppException`
+    and ``VALIDATION_ERROR`` rather than being silently accepted under the
+    requested name.
+
+    Args:
+        permission: Access level as an enum member or a string.
+
+    Returns:
+        The matching DashboardPermission member.
+
+    Raises:
+        AppException: If the name is not a member of DashboardPermission.
+    """
+    if isinstance(permission, DashboardPermission):
+        return permission
+    normalised = str(permission).strip().lower()
+    try:
+        return DashboardPermission(normalised)
+    except ValueError:
+        raise AppException(
+            code=ErrorCode.VALIDATION_ERROR,
+            detail=f"Invalid access level: '{permission}'",
+        ) from None
 
 
 class DashboardService(IDashboardService):
@@ -191,7 +221,7 @@ class DashboardService(IDashboardService):
         # Convert to Pydantic model with layout data
         try:
             dashboard_read = await self._dashboard_to_read(
-                dashboard_obj, db, DashboardPermission(permission)
+                dashboard_obj, db, permission
             )
             return dashboard_read
         except Exception as e:
@@ -353,11 +383,16 @@ class DashboardService(IDashboardService):
             result.append(await self._dashboard_to_read(dashboard, db, DashboardPermission.VIEW))
         return result
 
-    async def grant_access(
+    # The interface declares ``permission: str``; this implementation narrows it
+    # to the enum so typed callers cannot pass an arbitrary string. The interface
+    # module is a deliberate non-edit, so mypy reports the narrower parameter as
+    # an override; the ignore is scoped to that single artifact. At runtime the
+    # resolver below still accepts a raw string defensively.
+    async def grant_access(  # type: ignore[override]
         self,
         dashboard_id: UUID,
         user_id: UUID,
-        permission: str,
+        permission: DashboardPermission,
         db: AsyncSession,
     ) -> bool:
         """Grant user access to dashboard.
@@ -365,13 +400,13 @@ class DashboardService(IDashboardService):
         Args:
             dashboard_id: Dashboard ID.
             user_id: User ID.
-            permission: Access level.
+            permission: Access level (``DashboardPermission`` member).
             db: Async database session.
 
         Returns:
             bool: True if access granted.
         """
-        self._validate_permission(permission)
+        resolved_permission = _resolve_permission(permission)
 
         # Check dashboard existence
         dashboard_obj = await self.dashboard_repo.get(dashboard_id, db)
@@ -386,7 +421,7 @@ class DashboardService(IDashboardService):
             db=db,
             user_id=user_id,
             dashboard_id=dashboard_id,
-            permission=permission,
+            permission=resolved_permission,
         )
 
         await db.commit()
@@ -478,27 +513,6 @@ class DashboardService(IDashboardService):
             raise
 
     # --- Helper methods ---
-
-    def _validate_permission(self, permission: str) -> None:
-        """Validate that access level is allowed."""
-        normalized = permission
-        if permission == "read":
-            normalized = "view"
-        elif permission == "write":
-            normalized = "edit"
-
-        try:
-            DashboardPermission(normalized)
-        except ValueError as err:
-            logger.error(
-                "Invalid access level: '%s'. Allowed: %s",
-                permission,
-                sorted([e.value for e in DashboardPermission]),
-            )
-            raise ValueError(
-                f"Invalid access level: '{permission}'. "
-                f"Allowed values: {', '.join(sorted([e.value for e in DashboardPermission]))}"
-            ) from err
 
     def _validate_config(self, config: DashboardConfig) -> None:
         """Validate dashboard configuration."""

@@ -11,7 +11,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mkobi.models.enums import ProcessingStatus
+from mkobi.models.enums import DashboardPermission, ProcessingStatus
 from mkobi.models.processing_logs import ProcessingLogFilter, ProcessingLogRead
 
 
@@ -88,17 +88,17 @@ class IAccessRepository(abc.ABC):
         db: AsyncSession,
         user_id: UUID,
         dashboard_id: UUID,
-        permission: str = "view",
+        permission: DashboardPermission = DashboardPermission.VIEW,
     ) -> Any | None:
         """Grant user access to dashboard.
 
-        Returns the ``DashboardAccess`` row that satisfies the grant. A grant
-        for a ``(user_id, dashboard_id)`` pair that already has one is a no-op:
-        it returns the existing row unchanged and writes nothing. The conflict
-        is absorbed by ``ON CONFLICT DO NOTHING`` on the pair's primary key, so
-        two concurrent grants of the same pair cannot fail. ``None`` means no
-        row could be read back, which the caller is not expected to
-        distinguish. Note that ``pyproject.toml`` sets
+        Returns the ``DashboardAccess`` row reflecting the requested grant. A
+        grant for a ``(user_id, dashboard_id)`` pair that already has one
+        applies the requested permission and returns the stored row as written:
+        the conflict is absorbed by ``ON CONFLICT DO UPDATE`` on the pair's
+        primary key, so two concurrent grants of the same pair cannot fail.
+        ``None`` means no row could be read back, which the caller is not
+        expected to distinguish. Note that ``pyproject.toml`` sets
         ``ignore_errors = true`` for ``mkobi.interfaces.*``, so the type checker
         does not verify this declaration; the repository-level tests are the
         substitute evidence.
@@ -115,7 +115,7 @@ class IAccessRepository(abc.ABC):
     @abc.abstractmethod
     async def check_access(
         self, user_id: UUID, dashboard_id: UUID, db: AsyncSession
-    ) -> str | None:
+    ) -> DashboardPermission | None:
         """Check user access level to dashboard."""
         pass
 

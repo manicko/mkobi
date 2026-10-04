@@ -351,7 +351,7 @@ async def update_dashboard_endpoint(
             user_id=current_user.id,
             dashboard_id=dashboard_id,
             db=db,
-            required_permission="edit",
+            required_permission=DashboardPermission.EDIT,
         )
         if not has_edit_access:
             logger.warning(
@@ -446,7 +446,7 @@ async def delete_dashboard_endpoint(
             user_id=current_user.id,
             dashboard_id=dashboard_id,
             db=db,
-            required_permission="admin",
+            required_permission=DashboardPermission.ADMIN,
         )
         if not has_admin_access:
             logger.warning(

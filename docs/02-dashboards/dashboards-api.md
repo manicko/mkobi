@@ -765,20 +765,21 @@ Managing access to a dashboard requires an `admin` permission on that dashboard 
   "message": "Access granted",
   "dashboard_id": "660e8400-e29b-41d4-a716-446655440001",
   "user_id": "550e8400-e29b-41d4-a716-446655440000",
-  "permission": "view"
+  "permission": "admin"
 }
 ```
 
-**Valid permission levels:** `view`, `edit`, `admin` (defined by `DashboardPermission` StrEnum)
+**Valid permission levels:** `view`, `edit`, `admin` (defined by `DashboardPermission` StrEnum). The value is bound and stored under its lowercase enum label.
+
+A grant for a `(user_id, dashboard_id)` pair that already exists **applies the requested permission**: the stored permission becomes the requested one and the response body carries it, so a re-grant of `admin` over an existing `view` returns `"permission": "admin"` and updates the stored row. This is a write, not a no-op.
 
 **Error responses:**
 
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
-| `200`  | A grant for this `(user_id, dashboard_id)` already exists — idempotent no-op | `Access granted` (same body as a first grant) |
 | `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | Forbidden                    |
 | `422`  | Admitted caller (owner or administrator) and the dashboard does not exist | permission validation error |
-| `422`  | `permission` outside `view` / `edit` / `admin` | permission validation error |
+| `422`  | `permission` outside `view` / `edit` / `admin` | Pydantic rejects the `AccessGrant` body before the handler runs |
 | `422`  | dashboard_id mismatch        | `dashboard_id in body doesn't match URL` |
 
 The absent-dashboard case is role-dependent: an admitted caller (owner or administrator) reaches the handler and receives `422` when the dashboard does not exist, while a caller outside the audience receives `403` whether or not the dashboard exists, because the admin-access gate runs before the handler body.

@@ -14,7 +14,7 @@ including a wrong one. The audience tests impersonate an explicit caller per tes
 so ``require_dashboard_admin_access`` is genuinely exercised end to end.
 """
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import AsyncClient
@@ -496,6 +496,176 @@ class TestGrantAccessAudience:
             await _cleanup(async_db_session, dashboard.id, owner.id)
             await _cleanup(async_db_session, uuid4(), caller.id)
             await _cleanup(async_db_session, uuid4(), target.id)
+
+
+class TestGrantPermissionVocabularyAtTheBoundary:
+    """Out-of-vocabulary ``permission`` values are rejected by Pydantic, not the service.
+
+    Before this block ``AccessGrant.permission`` was a bare ``str`` and the
+    service accepted the ``read``/``write`` aliases. Now the model binds the
+    native ``DashboardPermission``, so an alias is a 422 and writes no row on
+    both the new-row and the existing-row path. The owner-grant on the create
+    path is the positive control: a valid grant still writes.
+    """
+
+    @pytest.mark.asyncio
+    async def test_read_alias_is_rejected_and_writes_no_row(
+        self, authenticated_client: AsyncClient, async_db_session, async_session_maker,
+        test_user: dict,
+    ) -> None:
+        """``read`` is not a ``DashboardPermission`` value: 422 with no row written."""
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        target_user = await user_repo.create(
+            db=async_db_session,
+            email=f"vocab_read_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.VIEWER,
+        )
+        assert target_user is not None
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"vocab-read-dashboard-{uuid4().hex[:8]}",
+            created_by=test_user["id"],
+        )
+        assert dashboard is not None
+        await async_db_session.flush()
+
+        body = {
+            "user_id": str(target_user.id),
+            "dashboard_id": str(dashboard.id),
+            "permission": "read",
+        }
+
+        try:
+            response = await authenticated_client.post(
+                f"/dashboards/{dashboard.id}/access", json=body
+            )
+            assert response.status_code == 422
+            assert not await _dashboard_access_row_exists(
+                async_session_maker, target_user.id, dashboard.id
+            )
+        finally:
+            await _cleanup(async_db_session, dashboard.id, target_user.id)
+
+    @pytest.mark.asyncio
+    async def test_write_alias_is_rejected_and_writes_no_row(
+        self, authenticated_client: AsyncClient, async_db_session, async_session_maker,
+        test_user: dict,
+    ) -> None:
+        """``write`` is not a ``DashboardPermission`` value: 422 with no row written."""
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        target_user = await user_repo.create(
+            db=async_db_session,
+            email=f"vocab_write_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.VIEWER,
+        )
+        assert target_user is not None
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"vocab-write-dashboard-{uuid4().hex[:8]}",
+            created_by=test_user["id"],
+        )
+        assert dashboard is not None
+        await async_db_session.flush()
+
+        body = {
+            "user_id": str(target_user.id),
+            "dashboard_id": str(dashboard.id),
+            "permission": "write",
+        }
+
+        try:
+            response = await authenticated_client.post(
+                f"/dashboards/{dashboard.id}/access", json=body
+            )
+            assert response.status_code == 422
+            assert not await _dashboard_access_row_exists(
+                async_session_maker, target_user.id, dashboard.id
+            )
+        finally:
+            await _cleanup(async_db_session, dashboard.id, target_user.id)
+
+    @pytest.mark.asyncio
+    async def test_alias_is_rejected_on_the_existing_row_path(
+        self, authenticated_client: AsyncClient, async_db_session, async_session_maker,
+        test_user: dict,
+    ) -> None:
+        """On an existing row the alias is still 422 and the stored row is untouched."""
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        access_repo = AccessRepository()
+        target_user = await user_repo.create(
+            db=async_db_session,
+            email=f"vocab_existing_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.VIEWER,
+        )
+        assert target_user is not None
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"vocab-existing-dashboard-{uuid4().hex[:8]}",
+            created_by=test_user["id"],
+        )
+        assert dashboard is not None
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=target_user.id,
+            dashboard_id=dashboard.id,
+            permission=DashboardPermission.VIEW,
+        )
+        await async_db_session.commit()
+
+        body = {
+            "user_id": str(target_user.id),
+            "dashboard_id": str(dashboard.id),
+            "permission": "write",
+        }
+
+        try:
+            response = await authenticated_client.post(
+                f"/dashboards/{dashboard.id}/access", json=body
+            )
+            assert response.status_code == 422
+
+            verify = async_session_maker()
+            try:
+                result = await verify.execute(
+                    select(DashboardAccess).where(
+                        DashboardAccess.user_id == target_user.id,
+                        DashboardAccess.dashboard_id == dashboard.id,
+                    )
+                )
+                stored = result.scalar_one()
+                assert stored.permission == DashboardPermission.VIEW
+            finally:
+                await verify.close()
+        finally:
+            await _cleanup(async_db_session, dashboard.id, target_user.id)
+
+    @pytest.mark.asyncio
+    async def test_create_path_still_writes_the_owner_grant(
+        self, authenticated_client: AsyncClient, async_db_session, async_session_maker,
+        test_user: dict,
+    ) -> None:
+        """The create path's owner-grant is a valid write and still lands."""
+        body = {
+            "name": f"vocab-owner-grant-{uuid4().hex[:8]}",
+            "config": {"graph_types": ["bar"]},
+        }
+
+        response = await authenticated_client.post("/dashboards/", json=body)
+        assert response.status_code == 201
+        dashboard_id = response.json()["id"]
+
+        try:
+            assert await _dashboard_access_row_exists(
+                async_session_maker, test_user["id"], UUID(dashboard_id)
+            )
+        finally:
+            await _cleanup(async_db_session, UUID(dashboard_id), test_user["id"])
 
 
 class TestListAccessAudience:

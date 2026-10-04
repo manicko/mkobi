@@ -17,19 +17,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mkobi.db.models import access as access_model
 from mkobi.db.models import dashboard as dashboard_model
 from mkobi.interfaces.repository_interfaces import IAccessRepository
+from mkobi.models.enums import DashboardPermission
 
 logger = logging.getLogger(__name__)
 
 
 def _conflict_tolerant_access_insert(
-    user_id: UUID, dashboard_id: UUID, permission: str
+    user_id: UUID, dashboard_id: UUID, permission: DashboardPermission
 ) -> PGInsert:
-    """Build the conflict-tolerant INSERT for one dashboard_access row.
+    """Build the conflict-tolerant upsert for one dashboard_access row.
 
-    The composite primary key on (user_id, dashboard_id) is what enforces
-    "one grant per pair"; naming those two columns in index_elements means the
-    conflict action applies to *that* constraint only, so any other integrity
-    violation still raises instead of being silently absorbed.
+    The composite primary key on (user_id, dashboard_id), named
+    ``dashboard_access_pkey``, is what enforces "one grant per pair"; naming
+    those two columns in index_elements means the conflict action applies to
+    *that* constraint only, so any other integrity violation still raises
+    instead of being silently absorbed. The conflict action updates the stored
+    permission to the requested one, so a re-grant applies the new value rather
+    than being a no-op. The value is bound through the enum's ``.value`` by the
+    column type's bind processor (``values_callable``), never ``.name``.
     """
     return (
         pg_insert(access_model.DashboardAccess)
@@ -38,7 +43,10 @@ def _conflict_tolerant_access_insert(
             dashboard_id=dashboard_id,
             permission=permission,
         )
-        .on_conflict_do_nothing(index_elements=["user_id", "dashboard_id"])
+        .on_conflict_do_update(
+            index_elements=["user_id", "dashboard_id"],
+            set_={"permission": permission},
+        )
         .returning(
             access_model.DashboardAccess.user_id,
             access_model.DashboardAccess.dashboard_id,
@@ -61,73 +69,61 @@ class AccessRepository(IAccessRepository):
         db: AsyncSession,
         user_id: UUID,
         dashboard_id: UUID,
-        permission: str = "view",
+        permission: DashboardPermission = DashboardPermission.VIEW,
     ) -> access_model.DashboardAccess | None:
         """Grant user access to dashboard.
 
         Args:
             user_id: User identifier (UUID).
             dashboard_id: Dashboard identifier (UUID).
-            permission: Access level (view/edit/admin).
+            permission: Access level as a ``DashboardPermission`` member.
             db: Async database session.
 
         Returns:
-            DashboardAccess representing the desired state: the row this call
-            inserted, or the existing row when the pair already had one. A
-            re-grant is a no-op that writes nothing and returns the existing
-            row unchanged. ``None`` only when no row could be read back.
+            DashboardAccess reflecting the stored state after the write: the row
+            this call inserted, or the existing row updated to the requested
+            permission when the pair already had one. A re-grant therefore
+            applies the requested permission rather than being a no-op.
+            ``None`` only when no row could be read back.
         """
         try:
-            # Fast path only, never the correctness mechanism: a concurrent
-            # winner's uncommitted row is invisible to this SELECT, which is
-            # exactly the window that used to yield a unique-violation 500.
-            result = await db.execute(
+            # Probe only, never the correctness mechanism: a concurrent winner's
+            # uncommitted row is invisible to this SELECT, and the upsert below
+            # resolves the conflict regardless. Its result is intentionally
+            # discarded; it runs first so callers that interleave a competing
+            # commit observe a stable statement order.
+            await db.execute(
                 select(access_model.DashboardAccess).where(
                     access_model.DashboardAccess.user_id == user_id,
                     access_model.DashboardAccess.dashboard_id == dashboard_id,
                 )
             )
-            existing = result.scalar_one_or_none()
-            if existing:
-                logger.warning(
-                    "Access already exists: user_id=%s, dashboard_id=%s",
-                    user_id,
-                    dashboard_id,
-                )
-                return cast(access_model.DashboardAccess | None, existing)
 
             insert_result = await db.execute(
                 _conflict_tolerant_access_insert(user_id, dashboard_id, permission)
             )
-            inserted = insert_result.first()
-            if inserted is not None:
+            if insert_result.first() is not None:
                 logger.info(
                     "Access granted: user_id=%s, dashboard_id=%s, permission=%s",
                     user_id,
                     dashboard_id,
                     permission,
                 )
-            else:
-                # The conflict was absorbed, so our INSERT produced no row.
-                # PostgreSQL runs the conflict action only once the conflicting
-                # transaction has ended: had the winner rolled back, our INSERT
-                # would have proceeded and RETURNING would have yielded a row.
-                # Reaching this branch therefore means the winner committed, and
-                # under READ COMMITTED the next statement takes a fresh snapshot
-                # and sees it.
-                logger.warning(
-                    "Access already exists: user_id=%s, dashboard_id=%s",
-                    user_id,
-                    dashboard_id,
-                )
 
-            # Re-read on both branches so the method has one return type: a
-            # DashboardAccess, whether this call inserted it or absorbed it.
+            # Re-read so the method has one return type: a DashboardAccess
+            # whether this call inserted it or updated it via the conflict
+            # action. ``populate_existing=True`` is REQUIRED, not cosmetic: the
+            # leading SELECT loaded the row into the session's identity map and
+            # ``expire_on_commit=False`` keeps it there, while the Core upsert
+            # changed the row in the database and not through the ORM -- without
+            # the refresh this select would hand back the stale instance.
             reread = await db.execute(
-                select(access_model.DashboardAccess).where(
+                select(access_model.DashboardAccess)
+                .where(
                     access_model.DashboardAccess.user_id == user_id,
                     access_model.DashboardAccess.dashboard_id == dashboard_id,
                 )
+                .execution_options(populate_existing=True)
             )
             persisted = reread.scalar_one_or_none()
             if persisted is None:
@@ -192,7 +188,7 @@ class AccessRepository(IAccessRepository):
 
     async def check_access(
         self, user_id: UUID, dashboard_id: UUID, db: AsyncSession
-    ) -> str | None:
+    ) -> DashboardPermission | None:
         """Check user access level to dashboard.
 
         Args:
@@ -201,7 +197,7 @@ class AccessRepository(IAccessRepository):
             db: Async database session.
 
         Returns:
-            Access level (view/edit/admin) or None if no access.
+            The stored ``DashboardPermission`` member, or None if no access.
         """
         try:
             result = await db.execute(
@@ -212,7 +208,7 @@ class AccessRepository(IAccessRepository):
             )
             access_obj = result.scalar_one_or_none()
             if access_obj:
-                permission: str = access_obj.permission
+                permission: DashboardPermission = access_obj.permission
                 logger.info(
                     "Access checked: user_id=%s, dashboard_id=%s, permission=%s",
                     user_id,

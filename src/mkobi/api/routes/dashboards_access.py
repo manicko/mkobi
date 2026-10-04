@@ -59,7 +59,9 @@ async def grant_dashboard_access_endpoint(
 
     Raises:
         AppException 403: If user has no access management rights.
-        AppException 422: If data validation failed.
+        AppException 422: If data validation failed, including a ``permission``
+            outside ``view``/``edit``/``admin``, which Pydantic's ``AccessGrant``
+            model rejects before this handler runs.
         AppException 500: On database error.
     """
     logger.info(

@@ -111,6 +111,32 @@ class TestProcessingStatusResponseWireShape:
         assert "filename" in component["required"]
 
 
+class TestAccessGrantPermissionIsAnEnumReference:
+    """``AccessGrant.permission`` publishes the native enum in the OpenAPI document.
+
+    Before this block the field was a bare ``str`` and the published schema was
+    ``{"default": "view", "title": "Permission", "type": "string"}``. Now it is a
+    ``$ref`` to the ``DashboardPermission`` component, whose ``enum`` lists the
+    three admissible values, so a generated client sees the vocabulary.
+    """
+
+    def test_permission_property_is_a_reference_to_dashboard_permission(self) -> None:
+        """The field resolves to the ``DashboardPermission`` enum schema."""
+        from mkobi.main import app
+
+        schema = app.openapi()
+        component = schema["components"]["schemas"]["AccessGrant"]
+        permission_schema = component["properties"]["permission"]
+
+        assert (
+            permission_schema.get("$ref")
+            == "#/components/schemas/DashboardPermission"
+        )
+
+        resolved = _resolve_ref(schema, permission_schema)
+        assert resolved.get("enum") == ["view", "edit", "admin"]
+
+
 class TestDocumentUrlsAreGatedTogether:
     """The three FastAPI document URLs share one production gate.
 

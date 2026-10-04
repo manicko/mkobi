@@ -40,7 +40,6 @@ PERMISSION_LEVELS: dict[DashboardPermission, int] = {
     DashboardPermission.EDIT: 2,
     DashboardPermission.ADMIN: 3,
 }
-# For backward compatibility also accept "read" as "view" and "write" as "edit"
 
 
 # --- Exceptions ---
@@ -126,7 +125,7 @@ async def check_dashboard_access(
     user_id: UUID,
     dashboard_id: UUID,
     db: AsyncSession,
-    required_permission: str = "view",
+    required_permission: DashboardPermission = DashboardPermission.VIEW,
 ) -> bool:
     """Check if user has access to dashboard.
 
@@ -146,7 +145,8 @@ async def check_dashboard_access(
         required_permission,
     )
 
-    # Validate required permission
+    # Validate required permission. ``DashboardPermission`` is a ``StrEnum``, so
+    # a bare string compares equal to its member and this guard is well-typed.
     if required_permission not in [e.value for e in DashboardPermission]:
         raise ValueError(f"Allowed values: {[e.value for e in DashboardPermission]}")
 
@@ -158,7 +158,7 @@ async def check_dashboard_access(
 async def _check_access_with_session(
     user_id: UUID,
     dashboard_id: UUID,
-    required_permission: str,
+    required_permission: DashboardPermission,
     db: AsyncSession,
 ) -> bool:
     """Internal function to check access using session.
@@ -200,26 +200,9 @@ async def _check_access_with_session(
             )
             return False
 
-        # Permission hierarchy: admin > edit > view
-        # Normalize names for compatibility (read->view, write->edit)
-        perm_map = {
-            DashboardPermission.VIEW.value: DashboardPermission.VIEW.value,
-            DashboardPermission.EDIT.value: DashboardPermission.EDIT.value,
-            DashboardPermission.ADMIN.value: DashboardPermission.ADMIN.value,
-            "read": DashboardPermission.VIEW.value,
-            "write": DashboardPermission.EDIT.value,
-        }
-        permission_normalized = perm_map.get(permission, permission)
-        required_normalized = perm_map.get(required_permission, required_permission)
-
-        permission_levels = {
-            DashboardPermission.VIEW.value: 1,
-            DashboardPermission.EDIT.value: 2,
-            DashboardPermission.ADMIN.value: 3,
-        }
+        # Permission hierarchy: admin > edit > view, on the single ladder.
         has_access = (
-            permission_levels[permission_normalized]
-            >= permission_levels[required_normalized]
+            PERMISSION_LEVELS[permission] >= PERMISSION_LEVELS[required_permission]
         )
 
         logger.info(
