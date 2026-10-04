@@ -106,6 +106,7 @@ class TestUserModels:
             role=UserRole.EDITOR,
             is_active=True,
             created_at="2026-04-24T16:02:46+03:00",
+            updated_at="2026-04-24T16:02:46+03:00",
         )
         assert str(user.id) == "550e8400-e29b-41d4-a716-446655440000"
         assert user.password_hash == "$2b$12$examplehash"
