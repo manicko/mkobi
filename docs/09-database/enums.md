@@ -22,7 +22,7 @@ related:
 
 All fixed values in the system are defined as `StrEnum` classes in `src/mkobi/models/enums.py`. StrEnum members are string-valued, making them directly serializable and compatible with PostgreSQL ENUM types.
 
-**Total StrEnum classes:** 19
+**Total StrEnum classes:** 20
 
 ---
 
@@ -408,7 +408,7 @@ user_role_enum.create(op.get_bind(), checkfirst=True)
 - [Processing Schema](./schema-processing.md) — Processing-related ENUM types
 - [Access Schema](./schema-access.md) — Access-related ENUM types
 - [Indexes](./indexes.md) — Index definitions
-- [Source Code](src/mkobi/models/enums.py) — StrEnum implementation
+- [Source Code](../../src/mkobi/models/enums.py) — StrEnum implementation
 - [Dashboards API](../02-dashboards/dashboards-api.md) — `GraphType`, `FilterType` usage in API
 - [Processing API](../03-processing/processing-api.md) — `ProcessingStatus`, `UploadMode` usage in API
 - [Access Control](../08-security/access-control.md) — `UserRole`, `DashboardPermission` in access model

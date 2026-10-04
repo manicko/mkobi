@@ -56,6 +56,27 @@ PostgreSQL
 
 **Dependency direction:** API → Service → Repository
 
+**Accepted debt — the API layer names repository classes.** Four route modules
+now import `mkobi.db.repositories.*` at module level: `api/routes/admin.py`,
+`api/routes/dashboards_filters.py` (two classes), `api/routes/dashboards_graphs.py`
+and `api/routes/data.py`. `api/deps.py` carries the same classes under its existing
+`TYPE_CHECKING` block. **No new runtime coupling was created.** Each of those routes
+already received a concrete repository from its `Depends` provider and already
+called methods on it; the provider's return type was `Any`, so the edge existed and
+was merely invisible to the type checker. What the change altered is
+**compile-time visibility, not runtime coupling**. The route-module imports are
+runtime rather than `TYPE_CHECKING`-only because FastAPI evaluates every `Depends`
+parameter annotation at function-definition time and those four modules do not
+declare `from __future__ import annotations`; a guarded import would raise
+`NameError` at application startup, which the type checker reports nothing about.
+`api/deps.py` does declare the future import and keeps its imports guarded. The
+interface-only alternative was unavailable for one provider:
+`DashboardFilterRepository` is a plain class with no interface in
+`interfaces/repository_interfaces.py`, so typing it against an interface would have
+meant authoring a new ABC. Clearing this debt therefore means introducing those
+interfaces or relocating the factories — restructuring decisions this section
+records rather than makes.
+
 ### Service Layer (`src/mkobi/services/`)
 
 - Contains all business logic

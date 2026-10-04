@@ -775,9 +775,9 @@ The response echoes the **requested** permission, and that equals the stored val
 
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
-| `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | Forbidden                    |
-| `422`  | Admitted caller (owner or administrator) and the dashboard does not exist | permission validation error |
-| `422`  | `permission` outside `view` / `edit` / `admin` | Pydantic rejects the `AccessGrant` body before the handler runs |
+| `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | `You do not have admin access to this dashboard` |
+| `422`  | Admitted caller (owner or administrator) and the dashboard does not exist | `Dashboard with id=<dashboard_id> not found` |
+| `422`  | `permission` outside `view` / `edit` / `admin` | `Request validation failed` |
 | `422`  | dashboard_id mismatch        | `dashboard_id in body doesn't match URL` |
 
 The absent-dashboard case is role-dependent: an admitted caller (owner or administrator) reaches the handler and receives `422` when the dashboard does not exist, while a caller outside the audience receives `403` whether or not the dashboard exists, because the admin-access gate runs before the handler body.
@@ -798,7 +798,7 @@ The absent-dashboard case is role-dependent: an admitted caller (owner or admini
 
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
-| `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | Forbidden                    |
+| `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | `You do not have admin access to this dashboard` |
 
 ---
 
@@ -822,7 +822,7 @@ The absent-dashboard case is role-dependent: an admitted caller (owner or admini
 
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
-| `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | Forbidden                    |
+| `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | `You do not have admin access to this dashboard` |
 | `404`  | No access record exists for this `(user_id, dashboard_id)` | `Access record not found`    |
 
 ---
@@ -1005,8 +1005,8 @@ The `check_dashboard_access` function verifies the user's permission against the
 ## Cross-References
 
 - [Database Schema](../09-database/schema-core.md) — Table definitions for `dashboards`, `layouts`, `graphs`, `filters`, `dashboard_access`, `dashboard_filters`, `processing_configs`, `aggregated_data`
-- [Access Control](../01-auth/access-control.md) — Dashboard-level permission enforcement
-- [Data Processing API](../03-processing/data-api.md) — Upload, processing triggers, and aggregated data retrieval
+- [Access Control](../08-security/access-control.md) — Dashboard-level permission enforcement
+- [Processing API](../03-processing/processing-api.md) — Upload, processing triggers, and aggregated data retrieval
 - [Security Overview](../08-security/) — CORS, rate limiting, credential enforcement
 - [Frontend Pages](../07-frontend/pages.md) — UI pages consuming the dashboards API
 - [Database Enums](../09-database/enums.md) — `GraphType`, `FilterType` StrEnum definitions
