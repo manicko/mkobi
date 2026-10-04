@@ -59,6 +59,22 @@ def get_db_enum_values(db_session, enum_type_name: str) -> set[str]:
     return {row[0] for row in rows}
 
 
+def compare_enum_values(
+    python_values: set[str], db_values: set[str]
+) -> tuple[set[str], set[str]]:
+    """Compare Python enum values with PostgreSQL ENUM values in both directions.
+
+    Args:
+        python_values: Values declared by the Python StrEnum.
+        db_values: Values present in the PostgreSQL ENUM type.
+
+    Returns:
+        Tuple of (missing_in_db, extra_in_db): values in Python but not in the
+        database, and values in the database but not in Python.
+    """
+    return python_values - db_values, db_values - python_values
+
+
 class TestUserRoleEnumConsistency:
     """Tests for UserRole StrEnum vs PostgreSQL user_role ENUM consistency."""
 
@@ -70,10 +86,15 @@ class TestUserRoleEnumConsistency:
             lambda sync_session: get_db_enum_values(sync_session, "user_role")
         )
 
-        missing_in_db = python_values - db_values
+        missing_in_db, extra_in_db = compare_enum_values(python_values, db_values)
 
         assert not missing_in_db, (
             f"Values in UserRole but not in PostgreSQL: {missing_in_db}"
+        )
+
+        assert not extra_in_db, (
+            f"PostgreSQL user_role has extra values not in Python: {extra_in_db}. "
+            "This indicates schema drift that should be resolved."
         )
 
     @pytest.mark.asyncio
@@ -113,10 +134,15 @@ class TestDashboardPermissionEnumConsistency:
             )
         )
 
-        missing_in_db = python_values - db_values
+        missing_in_db, extra_in_db = compare_enum_values(python_values, db_values)
 
         assert not missing_in_db, (
             f"Values in DashboardPermission but not in PostgreSQL: {missing_in_db}"
+        )
+
+        assert not extra_in_db, (
+            "PostgreSQL dashboard_permission_level has extra values not in Python: "
+            f"{extra_in_db}. This indicates schema drift that should be resolved."
         )
 
     @pytest.mark.asyncio
@@ -176,7 +202,7 @@ class TestProcessingStatusEnumConsistency:
             lambda sync_session: get_db_enum_values(sync_session, "processing_status")
         )
 
-        missing_in_db = python_values - db_values
+        missing_in_db, extra_in_db = compare_enum_values(python_values, db_values)
 
         # Only fail if Python values are missing from DB (would cause insert errors)
         assert not missing_in_db, (
@@ -184,7 +210,6 @@ class TestProcessingStatusEnumConsistency:
         )
 
         # Extra values in DB indicate schema drift - should be zero after cleanup
-        extra_in_db = db_values - python_values
         assert not extra_in_db, (
             f"PostgreSQL processing_status has extra values not in Python: {extra_in_db}. "
             "This indicates schema drift that should be resolved."
@@ -235,6 +260,7 @@ class TestAllMappedEnumsConsistency:
         processing_status should have zero extra values.
         """
         python_values_missing_in_db: dict[str, set[str]] = {}
+        db_values_extra_in_db: dict[str, set[str]] = {}
 
         for db_type_name, enum_class in self.ENUM_MAPPINGS:
             python_values = get_str_enum_values(enum_class)
@@ -244,11 +270,21 @@ class TestAllMappedEnumsConsistency:
                 )
             )
 
+            missing, extra = compare_enum_values(python_values, db_values)
+
             # Track Python values that are missing from DB
-            missing = python_values - db_values
             if missing:
                 python_values_missing_in_db[db_type_name] = missing
 
+            # Track DB values that are absent from Python
+            if extra:
+                db_values_extra_in_db[db_type_name] = extra
+
         assert not python_values_missing_in_db, (
             f"Enum values missing from PostgreSQL: {python_values_missing_in_db}"
+        )
+
+        assert not db_values_extra_in_db, (
+            f"PostgreSQL enum types have extra values not in Python: {db_values_extra_in_db}. "
+            "This indicates schema drift that should be resolved."
         )
