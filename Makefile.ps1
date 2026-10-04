@@ -37,6 +37,10 @@ $TestCompose = @('-p', $TestProject, '-f', 'docker/docker-compose.test.yml')
 $BackupDir   = 'backups'
 $UpTimeout   = 180
 
+# /app is root:root 755 and unwritable by uid 100, so pytest's default
+# .pytest_cache write at rootdir fails with Errno 13. Relocate to /tmp.
+$PytestCacheArgs = @('-o', 'cache_dir=/tmp/pytest_cache')
+
 # ---------------------------------------------------------------------------
 # Help
 # ---------------------------------------------------------------------------
@@ -191,14 +195,19 @@ function Invoke-TestPs {
 # Tests
 # ---------------------------------------------------------------------------
 
+function Invoke-TestAppPytest {
+    param([string[]] $PyArgs)
+    docker compose @TestCompose run --rm --no-deps test-app pytest @PytestCacheArgs @PyArgs
+}
+
 function Invoke-Test {
     docker compose @TestCompose up -d --wait --wait-timeout $UpTimeout test-db test-redis
-    docker compose @TestCompose run --rm --no-deps test-app pytest
+    Invoke-TestAppPytest
 }
 
 function Invoke-TestAll {
     docker compose @TestCompose up -d --wait --wait-timeout $UpTimeout test-db test-redis
-    docker compose @TestCompose run --rm --no-deps test-app pytest --cov=src/mkobi --cov-report=term-missing
+    Invoke-TestAppPytest -PyArgs @('--cov=src/mkobi', '--cov-report=term-missing')
 }
 
 function Invoke-TestFresh {
@@ -207,7 +216,7 @@ function Invoke-TestFresh {
 }
 
 function Invoke-TestSelect {
-    docker compose @TestCompose run --rm --no-deps test-app pytest @Rest
+    Invoke-TestAppPytest -PyArgs $Rest
 }
 
 function Invoke-TestShell {

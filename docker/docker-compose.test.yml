@@ -107,6 +107,11 @@ services:
       JWT__ALGORITHM: HS256
       ADMIN_USERNAME: test-admin@example.com
       ADMIN_PASSWORD: test-password-for-integration-tests
+    volumes:
+      # alembic.ini resolves script_location as %(here)s/alembic, i.e. /app/alembic.
+      # Without this mount a new migration would stay invisible to the image's
+      # baked copy, exactly like the test-app defect. Mirrors the dev override.
+      - ../alembic:/app/alembic
     depends_on:
       test-db:
         condition: service_healthy
@@ -145,6 +150,12 @@ services:
       ADMIN_PASSWORD: test-password-for-integration-tests
       LOGGING__LEVEL: WARNING
       RECREATE_TEST_DB: "true"
+    volumes:
+      - ../src:/app/src
+      - ../tests:/app/tests
+      # tests/test_config.py resolves docker/ via Path(__file__).parent.parent;
+      # without this the suite asserts against the image's baked copy.
+      - ../docker:/app/docker
     ports:
       # Host port configurable for parallel checkouts (default 8001).
       - "${TEST_APP_HOST_PORT:-8001}:8000"
