@@ -10,24 +10,81 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-# Set required environment variables before ANY mkobi module imports
-# This must be at the very top of this file before other imports
-# Use setdefault to allow Docker Compose env vars to take precedence in containers
-os.environ.setdefault("ENV", "test")
-os.environ.setdefault("DATABASE__HOST", "localhost")
-os.environ.setdefault("DATABASE__PORT", "5434")
-os.environ.setdefault("DATABASE__DBNAME", "bidb_test")
-os.environ.setdefault("DATABASE__USER", "mkobi_app")
-os.environ.setdefault("DATABASE__PASSWORD", "test_app_password")
-os.environ.setdefault("DATABASE__ADMIN_USER", "postgres")
-os.environ.setdefault("DATABASE__ADMIN_PASSWORD", "test_password")
-os.environ.setdefault("ADMIN_USERNAME", "test_admin")
-os.environ.setdefault("ADMIN_PASSWORD", "test-password-for-integration-tests")
-os.environ.setdefault("DATABASE__TEST_DBNAME", "bidb_test")
-os.environ.setdefault("JWT__SECRET_KEY", "test_secret_key_change_in_production")
-os.environ.setdefault("REDIS__HOST", "localhost")
-os.environ.setdefault("REDIS__PORT", "6379")
-os.environ.setdefault("RECREATE_TEST_DB", "true")
+
+def _get_worker_db_suffix() -> str:
+    """Get database suffix for xdist worker isolation.
+
+    When running with pytest-xdist, each worker gets a unique id like 'gw0', 'gw1'.
+    We use this to create separate databases per worker for complete isolation.
+    """
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
+    if worker_id:
+        return f"_{worker_id}"
+    return ""
+
+
+def _compute_test_db_name() -> str:
+    """Compute this process's isolated test database name.
+
+    The name is ``bidb_test_`` plus a per-run token plus the xdist worker id.
+    The run token comes from ``MKOBI_TEST_RUN_ID`` when the caller supplies one
+    (never sanitised - an invalid token must fail the starter's name guard
+    loudly rather than be silently repaired), otherwise from a fresh uuid4.
+    The worker id is concatenated into the same single token with its leading
+    underscore stripped, never joined with ``_``: the production guard accepts
+    exactly one optional ``_[A-Za-z0-9]+`` segment, so a second segment would
+    be refused.
+
+    This must be resolved once, at module import, before any ``mkobi`` module
+    is imported: ``TEST_ASYNC_DB_URL`` (a module-level constant) is built from
+    the memoised ``get_config()`` singleton, so both ``DATABASE__DBNAME`` and
+    ``DATABASE__TEST_DBNAME`` must be in ``os.environ`` before that import.
+    """
+    run_token = os.environ.get("MKOBI_TEST_RUN_ID") or uuid4().hex[:8]
+    worker_id = _get_worker_db_suffix().lstrip("_")
+    return f"bidb_test_{run_token}{worker_id}"
+
+
+# Resolved once at import time; reused by the hook and every fixture below.
+TEST_DB_NAME = _compute_test_db_name()
+
+
+def _apply_test_environment() -> None:
+    """Set the environment variables the test process depends on.
+
+    Every variable here is assigned with ``setdefault`` except the two database
+    names, which are assigned unconditionally: ``docker/docker-compose.test.yml``
+    hardcodes ``bidb_test`` for both on the ``test-app`` service, so a
+    ``setdefault`` would always lose and every run would collide on the same
+    database. Both names are set because the database URL used by the health
+    tests is built from ``DATABASE__DBNAME``.
+    """
+    os.environ.setdefault("ENV", "test")
+    os.environ.setdefault("DATABASE__HOST", "localhost")
+    os.environ.setdefault("DATABASE__PORT", "5434")
+    os.environ.setdefault("DATABASE__USER", "mkobi_app")
+    os.environ.setdefault("DATABASE__PASSWORD", "test_app_password")
+    os.environ.setdefault("DATABASE__ADMIN_USER", "postgres")
+    os.environ.setdefault("DATABASE__ADMIN_PASSWORD", "test_password")
+    os.environ.setdefault("ADMIN_USERNAME", "test_admin")
+    os.environ.setdefault("ADMIN_PASSWORD", "test-password-for-integration-tests")
+    os.environ.setdefault("JWT__SECRET_KEY", "test_secret_key_change_in_production")
+    os.environ.setdefault("REDIS__HOST", "localhost")
+    os.environ.setdefault("REDIS__PORT", "6379")
+    os.environ.setdefault("RECREATE_TEST_DB", "true")
+    # Assigned unconditionally - see docstring. Never setdefault.
+    os.environ["DATABASE__DBNAME"] = TEST_DB_NAME
+    os.environ["DATABASE__TEST_DBNAME"] = TEST_DB_NAME
+
+
+# Set required environment variables before ANY mkobi module imports.
+# This must be at the very top of this file before other imports.
+_apply_test_environment()
+
+# Set only when setup_test_database actually creates the database; the
+# session-end teardown must drop exactly the database this process created and
+# never one it did not (e.g. an xdist controller process).
+_test_db_created = False
 
 
 def pytest_load_initial_conftests(early_config, parser, args):
@@ -36,22 +93,9 @@ def pytest_load_initial_conftests(early_config, parser, args):
     This ensures environment variables are set before ANY test modules
     are imported during collection.
     """
-    # Use setdefault to allow Docker Compose env vars to take precedence in containers
-    os.environ.setdefault("ENV", "test")
-    os.environ.setdefault("DATABASE__HOST", "localhost")
-    os.environ.setdefault("DATABASE__PORT", "5434")
-    os.environ.setdefault("DATABASE__DBNAME", "bidb_test")
-    os.environ.setdefault("DATABASE__USER", "mkobi_app")
-    os.environ.setdefault("DATABASE__ADMIN_USER", "postgres")
-    os.environ.setdefault("DATABASE__PASSWORD", "test_app_password")
-    os.environ.setdefault("DATABASE__ADMIN_PASSWORD", "test_password")
-    os.environ.setdefault("ADMIN_USERNAME", "test_admin")
-    os.environ.setdefault("ADMIN_PASSWORD", "test-password-for-integration-tests")
-    os.environ.setdefault("DATABASE__TEST_DBNAME", "bidb_test")
-    os.environ.setdefault("JWT__SECRET_KEY", "test_secret_key_change_in_production")
-    os.environ.setdefault("REDIS__HOST", "localhost")
-    os.environ.setdefault("REDIS__PORT", "6379")
-    os.environ.setdefault("RECREATE_TEST_DB", "true")
+    # Reuse the name resolved at module import; recomputing would mint a second
+    # token and silently break per-run isolation.
+    _apply_test_environment()
 
 # Import config module - this will create the singleton with test env vars
 from mkobi.config import clear_config_cache, get_config, Settings  # noqa: E402, F401
@@ -113,6 +157,62 @@ def pytest_sessionfinish(session, exitstatus):
         # Log cleanup failures but don't fail the test session
         logger.warning("Failed to clean up temp files after test session: %s", e)
 
+    _drop_test_database_if_owned()
+
+
+def _drop_test_database_if_owned() -> None:
+    """Drop the database this process created, if it created one.
+
+    Guarded by ``_test_db_created`` because ``pytest_sessionfinish`` runs in
+    every process - including an xdist controller that never called
+    ``setup_test_database`` - and an unguarded session-end drop would destroy
+    another process's database. Uses the same admin-connection path as
+    recreation: terminate this database's backends, then ``DROP DATABASE IF
+    EXISTS``. A failed drop is logged and swallowed so it can never fail the
+    session.
+    """
+    global _test_db_created
+
+    if not _test_db_created:
+        return
+
+    import asyncio
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    async def _drop() -> None:
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from mkobi.config import get_config
+
+        config = get_config()
+        admin_url = str(config.test_admin_database_url)
+        engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(
+                    text(
+                        "SELECT pg_terminate_backend(pid) "
+                        "FROM pg_stat_activity "
+                        "WHERE datname = :name AND pid <> pg_backend_pid()"
+                    ),
+                    {"name": TEST_DB_NAME},
+                )
+                await conn.execute(
+                    text(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}"')
+                )
+        finally:
+            await engine.dispose()
+
+    try:
+        asyncio.run(_drop())
+        _test_db_created = False
+    except Exception as e:
+        # The drop is best-effort; never fail the session because of it.
+        logger.warning("Failed to drop test database %s: %s", TEST_DB_NAME, e)
+
 
 def pytest_configure(config):
     """Ensure config is properly initialized before tests run."""
@@ -143,37 +243,25 @@ from mkobi.core.security import (  # noqa: E402, F401
 from mkobi.db.repositories.user_repo import UserRepository  # noqa: E402, F401
 
 
-def _get_worker_db_suffix() -> str:
-    """Get database suffix for xdist worker isolation.
+def _build_isolated_test_db_url() -> str:
+    """Build the test database URL for this process's isolated database.
 
-    When running with pytest-xdist, each worker gets a unique id like 'gw0', 'gw1'.
-    We use this to create separate databases per worker for complete isolation.
+    ``TEST_DATABASE_URL`` already carries the per-run (and per-worker) database
+    name via ``DATABASE__TEST_DBNAME``; this rewrites the path to that name so
+    the URL is explicit and independent of any inherited path segment.
     """
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
-    if worker_id:
-        return f"_{worker_id}"
-    return ""
-
-
-def _build_worker_isolated_test_db_url() -> str:
-    """Build test database URL with worker isolation suffix for xdist."""
     from urllib.parse import urlparse, urlunparse
 
     base_url = str(_config.TEST_DATABASE_URL)
     if not base_url:
         raise RuntimeError("TEST_DATABASE_URL not configured")
 
-    # Add worker suffix for xdist parallel execution isolation
-    worker_suffix = _get_worker_db_suffix()
     parsed = urlparse(base_url)
-    path = parsed.path
-    if path.startswith("/") and worker_suffix:
-        path = f"/{path[1:]}{worker_suffix}"
-    return urlunparse(parsed._replace(path=path))
+    return urlunparse(parsed._replace(path=f"/{TEST_DB_NAME}"))
 
 
-# Use worker-isolated URL for parallel xdist execution
-TEST_ASYNC_DB_URL = _build_worker_isolated_test_db_url()
+# URL of this process's isolated test database.
+TEST_ASYNC_DB_URL = _build_isolated_test_db_url()
 
 
 class MockRedis:
@@ -436,7 +524,7 @@ def strict_redis(monkeypatch):
     yield mock_redis_client
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="session", autouse=True)
 async def setup_test_database():
     """Fixture to set up test database before tests run.
     
@@ -444,7 +532,13 @@ async def setup_test_database():
     Recreates the test database and applies migrations.
     This fixture has session scope to run once before all tests.
     When running with xdist, each worker gets its own isolated database.
+
+    The database name is the module-level ``TEST_DB_NAME`` resolved at import;
+    every process (and worker) owns a distinct database, so recreating it here
+    cannot terminate another process's connections or drop its database.
     """
+    global _test_db_created
+
     from mkobi.db.starter import DatabaseStarter, DatabaseStarterConfig
     from mkobi.config import get_config, clear_config_cache
     from urllib.parse import urlparse, urlunparse
@@ -452,16 +546,12 @@ async def setup_test_database():
     clear_config_cache()
     config = get_config()
 
-    # Build worker-isolated database URL
-    worker_suffix = _get_worker_db_suffix()
-    test_db_name = f"bidb_test{worker_suffix}" if worker_suffix else config.database.test_dbname
-
-    # Build isolated database URLs for xdist workers
+    # Build isolated database URLs for this process's own database.
     parsed_main = urlparse(str(config.DATABASE_URL))
-    isolated_test_url = urlunparse(parsed_main._replace(path=f"/{test_db_name}"))
+    isolated_test_url = urlunparse(parsed_main._replace(path=f"/{TEST_DB_NAME}"))
 
     parsed_admin = urlparse(str(config.test_admin_database_url))
-    isolated_admin_url = urlunparse(parsed_admin._replace(path=f"/{test_db_name}"))
+    isolated_admin_url = urlunparse(parsed_admin._replace(path=f"/{TEST_DB_NAME}"))
 
     starter_config = DatabaseStarterConfig(
         main_database_url=config.DATABASE_URL,
@@ -470,9 +560,9 @@ async def setup_test_database():
         recreate_test_db=True,
     )
     await DatabaseStarter(starter_config).recreate_test_database()
+    # This process now owns a database that the session-end teardown must drop.
+    _test_db_created = True
     yield
-    # Optional: cleanup after all tests
-    # Could drop the test database here if needed
 
 
 @pytest.fixture(scope="session")

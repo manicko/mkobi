@@ -668,7 +668,7 @@ class TestRecreateTestDatabaseGuards:
         assert factory.calls == []
         assert factory.statements == []
 
-    @pytest.mark.parametrize("db_name", ["bidb_test", "bidb_test_gw0", "bidb_test_w1"])
+    @pytest.mark.parametrize("db_name", ["bidb_test", "bidb_test_gw0", "bidb_test_w1", "bidb_test_a1b2c3d4"])
     def test_accepts_convention_names(self, monkeypatch, db_name):
         """Worker-isolated names from conftest's convention are accepted."""
         factory = _RecordingEngineFactory()
