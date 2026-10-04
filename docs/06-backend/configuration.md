@@ -309,6 +309,11 @@ config = get_config()
 
 The `get_config()` function uses a cached global `_settings` instance, ensuring a single configuration source throughout the application.
 
+`clear_config_cache()` is that cache's only reset. In the test suite the autouse
+`_reset_config_cache` fixture calls it around every test, so a test that mutates
+`os.environ` cannot leave its configuration — or its `JWT__SECRET_KEY` — cached
+for the next one; see [Settings Cache](testing.md#settings-cache).
+
 ## Key Properties
 
 The `Settings` class exposes convenient properties that map to nested config values:

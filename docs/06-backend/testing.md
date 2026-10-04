@@ -52,7 +52,7 @@ tests/
 Test HTTP endpoints using `httpx.AsyncClient` with FastAPI's `ASGITransport`:
 
 - **Fixtures:** `async_client` provides an in-memory HTTP client; `authenticated_client` adds JWT auth headers
-- **Database:** Uses the same test session with SAVEPOINT rollback for isolation
+- **Database:** Uses the same test session. Its SAVEPOINT rollback isolates only work that stayed inside the SAVEPOINT — see [Database Isolation](#database-isolation)
 - **Coverage:** Request validation, authentication, authorization, response schemas, error handling
 
 ### Service Tests
@@ -88,13 +88,14 @@ Defined in `conftest.py`:
 
 | Fixture              | Scope     | Description                                      |
 | -------------------- | --------- | ------------------------------------------------ |
+| `_reset_config_cache` | function  | Autouse; clears the settings singleton before each test and rebuilds it after teardown |
 | `_auto_mock_redis`   | function  | Auto-mocks Redis for all tests (rate limiting bypassed) |
 | `mock_redis`         | function  | Opt-in Redis mock that bypasses rate limiting    |
 | `strict_redis`       | function  | In-memory Redis mock with real rate limiting     |
 | `setup_test_database` | session  | Creates and migrates test database               |
 | `async_test_engine`  | session   | Async SQLAlchemy engine with NullPool            |
 | `async_session_maker` | session  | Async session factory                            |
-| `async_db_session`   | function  | Per-test session with SAVEPOINT rollback         |
+| `async_db_session`   | function  | Per-test session; rolls back its SAVEPOINT, but not rows a test commits |
 | `async_client`       | function  | httpx AsyncClient with overridden DB dependency  |
 | `authenticated_client` | function | HTTP client with JWT auth headers               |
 | `test_user`          | function  | Creates a test user and returns token            |
@@ -104,7 +105,7 @@ Defined in `conftest.py`:
 
 - **Database:** `bidb_test` (separate from production `bidb`)
 - **Engine:** Uses `NullPool` to prevent connection pooling issues in tests
-- **Isolation:** SAVEPOINT pattern — each test runs in a nested transaction that is rolled back after the test completes
+- **Isolation:** SAVEPOINT pattern — the fixture rolls back its nested transaction when the test ends, which undoes only work that stayed inside it. `Session.commit()` commits the session's **root** transaction, so rows a test commits survive the rollback and stay visible to later tests; cross-test cleanup is the test's own responsibility (see [Database Isolation](#database-isolation))
 - **Migrations:** Alembic migrations are applied to the test database on session setup
 - **Recreation:** The test database is dropped and recreated when `RECREATE_TEST_DB=true`
 
@@ -123,6 +124,14 @@ uv run pytest tests/ -v
 # Run specific test class
 uv run pytest tests/test_auth_service.py::TestAuthService
 ```
+
+The canonical gate does not run on the host. `.\Makefile.ps1 test` runs the suite
+inside the `test-app` container, and that service bind-mounts `src/`, `tests/` and
+`docker/` from the working tree — so the gate grades the files you just edited
+and a test-side change is graded without an image rebuild. The mounts are
+writes-through: `__pycache__` directories and any stray artefact a test leaves
+behind can appear in `src/` or `tests/` on the host. See
+[Docker Guide](../11-guides/docker.md#testing) for the stack.
 
 ## Coverage Areas
 
@@ -162,16 +171,36 @@ def mock_user_repo():
     return mock
 ```
 
+### Settings Cache
+
+`mkobi.config` memoises `Settings` in a module-level `_settings`, and
+`clear_config_cache()` is its only reset. The autouse `_reset_config_cache`
+fixture clears that cache before every test and rebuilds it after the test's
+environment changes have been undone, so a test that mutates `os.environ` cannot
+leak its configuration — including a foreign `JWT__SECRET_KEY` — into the next
+one, whatever the execution order.
+
+The manual `clear_config_cache()` calls inside tests are load-bearing, not
+redundant: a test that changes the environment and then reads configuration
+mid-test needs the cache cleared *before* that read, and teardown runs after it.
+
 ### Database Isolation
 
-Tests that need database access use the `async_db_session` fixture which automatically rolls back all changes:
+Tests that need database access use the `async_db_session` fixture, which opens a
+nested transaction (SAVEPOINT) and rolls it back when the test ends:
 
 ```python
 async def test_create_user(async_db_session, test_user):
-    # test_user is created in a SAVEPOINT
-    # automatically rolled back after this test
+    # test_user is created inside the fixture's SAVEPOINT
     assert test_user["email"].endswith("@example.com")
 ```
+
+**This is not full per-test isolation.** `Session.commit()` inside a test commits
+the session's *root* transaction, and the fixture's SAVEPOINT rollback does not
+undo it. A committed row persists in the test database and is visible to every
+later test. A test that commits rows is therefore responsible for deleting them
+before it ends: the compensating `delete(...)` blocks shipped in such tests are
+load-bearing, not redundant, and must not be removed.
 
 ## Cross-References
 

@@ -263,6 +263,34 @@ starts it: the test targets bring up `test-db` and `test-redis` only and then
 run pytest with `--no-deps`, because `tests/conftest.py` recreates and migrates
 the test database itself (`setup_test_database`).
 
+#### The Test Stack Runs the Working Tree
+
+`test-app` bind-mounts `../src:/app/src`, `../tests:/app/tests` and
+`../docker:/app/docker` over the copies the `test` image stage baked in at build
+time. The gate therefore grades the files in the working tree, not the image: a
+test-side edit is measured without an image rebuild, and the run is no longer
+indistinguishable from a rebuild. `../docker` is mounted because
+`tests/test_config.py` resolves that directory as
+`Path(__file__).resolve().parent.parent / "docker"`; without the mount the suite
+would keep asserting against the image's baked copy of the compose files.
+`test-migrate` bind-mounts `../alembic:/app/alembic` for the same reason —
+`alembic.ini` resolves `script_location` as `%(here)s/alembic`, so a newly
+authored migration was otherwise invisible to it.
+
+Two consequences follow from those mounts being writes-through to the host:
+
+- `__pycache__` directories, and any stray artefact a test leaves behind, can
+  appear in `src/` or `tests/` in the working tree. `__pycache__/` is
+  git-ignored; nothing else is.
+- The test targets invoke pytest with `-o cache_dir=/tmp/pytest_cache`. `/app` is
+  `root:root 755` and unwritable by the container's non-root `app` user, so
+  pytest's default `.pytest_cache` write fails with `Errno 13`. The same class of
+  problem is already solved for the linters by `RUFF_CACHE_DIR` and
+  `MYPY_CACHE_DIR` in `docker-compose.override.yml`.
+
+See [Testing](../06-backend/testing.md) for what the fixtures guarantee, and what
+they do not.
+
 > **Test Port Security Note:** host ports are intentionally exposed so the
 > suite can be run natively from a host terminal during development.
 > - **Risk is LOW** — the test database holds no production data and uses
@@ -601,6 +629,9 @@ not changed here.
 - Extends `base`; installs all dependencies including dev
 - Copies tests and source, sets `ENV=test`
 - Default command runs pytest
+- The copies are a fallback only: at run time `test-app` bind-mounts `src/`,
+  `tests/` and `docker/` over them, so the suite reads the working tree (see
+  [The Test Stack Runs the Working Tree](#the-test-stack-runs-the-working-tree))
 
 **prod-base**
 - Python 3.12-slim-bookworm with runtime dependencies only: `libpq5`,
