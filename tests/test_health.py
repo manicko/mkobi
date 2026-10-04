@@ -308,26 +308,33 @@ class TestDetailedHealthRedisComponent:
         assert "stale_processing_reconciler" in components
         assert components["redis"]["status"] == "connected"
 
-    async def test_redis_client_closed_exactly_once(
+    async def test_health_poll_uses_shared_client_without_closing_it(
         self, async_client: AsyncClient, auth_headers: dict[str, str], monkeypatch
     ) -> None:
-        """Each health poll closes the client it built, so no pool leaks per poll."""
+        """A health poll pings the process-wide client and does not close it.
+
+        The client is shared across requests and closed once at lifespan
+        teardown, so a poll must not release the pooled connections every later
+        request depends on. This replaces the former per-poll close contract:
+        pinging proves the poll observed the shared client, and an empty close
+        list proves it left it open.
+        """
         import mkobi.app as app_module
 
         closed: list[bool] = []
         probe = _ReachableRedis()
+        probe.close_calls = closed
 
-        def build_and_track():
-            probe.close_calls = closed
-            return probe
-
-        monkeypatch.setattr(app_module, "get_async_redis_client", build_and_track)
+        monkeypatch.setattr(
+            app_module, "get_async_redis_client", lambda: probe
+        )
 
         response = await async_client.get(
             _DETAILED_HEALTH_URL, headers=auth_headers
         )
         assert response.status_code == 200
-        assert len(closed) == 1
+        assert response.json()["components"]["redis"]["status"] == "connected"
+        assert closed == [], "a health poll must not close the shared client"
 
 
 class TestHealthWithRedisDown:

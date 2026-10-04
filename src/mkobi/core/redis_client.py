@@ -1,3 +1,4 @@
+import functools
 import logging
 
 import redis
@@ -18,8 +19,15 @@ logger = logging.getLogger(__name__)
 _NO_RETRY = Retry(NoBackoff(), 0)
 
 
+@functools.cache
 def get_redis_client() -> redis.Redis:
-    """Return synchronous Redis client based on application settings.
+    """Return the process-wide synchronous Redis client.
+
+    The client is built once per process and reused, so a request does not
+    construct a new connection pool on every call. The connection pool is what
+    is shared, not merely the pool object: redis-py multiplexes commands over
+    the same socket until a blocking command forces a second connection. The
+    cache is discarded by ``close_redis_client`` so a re-open is possible.
 
     Returns:
         redis.Redis: Synchronous Redis client instance.
@@ -43,8 +51,16 @@ def get_redis_client() -> redis.Redis:
     )
 
 
+@functools.cache
 def get_async_redis_client() -> aioredis.Redis:
-    """Return asynchronous Redis client based on application settings.
+    """Return the process-wide asynchronous Redis client.
+
+    The client is built once per process and reused, so a request does not
+    construct a new connection pool on every call. The connection pool is what
+    is shared, not merely the pool object: redis-py multiplexes commands over
+    the same socket, and an explicit pipeline crosses the wire in one round
+    trip. The cache is discarded by ``close_async_redis_client`` so a re-open
+    is possible after shutdown.
 
     Returns:
         redis.asyncio.Redis: Asynchronous Redis client instance.
@@ -66,3 +82,29 @@ def get_async_redis_client() -> aioredis.Redis:
         socket_connect_timeout=config.redis.socket_connect_timeout_seconds,
         retry=_NO_RETRY,
     )
+
+
+def close_redis_client() -> None:
+    """Close and discard the cached synchronous Redis client.
+
+    Closing releases the connection pool, and ``cache_clear`` drops the cached
+    object so the next ``get_redis_client`` call builds a fresh one. Calling
+    this when no client was ever created is a no-op.
+    """
+    if get_redis_client.cache_info().currsize:
+        client = get_redis_client()
+        client.close()
+    get_redis_client.cache_clear()
+
+
+async def close_async_redis_client() -> None:
+    """Close and discard the cached asynchronous Redis client.
+
+    Closing releases the connection pool, and ``cache_clear`` drops the cached
+    object so the next ``get_async_redis_client`` call builds a fresh one.
+    Calling this when no client was ever created is a no-op.
+    """
+    if get_async_redis_client.cache_info().currsize:
+        client = get_async_redis_client()
+        await client.aclose()
+    get_async_redis_client.cache_clear()

@@ -347,6 +347,14 @@ class MockPipeline:
         """
         self._commands.append(("get", key))
 
+    def exists(self, key):
+        """Queue EXISTS command for later execution.
+
+        Mirrors redis-py: the command is queued synchronously and only
+        ``execute`` is awaited. The revocation pipeline relies on this.
+        """
+        self._commands.append(("exists", key))
+
     def delete(self, key):
         """Queue DELETE command for later execution.
 
@@ -358,13 +366,18 @@ class MockPipeline:
     async def execute(self):
         """Execute all queued commands and return results.
 
-        Returns list of results matching the order of queued commands.
-        For GET commands, returns the value; for DELETE, returns the count.
+        Returns list of results matching the order of queued commands. Commands
+        are replayed against the underlying client rather than reading its store
+        directly, so a test that monkeypatches ``get``/``exists`` to fault (as
+        ``tests/test_revocation_store_outage.py`` does) injects the fault through
+        a pipeline exactly as it does through a direct call.
         """
         results = []
         for cmd_type, key in self._commands:
             if cmd_type == "get":
-                results.append(self._redis._data.get(key))
+                results.append(await self._redis.get(key))
+            elif cmd_type == "exists":
+                results.append(await self._redis.exists(key))
             elif cmd_type == "delete":
                 if key in self._redis._data:
                     del self._redis._data[key]
@@ -418,11 +431,45 @@ def _reset_config_cache():
     env_snapshot = dict(os.environ)
     clear_config_cache()
     get_config()
+    _clear_redis_client_caches()
     yield
     os.environ.clear()
     os.environ.update(env_snapshot)
     clear_config_cache()
     get_config()
+    _clear_redis_client_caches()
+
+
+def _clear_redis_client_caches() -> None:
+    """Discard the process-wide Redis client caches between tests.
+
+    The factories are ``functools.cache``-decorated, so a client built by one
+    test would otherwise be handed to the next. Tests that vary the Redis
+    settings (``tests/test_redis_client_bound.py``) or assert on shutdown
+    lifecycle need each test to start from an empty cache, exactly as
+    ``clear_config_cache`` resets the settings singleton.
+
+    The module attributes may already be replaced by the autouse
+    ``_auto_mock_redis`` fixture, whose stand-ins carry no ``cache_clear``, so
+    the real cached functions are captured at import time below and cleared
+    through those references. Failures are ignored so a test environment without
+    the caches (for example a partial import) does not break the reset.
+    """
+    for factory in (_REAL_ASYNC_REDIS_FACTORY, _REAL_SYNC_REDIS_FACTORY):
+        cache_clear = getattr(factory, "cache_clear", None)
+        if callable(cache_clear):
+            cache_clear()
+
+
+# Captured at import time, before any fixture can patch the module.
+try:
+    from mkobi.core.redis_client import (
+        get_async_redis_client as _REAL_ASYNC_REDIS_FACTORY,
+        get_redis_client as _REAL_SYNC_REDIS_FACTORY,
+    )
+except Exception:  # pragma: no cover - defensive for partial environments
+    _REAL_ASYNC_REDIS_FACTORY = None
+    _REAL_SYNC_REDIS_FACTORY = None
 
 
 @pytest.fixture(autouse=True)

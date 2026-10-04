@@ -21,7 +21,7 @@ from mkobi.api import routes
 from mkobi.api.deps import require_admin_role
 from mkobi.config import get_config
 from mkobi.core.logging_config import setup_logging
-from mkobi.core.redis_client import get_async_redis_client
+from mkobi.core.redis_client import get_async_redis_client, close_async_redis_client
 from mkobi.core.reconciler_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     ReconcilerLease,
@@ -239,6 +239,14 @@ async def lifespan(app: FastAPI) -> Any:
         except Exception as e:
             logger.warning("Failed to dispose database engine: %s", e)
 
+        # Close the process-wide shared Redis client and discard its cache entry
+        # so a future startup can build a fresh one. This is its own step: a
+        # failure here must not skip the starter shutdown below.
+        try:
+            await close_async_redis_client()
+        except Exception as e:
+            logger.warning("Failed to close shared Redis client: %s", e)
+
         try:
             await starter.shutdown()
         except Exception as e:
@@ -403,13 +411,11 @@ def create_app() -> FastAPI:
         # to be observable - but it must never move the overall status or the
         # status code. /health stays database-only, and the anonymous /health
         # body must not grow a Redis key (DP-1, 2026-10-03; DP-2 closed). The
-        # factory is not lru_cached and builds a fresh ConnectionPool per call,
-        # so the client built here is closed in the finally below - a health poll
-        # must not leak a pool.
-        redis_client = None
+        # client is the process-wide shared one, so this check must NOT close it:
+        # closing it here would evict the pooled connections every later request
+        # depends on. It is closed once at lifespan teardown instead.
         try:
-            redis_client = get_async_redis_client()
-            await redis_client.ping()
+            await get_async_redis_client().ping()
             components["redis"] = {
                 "status": "connected",
                 "type": "redis",
@@ -423,12 +429,6 @@ def create_app() -> FastAPI:
                 "status": "disconnected",
                 "type": "redis",
             }
-        finally:
-            if redis_client is not None:
-                try:
-                    await redis_client.aclose()
-                except Exception as e:
-                    logger.warning("Failed to close health check Redis client: %s", e)
 
         # Report the stale-processing reconciler's liveness and lease state. A
         # dead loop is visible here as a frozen last_success_at; a Redis outage is

@@ -51,9 +51,8 @@ from mkobi.core.permissions import (
 from mkobi.core.redis_client import get_async_redis_client
 from mkobi.core.security import (
     RevocationStoreUnavailableError,
+    are_tokens_revoked,
     decode_token,
-    is_token_revoked,
-    is_user_tokens_revoked,
 )
 from mkobi.interfaces.repository_interfaces import IDashboardFilterValuesRepository
 from mkobi.core.temp_password_store import TempPasswordStore
@@ -567,16 +566,11 @@ async def get_current_user_dependency(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # Check if token is revoked
+        # Check the per-token blacklist and the per-user revocation marker in
+        # one pipelined round trip. The verdict semantics are unchanged: a
+        # truthy token entry is revoked, and a marker at or after the token's
+        # ``iat`` is revoked.
         jti = payload.get("jti")
-        if jti:
-            if await is_token_revoked(redis_client, jti):
-                logger.warning("Revoked token used: jti=%s", jti)
-                raise AppException(
-                    code=ErrorCode.TOKEN_REVOKED,
-                    detail="Token has been revoked",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
 
         user_id_raw = payload.get("user_id")
         if user_id_raw is None:
@@ -592,10 +586,13 @@ async def get_current_user_dependency(
         # Reject credentials issued at or before the user's revocation marker.
         # Tokens issued after it (for example, after re-login) are allowed.
         issued_at = payload.get("iat")
-        if await is_user_tokens_revoked(
-            redis_client, user_id, issued_at if isinstance(issued_at, int) else None
+        if await are_tokens_revoked(
+            redis_client,
+            str(jti) if jti else None,
+            user_id,
+            issued_at if isinstance(issued_at, int) else None,
         ):
-            logger.warning("User tokens revoked: user_id=%s", user_id)
+            logger.warning("Revoked token used: user_id=%s, jti=%s", user_id, jti)
             raise AppException(
                 code=ErrorCode.TOKEN_REVOKED,
                 detail="Token has been revoked",

@@ -275,6 +275,81 @@ class TestLifespanTeardownFailIsolation:
 
         starter.shutdown.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_redis_close_failure_still_shuts_down_starter(self):
+        """A raising shared-Redis close must not skip starter.shutdown().
+
+        ``close_async_redis_client`` is its own fail-isolated teardown step.
+        This pins that a failure there cannot short-circuit the releases that
+        follow it -- the property commit b646ef1 established for the whole
+        ``finally`` block.
+        """
+        app = MagicMock()
+        starter = MagicMock()
+        starter.startup = AsyncMock()
+        starter.shutdown = AsyncMock()
+
+        redis_close = AsyncMock(side_effect=RuntimeError("redis close blew up"))
+        dispose = AsyncMock()
+
+        with patch.object(app_module, "DatabaseStarter", return_value=starter):
+            with patch.object(
+                app_module, "get_async_redis_client", return_value=_UnreachableRedis()
+            ):
+                with patch.object(app_module, "dispose_engine", new=dispose):
+                    with patch.object(
+                        app_module, "close_async_redis_client", new=redis_close
+                    ):
+                        with patch.object(
+                            app_module,
+                            "start_stale_processing_cleanup_task",
+                            new=AsyncMock(return_value=None),
+                        ):
+                            async with app_module.lifespan(app):
+                                pass
+
+        # The close raised, yet dispose and the starter shutdown still ran.
+        redis_close.assert_awaited_once()
+        dispose.assert_awaited_once()
+        starter.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_redis_close_runs_even_when_dispose_raises(self):
+        """The Redis close runs after a failing dispose_engine().
+
+        Ordering matters: the Redis close step sits between engine disposal and
+        starter shutdown, so this pins that an earlier failure does not skip it.
+        """
+        app = MagicMock()
+        starter = MagicMock()
+        starter.startup = AsyncMock()
+        starter.shutdown = AsyncMock()
+
+        redis_close = AsyncMock()
+
+        with patch.object(app_module, "DatabaseStarter", return_value=starter):
+            with patch.object(
+                app_module, "get_async_redis_client", return_value=_UnreachableRedis()
+            ):
+                with patch.object(
+                    app_module,
+                    "dispose_engine",
+                    new=AsyncMock(side_effect=RuntimeError("dispose blew up")),
+                ):
+                    with patch.object(
+                        app_module, "close_async_redis_client", new=redis_close
+                    ):
+                        with patch.object(
+                            app_module,
+                            "start_stale_processing_cleanup_task",
+                            new=AsyncMock(return_value=None),
+                        ):
+                            async with app_module.lifespan(app):
+                                pass
+
+        redis_close.assert_awaited_once()
+        starter.shutdown.assert_awaited_once()
+
 
 class _UnreachableRedis:
     """Async Redis double whose every command raises, modelling an outage."""

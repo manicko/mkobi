@@ -569,6 +569,90 @@ async def is_refresh_token_revoked(redis_client: aioredis.Redis, jti: str) -> bo
     return bool(exists)
 
 
+def _user_marker_is_revoked(value: Any, issued_at: int | None) -> bool:
+    """Interpret a user-level revocation marker value against a token's ``iat``.
+
+    ``is_user_tokens_revoked`` and ``is_user_tokens_revoked_pipelined`` share
+    this verdict so the two forms cannot drift. A ``None`` marker means "not
+    revoked"; an unparseable marker fails closed; a marker with no ``iat``
+    fails closed; otherwise the token is revoked only when its ``iat`` is at or
+    before the marker instant.
+    """
+    if value is None:
+        return False
+    try:
+        revoked_at = int(value)
+    except (TypeError, ValueError):
+        # Unknown value (for example a legacy "revoked" literal written by a
+        # deployment that has not restarted). Fail closed so a rolling deploy
+        # never re-admits sessions that were already withdrawn.
+        logger.warning("Unparseable user revocation marker; failing closed")
+        return True
+    if issued_at is None:
+        # A credential that cannot be dated cannot be proven newer than the
+        # revocation. Fail closed.
+        return True
+    return issued_at <= revoked_at
+
+
+async def are_tokens_revoked(
+    redis_client: aioredis.Redis,
+    jti: str | None,
+    user_id: UUID,
+    issued_at: int | None,
+) -> bool:
+    """Check the per-token and per-user revocation stores in one round trip.
+
+    Both checks that protect an authenticated request are issued as a single
+    pipeline execution, so they cross the wire once instead of twice. The
+    verdicts are identical to calling ``is_token_revoked`` and
+    ``is_user_tokens_revoked`` separately: a ``None`` from either read means
+    "not revoked", a truthy token-blacklist entry means revoked, and a user
+    marker that cannot be parsed or dated fails closed.
+
+    Args:
+        redis_client: Async Redis client.
+        jti: JWT ID to check, or ``None`` when the token carries none.
+        user_id: User ID whose revocation marker is checked.
+        issued_at: The token's ``iat`` claim in epoch milliseconds, if available.
+
+    Returns:
+        bool: True if either check says the credential must be rejected.
+
+    Raises:
+        RevocationStoreUnavailableError: If the revocation store cannot be read.
+    """
+    jti_key = f"{BLACKLIST_PREFIX}{jti}" if jti else None
+    marker_key = f"user_tokens_revoked:{user_id}"
+    try:
+        if jti_key is None:
+            # No per-token check to piggyback on; one GET still beats a bare
+            # sequential call because the caller issues this as its only round
+            # trip either way.
+            marker_value = await redis_client.get(marker_key)
+            return _user_marker_is_revoked(marker_value, issued_at)
+
+        async with redis_client.pipeline(transaction=False) as pipeline:
+            pipeline.exists(jti_key)
+            pipeline.get(marker_key)
+            results = await pipeline.execute()
+    except Exception as e:
+        logger.error(
+            "Revocation store unavailable checking revocation for user_id=%s: %s",
+            user_id,
+            e,
+        )
+        raise RevocationStoreUnavailableError(
+            "Token revocation store is unavailable"
+        ) from e
+
+    token_exists, marker_value = results
+    if token_exists:
+        return True
+    return _user_marker_is_revoked(marker_value, issued_at)
+
+
+
 async def revoke_all_user_tokens(
     redis_client: aioredis.Redis, user_id: UUID, access_ttl: int, refresh_ttl: int
 ) -> None:
@@ -635,21 +719,4 @@ async def is_user_tokens_revoked(
         raise RevocationStoreUnavailableError(
             "User token revocation store is unavailable"
         ) from e
-    if value is None:
-        return False
-    try:
-        revoked_at = int(value)
-    except (TypeError, ValueError):
-        # Unknown value (for example a legacy "revoked" literal written by a
-        # deployment that has not restarted). Fail closed so a rolling deploy
-        # never re-admits sessions that were already withdrawn.
-        logger.warning(
-            "Unparseable user revocation marker; failing closed: user_id=%s",
-            user_id,
-        )
-        return True
-    if issued_at is None:
-        # A credential that cannot be dated cannot be proven newer than the
-        # revocation. Fail closed.
-        return True
-    return issued_at <= revoked_at
+    return _user_marker_is_revoked(value, issued_at)
