@@ -49,6 +49,11 @@ $MinDumpBytes = 1024
 # inside Invoke-RehearseRestore on the test cluster only.
 $RehearsalDbPrefix = 'mkobi_rehearse_'
 
+# A forced Redis snapshot must be observed complete before its file is copied.
+# The wait is bounded so a wedged or failing save fails the backup instead of
+# hanging it: a copy of /data/dump.rdb while a save is in flight is a torn file.
+$RedisSaveTimeoutSec = 60
+
 # /app is root:root 755 and unwritable by the non-root app user, so pytest's
 # default .pytest_cache write at rootdir fails with Errno 13. Relocate to /tmp.
 $PytestCacheArgs = @('-o', 'cache_dir=/tmp/pytest_cache')
@@ -107,6 +112,7 @@ function Show-Help {
     Write-Host "Backup:" -ForegroundColor Yellow
     Write-Host "  backup         pg_dump + cluster globals (one run, shared stamp) -> ./backups/"
     Write-Host "  restore <file> Restore a run's .dump + matching .globals.sql (both files needed)"
+    Write-Host "  restore-redis yes <file.redis.rdb>  Replace the Redis volume from a snapshot (redis must be stopped first)"
     Write-Host "  rehearse-restore yes [file]  Restore into a throwaway TEST database (proves the path)"
     Write-Host "  prune-backups  Delete ./backups/ artefacts older than 7 days (all kinds)"
     Write-Host ""
@@ -341,6 +347,33 @@ function Assert-DumpArtefact {
     return $true
 }
 
+# An RDB artefact is binary and can be legitimately short on an almost-empty
+# store, so the SQL byte floor does not fit it. The proof that a file is an RDB
+# is its header: the first five bytes are the ASCII magic 'REDIS'. A non-empty
+# file whose header is 'REDIS' is a loadable RDB; anything else is refused.
+function Assert-RdbArtefact {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Label
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-Host "Assertion failed: $Label does not exist: $Path" -ForegroundColor Red
+        return $false
+    }
+    $len = (Get-Item -LiteralPath $Path).Length
+    if ($len -lt 9) {
+        Write-Host "Assertion failed: $Label is $len bytes, too short to be an RDB: $Path" -ForegroundColor Red
+        return $false
+    }
+    $magic = [System.Text.Encoding]::ASCII.GetString((Get-Content -LiteralPath $Path -AsByteStream -TotalCount 5))
+    if ($magic -ne 'REDIS') {
+        Write-Host "Assertion failed: $Label does not start with the RDB magic 'REDIS' (found '$magic'): $Path" -ForegroundColor Red
+        return $false
+    }
+    Write-Host "Asserted: $Label is a $len-byte RDB (header 'REDIS'): $Path" -ForegroundColor DarkGray
+    return $true
+}
+
 function Invoke-Backup {
     if (-not (Test-Path $BackupDir)) {
         New-Item -ItemType Directory -Path $BackupDir | Out-Null
@@ -370,8 +403,92 @@ function Invoke-Backup {
     $globalsDest = Join-Path $BackupDir "bidb-$stamp.globals.sql"
     if (-not (Export-ClusterGlobals -Destination $globalsDest -Compose $DevCompose -DbService 'db')) { return }
 
-    Write-Host "Backup created: $dest + $(Split-Path -Leaf $globalsDest) (run $stamp)" -ForegroundColor Green
-    Write-Host "A restore needs both files from the same run; pass the .dump and the matching .globals.sql is found by stamp." -ForegroundColor Cyan
+    # Third artefact of the same run: a consistent Redis snapshot, same stamp.
+    # Redis carries the reconciler lease and the RQ registries, so it is part of
+    # the backup set, not an afterthought.
+    $redisDest = Join-Path $BackupDir "bidb-$stamp.redis.rdb"
+    if (-not (Export-RedisSnapshot -Destination $redisDest -Compose $DevCompose -RedisService 'redis')) { return }
+
+    Write-Host "Backup created: $dest + $(Split-Path -Leaf $globalsDest) + $(Split-Path -Leaf $redisDest) (run $stamp)" -ForegroundColor Green
+    Write-Host "A restore needs all three files from the same run; pass the .dump and the matching .globals.sql + .redis.rdb are found by stamp." -ForegroundColor Cyan
+}
+
+# Export a consistent Redis snapshot beside the database dump, with the same
+# stamp. The snapshot must not be a copy of a file in motion: a plain `cp` of
+# /data/dump.rdb while a background save is running captures a torn file that is
+# silently unloadable. The mechanism is therefore a forced background save whose
+# completion is verified from Redis itself, never from the shell's exit code:
+#   - BGSAVE returns immediately, so its exit code says nothing about completion.
+#   - Poll INFO persistence for rdb_bgsave_in_progress:0 with
+#     rdb_last_bgsave_status:ok, having first observed the save in progress.
+#   - Independently, poll LASTSAVE, the unix time of the most recent *successful*
+#     save, and require it to advance past the value read before the save was
+#     forced. LASTSAVE updates only when the RDB child finishes.
+# Either signal is sufficient; the wait is bounded by $RedisSaveTimeoutSec, and a
+# save not observed complete fails the backup rather than copying unknown state.
+# Taking the snapshot drops nothing and stops nothing: BGSAVE forks and leaves
+# the service serving writes. It never uses SHUTDOWN or a blocking SAVE.
+function Export-RedisSnapshot {
+    param(
+        [Parameter(Mandatory)] [string] $Destination,
+        [Parameter(Mandatory)] [array] $Compose,
+        [Parameter(Mandatory)] [string] $RedisService
+    )
+
+    $before = ((docker compose @Compose exec -T $RedisService redis-cli LASTSAVE) -join '').Trim()
+    if ($LASTEXITCODE -ne 0 -or -not ($before -match '^[0-9]+$')) {
+        Write-Host "Backup failed: could not read LASTSAVE from $RedisService (returned $LASTEXITCODE)." -ForegroundColor Red
+        return $false
+    }
+
+    # A concurrent save is already a save in flight; that is fine, we still wait
+    # for it. Any other BGSAVE failure is reported.
+    $bgsaveOut = (docker compose @Compose exec -T $RedisService redis-cli BGSAVE) -join ''
+    if ($LASTEXITCODE -ne 0 -and $bgsaveOut -notmatch 'already in progress') {
+        Write-Host "Backup failed: BGSAVE on $RedisService returned $LASTEXITCODE." -ForegroundColor Red
+        return $false
+    }
+
+    $deadline = (Get-Date).AddSeconds($RedisSaveTimeoutSec)
+    $completed = $false
+    $sawInProgress = $false
+    $after = $before
+    while ((Get-Date) -lt $deadline) {
+        $info = (docker compose @Compose exec -T $RedisService redis-cli INFO persistence) -join "`n"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Backup failed: reading INFO persistence from $RedisService returned $LASTEXITCODE." -ForegroundColor Red
+            return $false
+        }
+        $inProgress = if ($info -match 'rdb_bgsave_in_progress:(\d+)') { $Matches[1] } else { '' }
+        $status = if ($info -match 'rdb_last_bgsave_status:(\w+)') { $Matches[1] } else { '' }
+        if ($inProgress -eq '1') { $sawInProgress = $true }
+        $after = ((docker compose @Compose exec -T $RedisService redis-cli LASTSAVE) -join '').Trim()
+        # LASTSAVE has one-second resolution, so an advanced value is definitive
+        # but a same-second completion is not. The observed-in-progress-and-then-
+        # settled signal covers that case without trusting a stale 'ok'.
+        $advanced = ($after -match '^[0-9]+$') -and ([int64]$after -gt [int64]$before)
+        $settled  = $sawInProgress -and $inProgress -eq '0' -and $status -eq 'ok'
+        if ($advanced -or $settled) { $completed = $true; break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $completed) {
+        Write-Host "Backup failed: Redis did not confirm a completed BGSAVE within ${RedisSaveTimeoutSec}s (LASTSAVE $before -> $after). The snapshot was NOT copied." -ForegroundColor Red
+        return $false
+    }
+    Write-Host "Redis BGSAVE completed on $RedisService (LASTSAVE $before -> $after; rdb_bgsave_in_progress:0, rdb_last_bgsave_status:ok)." -ForegroundColor DarkGray
+
+    docker compose @Compose cp "${RedisService}:/data/dump.rdb" $Destination
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Backup failed: copying the Redis snapshot out of the container returned $LASTEXITCODE." -ForegroundColor Red
+        return $false
+    }
+    if (-not (Assert-RdbArtefact -Path $Destination -Label 'redis snapshot')) { return $false }
+
+    # The durable classes this artefact is expected to carry. rq:queue:default is
+    # deliberately not asserted: the producer writes through enqueue_job and that
+    # key is transient, so its absence is normal, not a defect.
+    Write-Host "Redis snapshot durable classes: rq:workers, rq:workers:default, rq:worker:<id>, rq:queues, and the reconciler lease mkobi:reconciler:stale_processing:lease." -ForegroundColor Cyan
+    return $true
 }
 
 # Emit a run's cluster globals beside the database dump, with the same stamp.
@@ -548,6 +665,7 @@ function Invoke-Restore {
     # after they are correct. The pg_restore exit status is read; --exit-on-error
     # is deliberately not passed (it moves where the tool stops, not whether it
     # reports).
+    Write-Host "Cross-tier restore order: Redis first, then this database. The reconciler lease and the RQ queue live in Redis; restoring the database against a stale store is the worse failure." -ForegroundColor Cyan
     Write-Host "Load order: 1) pg_restore --clean (drop phase, then data), 2) cluster globals (roles + grants)." -ForegroundColor Cyan
     docker compose @DevCompose exec -T db pg_restore -U postgres -d bidb --clean --if-exists /tmp/mkobi-restore.dump
     if ($LASTEXITCODE -ne 0) {
@@ -713,6 +831,75 @@ function Invoke-RehearseRestore {
     }
 }
 
+# Restore the Redis volume from a run's snapshot. This is a file replacement, so
+# Redis must be stopped first: loading an RDB happens only at startup, and a live
+# server would overwrite the staged file on its next save. It is an explicit,
+# separately-invoked operation - never part of rehearse-restore - that refuses
+# while redis is up and requires the literal 'yes' plus the artefact path. The
+# artefact it loads is named, and it must be a .redis.rdb; a database .dump is
+# refused, so this never targets the database bidb. The Redis state here is the
+# reconciler lease and the RQ registries.
+function Invoke-RestoreRedis {
+    if (-not $Rest -or $Rest.Count -lt 2 -or $Rest[0] -ne 'yes') {
+        Write-Host "Usage: .\Makefile.ps1 restore-redis yes <file.redis.rdb>" -ForegroundColor Red
+        Write-Host "This replaces the Redis data volume from a snapshot. Redis must be stopped first." -ForegroundColor Red
+        Write-Host "Passing 'yes' is the explicit operator action that allows it to run." -ForegroundColor Red
+        return
+    }
+    $source = $Rest[1]
+    if (-not (Test-Path -LiteralPath $source)) {
+        Write-Host "Redis restore failed: artefact not found: $source" -ForegroundColor Red
+        return
+    }
+    $leaf = Split-Path -Leaf $source
+    if ($leaf -notmatch '^bidb-[0-9_]+\.redis\.rdb$') {
+        Write-Host "Redis restore failed: '$leaf' is not a Redis artefact (expected 'bidb-<stamp>.redis.rdb')." -ForegroundColor Red
+        Write-Host "A database dump is refused here: this operation targets the Redis volume, never the database bidb." -ForegroundColor Red
+        return
+    }
+
+    # The service must be stopped: a running redis holds the volume open and
+    # would ignore or overwrite the staged file. Refuse plainly rather than
+    # producing a silent no-op.
+    $running = (docker compose @DevCompose ps --status running --services) -join "`n"
+    if ($running -match '(?m)^redis$') {
+        Write-Host "Redis restore refused: the 'redis' service is running." -ForegroundColor Red
+        Write-Host "An RDB is loaded only at startup, and a live server would overwrite the staged file on its next save." -ForegroundColor Red
+        Write-Host "Stop it first, e.g. .\Makefile.ps1 down, then re-run this target." -ForegroundColor Red
+        return
+    }
+
+    if (-not (Assert-RdbArtefact -Path $source -Label 'redis restore artefact')) { return }
+
+    Write-Host "Cross-tier restore order: Redis first, then the database. The reconciler lease and the RQ queue live in Redis; restoring the database against a stale store is the worse failure." -ForegroundColor Cyan
+    Write-Host "Redis restore will load artefact: $leaf" -ForegroundColor Cyan
+
+    docker compose @DevCompose cp $source redis:/data/dump.rdb
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Redis restore failed: staging the snapshot into the stopped container returned $LASTEXITCODE." -ForegroundColor Red
+        return
+    }
+
+    docker compose @DevCompose start redis
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Redis restore failed: starting redis to load the snapshot returned $LASTEXITCODE." -ForegroundColor Red
+        return
+    }
+    $deadline = (Get-Date).AddSeconds($RedisSaveTimeoutSec)
+    $ready = $false
+    while ((Get-Date) -lt $deadline) {
+        docker compose @DevCompose exec -T redis redis-cli PING | Out-Null
+        if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $ready) {
+        Write-Host "Redis restore failed: redis did not answer PING within ${RedisSaveTimeoutSec}s." -ForegroundColor Red
+        return
+    }
+    Write-Host "Redis restore completed: $leaf loaded into the redis volume." -ForegroundColor Green
+    Write-Host "Redis durable classes loaded: rq:workers, rq:workers:default, rq:worker:<id>, rq:queues, and the reconciler lease mkobi:reconciler:stale_processing:lease." -ForegroundColor Cyan
+}
+
 function Invoke-PruneBackups {
     if (-not (Test-Path $BackupDir)) {
         Write-Host "No backups directory found" -ForegroundColor Yellow
@@ -834,6 +1021,7 @@ switch ($Target.ToLower()) {
     'psql-c'           { Invoke-PsqlC }
     'backup'           { Invoke-Backup }
     'restore'          { Invoke-Restore }
+    'restore-redis'    { Invoke-RestoreRedis }
     'rehearse-restore' { Invoke-RehearseRestore }
     'prune-backups'    { Invoke-PruneBackups }
     'uv-sync'          { Invoke-UvSync }
