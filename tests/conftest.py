@@ -296,6 +296,41 @@ def _get_original_auth_init():
 
 
 @pytest.fixture(autouse=True)
+def _reset_config_cache():
+    """Reset the settings singleton around every test.
+
+    ``mkobi.config`` memoises Settings in a module-level ``_settings`` and
+    exposes ``clear_config_cache()`` as the only reset. A test that mutates
+    ``os.environ`` and clears the cache mid-test leaves the singleton built from
+    its throwaway values; ``monkeypatch`` restores the environment, but nothing
+    restored the cache. Every later test then read the previous test's
+    configuration, including a foreign ``JWT__SECRET_KEY``.
+
+    Setup discards any cache inherited from a previous test, so the suite's
+    canonical configuration - the environment captured at import by the
+    ``setdefault`` block above - is what this test sees regardless of ordering.
+    Teardown restores the environment snapshot taken at setup and rebuilds the
+    singleton from it, so the cache cannot survive a test and the next test
+    starts from the baseline rather than from ``None`` reconstructed out of a
+    mutated environment. Restoring the environment first is required: this
+    fixture's teardown runs before ``monkeypatch`` undoes a test's ``setenv``,
+    so rebuilding blindly would read the mutated values and raise.
+
+    The manual ``clear_config_cache()`` calls inside tests remain load-bearing:
+    a test that mutates the environment and reads config mid-test needs the
+    cache cleared before that read, which teardown cannot provide.
+    """
+    env_snapshot = dict(os.environ)
+    clear_config_cache()
+    get_config()
+    yield
+    os.environ.clear()
+    os.environ.update(env_snapshot)
+    clear_config_cache()
+    get_config()
+
+
+@pytest.fixture(autouse=True)
 def _auto_mock_redis(monkeypatch):
     """Auto-mock Redis client for all tests to avoid requiring a real Redis server.
 
