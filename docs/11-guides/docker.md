@@ -732,7 +732,18 @@ Database logs: `.\Makefile.ps1 logs db`.
 
 # Show current vs head
 .\Makefile.ps1 migration-status
+
+# Detect model/schema drift (alembic check, hermetic test DB)
+.\Makefile.ps1 migration-check
 ```
+
+`migration-check` runs `alembic check` as a one-shot in the **test** compose
+against `bidb_test` — not the dev database. It requires an already-migrated test
+database: against an unmigrated one, `alembic check` creates `alembic_version`
+and then falsely reports no drift. Like `migrate` and `migration-status`, it
+takes the migration advisory lock, so a blocked run fails with
+*"refusing to migrate"* (a lock verdict, not a drift verdict). It cannot detect a
+changed server default or a changed native-enum label.
 
 ### SIGBUS Error in the Frontend Container (Windows)
 

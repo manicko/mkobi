@@ -229,6 +229,14 @@ uv run alembic revision --autogenerate -m "description"
 
 # Rollback migration
 uv run alembic downgrade -1
+
+# Detect schema drift (recommended path: hermetic test DB, not the dev DB)
+.\Makefile.ps1 migration-check
+
+# The equivalent bare-host invocation is NOT equivalent: with no sqlalchemy.url
+# in alembic.ini it resolves to the dev database (bidb), and it can create
+# alembic_version and then falsely pass against an unmigrated database.
+# uv run alembic check
 ```
 
 ### Recreating Test Database

@@ -88,6 +88,7 @@ function Show-Help {
     Write-Host "  migrate        Run alembic upgrade head (one-shot migrate service)"
     Write-Host "  migration-new  Autogenerate a revision"
     Write-Host "  migration-status  Show current vs head"
+    Write-Host "  migration-check   Detect model/schema drift (alembic check, test DB)"
     Write-Host "  psql           Interactive psql on the dev DB"
     Write-Host "  psql-c [sql]   One-shot SQL against the dev DB"
     Write-Host ""
@@ -273,6 +274,18 @@ function Invoke-MigrationStatus {
     docker compose @DevCompose run --rm app alembic current
 }
 
+# The drift check runs inside the hermetic test compose against bidb_test, never
+# the shared dev database: a bare host `alembic check` would resolve through
+# alembic.ini's unset sqlalchemy.url to the app config's DATABASE_URL (bidb on
+# localhost). Running it as a one-shot against test-migrate's pinned environment
+# makes that structurally impossible, so no refusal logic is needed in env.py.
+# Calling `alembic check` also runs env.py online, so it takes the same migration
+# advisory lock as `upgrade` and `migration-status` — note that a lock refusal
+# prints "refusing to migrate", which is a lock verdict, not a drift verdict.
+function Invoke-MigrationCheck {
+    docker compose @TestCompose run --rm test-migrate alembic check
+}
+
 function Invoke-Psql {
     docker compose @DevCompose exec db psql -U postgres -d bidb
 }
@@ -426,6 +439,7 @@ switch ($Target.ToLower()) {
     'migrate'          { Invoke-Migrate }
     'migration-new'    { Invoke-MigrationNew }
     'migration-status' { Invoke-MigrationStatus }
+    'migration-check'  { Invoke-MigrationCheck }
     'psql'             { Invoke-Psql }
     'psql-c'           { Invoke-PsqlC }
     'backup'           { Invoke-Backup }
