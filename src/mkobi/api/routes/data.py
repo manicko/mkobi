@@ -25,9 +25,10 @@ from mkobi.api.deps import (
 from mkobi.api.schemas.responses import (
     auth_protected_responses,
 )
+from mkobi.config import get_config
 from mkobi.core.permissions import check_dashboard_access, DashboardPermissionError
 from mkobi.db.repositories.graph_repo import GraphRepository
-from mkobi.models.data import ProcessingResultData, AggregatedDataResponse, GraphDataResponse
+from mkobi.models.data import AggregatedDataResponse, GraphDataResponse
 from mkobi.models.enums import DashboardPermission, ErrorCode
 from mkobi.services.data_service import DataService
 from mkobi.utils.exceptions import AppException
@@ -35,6 +36,18 @@ from mkobi.utils.exceptions import AppException
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/data", tags=["data"])
+
+
+def _flatten_points(
+    records: list[Any],
+) -> list[dict[str, int | float | str]]:
+    """Flatten service records' ``preview`` payloads into data points."""
+    data_points: list[dict[str, int | float | str]] = []
+    for item in records:
+        preview = item.get("preview")
+        if preview:
+            data_points.extend(cast(list[dict[str, int | float | str]], preview))
+    return data_points
 
 
 @router.get(
@@ -115,6 +128,8 @@ async def get_aggregated_data_endpoint(
                     detail="Invalid JSON in filters",
                 ) from e
 
+        caps = get_config().data
+
         # When graph_id is provided, return data for single graph
         if graph_id is not None:
             # Get graph to retrieve type and name using repository
@@ -127,26 +142,25 @@ async def get_aggregated_data_endpoint(
                     detail="Graph not found",
                 )
 
-            # Get data through service
-            single_result: list[ProcessingResultData] = await data_service.get_aggregated_data(
+            records, total_rows = await data_service.get_bounded_aggregated_data(
                 dashboard_id=dashboard_id,
                 graph_id=graph_id,
                 db=db,
+                max_rows=caps.max_rows_per_graph,
                 filters=parsed_filters,
             )
+            data_points = _flatten_points(records)
+            rows_truncated = total_rows > len(data_points)
 
             logger.info(
-                "Aggregated data retrieved: dashboard_id=%s, graph_id=%s, records_count=%d",
+                "Aggregated data retrieved: dashboard_id=%s, graph_id=%s, "
+                "returned=%d, total=%d, truncated=%s",
                 dashboard_id,
                 graph_id,
-                len(single_result),
+                len(data_points),
+                total_rows,
+                rows_truncated,
             )
-
-            # Build response with graph metadata
-            single_data_points: list[dict[str, int | float | str]] = []
-            for item in single_result:
-                if item.get("preview"):
-                    single_data_points.extend(cast(list[dict[str, int | float | str]], item["preview"]))
 
             return AggregatedDataResponse(
                 graphs=[
@@ -154,48 +168,65 @@ async def get_aggregated_data_endpoint(
                         graph_id=str(graph_id),
                         type=single_graph.type,
                         name=single_graph.name,
-                        data=single_data_points,
+                        data=data_points,
+                        total_rows=total_rows,
+                        rows_truncated=rows_truncated,
                         config=single_graph.config,
                     )
-                ]
+                ],
+                total_rows=total_rows,
+                truncated=rows_truncated,
             )
 
         # When graph_id is absent, return data for all graphs in dashboard
         graphs = await graph_repo.get_by_dashboard_id(dashboard_id, db)
         graph_responses: list[GraphDataResponse] = []
+        remaining_budget = caps.max_rows_total
+        any_truncated = False
 
         for graph_item in graphs:
-            graph_data: list[ProcessingResultData] = await data_service.get_aggregated_data(
+            records, total_rows = await data_service.get_bounded_aggregated_data(
                 dashboard_id=dashboard_id,
                 graph_id=graph_item.id,
                 db=db,
+                max_rows=min(caps.max_rows_per_graph, remaining_budget),
                 filters=parsed_filters,
             )
+            data_points = _flatten_points(records)
+            remaining_budget -= len(data_points)
+            rows_truncated = total_rows > len(data_points)
+            any_truncated = any_truncated or rows_truncated
 
             logger.info(
-                "Aggregated data retrieved: dashboard_id=%s, graph_id=%s, records_count=%d",
+                "Aggregated data retrieved: dashboard_id=%s, graph_id=%s, "
+                "returned=%d, total=%d, truncated=%s",
                 dashboard_id,
                 graph_item.id,
-                len(graph_data),
+                len(data_points),
+                total_rows,
+                rows_truncated,
             )
-
-            # Build response with graph metadata
-            item_data_points: list[dict[str, int | float | str]] = []
-            for item in graph_data:
-                if item.get("preview"):
-                    item_data_points.extend(cast(list[dict[str, int | float | str]], item["preview"]))
 
             graph_responses.append(
                 GraphDataResponse(
                     graph_id=str(graph_item.id),
                     type=graph_item.type,
                     name=graph_item.name,
-                    data=item_data_points,
+                    data=data_points,
+                    total_rows=total_rows,
+                    rows_truncated=rows_truncated,
                     config=graph_item.config,
                 )
             )
 
-        return AggregatedDataResponse(graphs=graph_responses)
+        dashboard_total = await data_service.count_dashboard_aggregated_data(
+            dashboard_id=dashboard_id, db=db,
+        )
+        return AggregatedDataResponse(
+            graphs=graph_responses,
+            total_rows=dashboard_total,
+            truncated=any_truncated,
+        )
 
     except ValueError as e:
         logger.warning("Error getting data: %s", e)

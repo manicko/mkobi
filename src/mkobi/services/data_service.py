@@ -215,6 +215,55 @@ class DataService(IDataService):
             for record in records
         ]
 
+    async def get_bounded_aggregated_data(
+        self,
+        dashboard_id: UUID,
+        graph_id: UUID,
+        db: AsyncSession,
+        max_rows: int,
+        filters: dict[str, Any] | None = None,
+    ) -> tuple[list[ProcessingResultData], int]:
+        """Get at most ``max_rows`` aggregate rows plus the true total.
+
+        The rows are bounded by ``max_rows`` (order preserved), while the total
+        is a separate ``COUNT(*)`` that reflects every stored row -- never the
+        length of the bounded page. Both queries share one predicate set, so the
+        count cannot disagree with the rows.
+
+        Args:
+            dashboard_id: Dashboard identifier.
+            graph_id: Graph identifier.
+            db: Async database session.
+            max_rows: Hard ceiling on returned rows.
+            filters: Optional filters for JSONB field dims.
+
+        Returns:
+            tuple[list[ProcessingResultData], int]: The bounded records and the
+            true, untruncated row count.
+        """
+        records = await self.agg_repo.get_by_graph_id_limited(
+            graph_id, db, max_rows, dashboard_id=dashboard_id, filters=filters,
+        )
+        total_rows = await self.agg_repo.count_by_graph_id(
+            graph_id, db, dashboard_id=dashboard_id, filters=filters,
+        )
+        results = [
+            ProcessingResultData(
+                dashboard_id=record.dashboard_id,
+                preview=[{**record.dims, **record.metrics}],
+            )
+            for record in records
+        ]
+        return results, total_rows
+
+    async def count_dashboard_aggregated_data(
+        self,
+        dashboard_id: UUID,
+        db: AsyncSession,
+    ) -> int:
+        """Return the dashboard-wide true, untruncated aggregate row count."""
+        return await self.agg_repo.count_by_dashboard_id(dashboard_id, db)
+
     async def get_available_metrics(
         self, dashboard_id: UUID, db: AsyncSession,
     ) -> list[str]:

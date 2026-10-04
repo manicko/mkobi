@@ -73,8 +73,12 @@ describe('useAggregatedData cache key', () => {
                 type: 'bar',
                 name: `Graph ${graphId ?? 'none'}`,
                 data: [{ x: [graphId ?? 'none'], y: [1], type: 'bar' }],
+                total_rows: 1,
+                rows_truncated: false,
               },
             ],
+            total_rows: 1,
+            truncated: false,
           },
         })
       }

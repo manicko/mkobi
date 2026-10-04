@@ -191,6 +191,16 @@ const { id } = useParams()
                   <Typography variant="h6" gutterBottom>
                     {graph.name}
                   </Typography>
+                  {graph.rows_truncated && (
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      component="p"
+                      sx={{ mb: 1 }}
+                    >
+                      Showing {graph.data.length} of {graph.total_rows}
+                    </Typography>
+                  )}
                   <Stack sx={{ height: 400 }}>
                     <ChartRenderer graph={graph} />
                   </Stack>

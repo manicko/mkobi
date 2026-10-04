@@ -137,6 +137,53 @@ class TestAccessGrantPermissionIsAnEnumReference:
         assert resolved.get("enum") == ["view", "edit", "admin"]
 
 
+class TestAggregatedDataResponseCarriesTruncationContract:
+    """The bounded aggregate response publishes its count/truncation contract.
+
+    ``DP-11-B`` makes the count field **mandatory**: a bounded response that
+    does not report the true totals is a silent truncation, which is rejected.
+    This pins the contract in the generated OpenAPI document, so removing or
+    renaming ``GraphDataResponse.total_rows``, or dropping the response's
+    ``total_rows``/``truncated`` declaration, fails here rather than only at a
+    client that no longer sees the counts. It asserts the published shape, not
+    an implementation detail.
+    """
+
+    def test_graph_response_requires_a_true_row_count(self) -> None:
+        """``GraphDataResponse.total_rows`` is a required integer property."""
+        from mkobi.main import app
+        from mkobi.models.data import GraphDataResponse
+
+        field = GraphDataResponse.model_fields["total_rows"]
+        assert field.is_required(), "total_rows must stay a required field"
+        assert field.annotation is int, (
+            f"total_rows annotation changed from int to {field.annotation!r}"
+        )
+
+        schema = app.openapi()
+        component = schema["components"]["schemas"]["GraphDataResponse"]
+        total_rows_schema = component["properties"]["total_rows"]
+        assert total_rows_schema.get("type") == "integer"
+        assert "total_rows" in component["required"]
+        assert "rows_truncated" in component["properties"]
+
+    def test_aggregated_response_declares_a_total_and_truncation_flag(self) -> None:
+        """``AggregatedDataResponse`` declares ``total_rows`` and ``truncated``."""
+        from mkobi.main import app
+        from mkobi.models.data import AggregatedDataResponse
+
+        total_field = AggregatedDataResponse.model_fields["total_rows"]
+        assert total_field.is_required(), "total_rows must stay a required field"
+        assert total_field.annotation is int
+        assert "truncated" in AggregatedDataResponse.model_fields
+
+        schema = app.openapi()
+        component = schema["components"]["schemas"]["AggregatedDataResponse"]
+        assert component["properties"]["total_rows"].get("type") == "integer"
+        assert "total_rows" in component["required"]
+        assert component["properties"]["truncated"].get("type") == "boolean"
+
+
 class TestDocumentUrlsAreGatedTogether:
     """The three FastAPI document URLs share one production gate.
 

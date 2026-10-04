@@ -589,6 +589,29 @@ class UploadSettings(BaseModel):
         super().__init__(**data)
 
 
+class DataSettings(BaseModel):
+    """Aggregate-read bounds for the dashboard response.
+
+    The aggregate read previously had no row bound. The read path allocates
+    roughly ``3,402 B/row`` (linear; the 1,277 B/row floor after removing the
+    eager ORM cascade is the raw JSONB payload), and the linear memory curve
+    crosses the application's 1 GiB cgroup limit between 250,000 and 300,000
+    rows. An uncapped read is therefore the defect; these two values bound it.
+
+    Derivation of the defaults: ``20,000 rows x 3,402 B/row`` is roughly **68
+    MB** for one dashboard response, which leaves comfortable headroom inside
+    the 1 GiB application limit while ``--workers 4`` serve concurrently. The
+    per-graph cap (``2,000``) keeps any single chart's payload small; the total
+    cap (``20,000``) bounds the whole response. Truncation is never silent: the
+    true, untruncated counts travel alongside the rows in the response.
+    """
+
+    # Maximum rows returned for a single graph in one dashboard response.
+    max_rows_per_graph: int = Field(default=2_000, ge=0)
+    # Maximum rows returned across the whole dashboard response.
+    max_rows_total: int = Field(default=20_000, ge=0)
+
+
 class FrontendSettings(BaseModel):
     """Frontend build settings.
 
@@ -677,6 +700,9 @@ class Settings(BaseSettings):
 
     # --- Upload ---
     upload: UploadSettings = UploadSettings()
+
+    # --- Data ---
+    data: DataSettings = DataSettings()
 
     # --- Frontend ---
     frontend: FrontendSettings = FrontendSettings()

@@ -483,6 +483,27 @@ class IDataService(abc.ABC):
         pass
 
     @abc.abstractmethod
+    async def get_bounded_aggregated_data(
+        self,
+        dashboard_id: UUID,
+        graph_id: UUID,
+        db: AsyncSession,
+        max_rows: int,
+        filters: dict[str, Any] | None = None,
+    ) -> tuple[list[ProcessingResultData], int]:
+        """Get bounded aggregate rows plus the true total."""
+        pass
+
+    @abc.abstractmethod
+    async def count_dashboard_aggregated_data(
+        self,
+        dashboard_id: UUID,
+        db: AsyncSession,
+    ) -> int:
+        """Return the dashboard-wide true aggregate row count."""
+        pass
+
+    @abc.abstractmethod
     async def get_available_metrics(
         self,
         dashboard_id: UUID,

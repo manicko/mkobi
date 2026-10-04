@@ -479,12 +479,20 @@ class GraphDataResponse(BaseModel):
     """Model for individual graph data response.
 
     Contains the graph metadata (id, type, name) and Plotly.js data.
+
+    ``total_rows`` is the graph's **true, untruncated** row count, reported
+    from a ``COUNT(*)`` query rather than the length of the (possibly bounded)
+    ``data`` list. ``DP-11-B`` makes it mandatory: without it, a bounded
+    response would silently drop rows. ``rows_truncated`` is true exactly when
+    the graph's ``data`` list is shorter than ``total_rows``.
     """
 
     graph_id: str
     type: GraphType
     name: str
     data: list[dict[str, int | float | str]]
+    total_rows: int
+    rows_truncated: bool = False
     layout: ChartLayoutConfig | None = None
     config: dict[str, Any] | None = None
 
@@ -499,6 +507,8 @@ class GraphDataResponse(BaseModel):
                     {"category": "A", "revenue": 1000},
                     {"category": "B", "revenue": 2000},
                 ],
+                "total_rows": 2000,
+                "rows_truncated": True,
                 "layout": {"title": "Sales Chart"},
             }
         },
@@ -509,9 +519,17 @@ class AggregatedDataResponse(BaseModel):
     """Model for aggregated data response.
 
     Wrapper for graph data with configuration.
+
+    ``total_rows`` is the dashboard-wide **true, untruncated** row count. The
+    response is marked ``truncated`` when any graph was bounded by the
+    per-graph cap or the rows collectively exhausted the dashboard-wide budget;
+    a graph whose rows were not returned at all still appears, carrying its
+    counts and an empty ``data`` list.
     """
 
     graphs: list[GraphDataResponse]
+    total_rows: int
+    truncated: bool = False
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -526,8 +544,12 @@ class AggregatedDataResponse(BaseModel):
                             {"category": "A", "revenue": 1000},
                             {"category": "B", "revenue": 2000},
                         ],
+                        "total_rows": 2000,
+                        "rows_truncated": True,
                     }
-                ]
+                ],
+                "total_rows": 2000,
+                "truncated": True,
             }
         },
     )

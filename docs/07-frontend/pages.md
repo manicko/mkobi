@@ -161,6 +161,22 @@ The application consists of **7 UI pages** (plus a 404 fallback). Authenticated 
 5. Clicking "Upload Data" opens the `UploadModal` dialog (no page navigation).
 6. After successful upload and processing, dashboard data refreshes automatically.
 
+### Bounded response presentation
+
+The aggregate response is bounded server-side (per-graph and per-dashboard row
+caps; see [Dashboards API](../02-dashboards/dashboards-api.md)). The client
+presents this without inventing its own signal: when a graph's
+`rows_truncated` field is `true`, the chart renders a status line reading
+**"Showing N of M"**, where `N` is the number of rows actually returned
+(`data.length`) and `M` is the server's `total_rows`. The upper bound is always
+read from the server field (`DP-13-C`) — the client never derives `M` from its
+own data. A graph that is not truncated renders **no** status line.
+
+The dashboard-wide fetch is unchanged: the view issues one request for the
+whole dashboard (`graph_id` absent) and each chart reads its own graph's
+server-supplied counts out of that single bounded response. There is no
+per-graph fan-out (`DP-13-A`).
+
 ---
 
 ## 5. User Profile Page (`/profile`)

@@ -256,15 +256,23 @@ class TestAggregateResponseShape:
         assert response.status_code == status.HTTP_200_OK
         body = response.json()
 
-        assert set(body.keys()) == {"graphs"}
+        assert set(body.keys()) == {"graphs", "total_rows", "truncated"}
         assert len(body["graphs"]) == 1
         graph = body["graphs"][0]
-        assert set(graph.keys()) == {"graph_id", "type", "name", "data", "layout", "config"}
+        assert set(graph.keys()) == {
+            "graph_id", "type", "name", "data",
+            "total_rows", "rows_truncated", "layout", "config",
+        }
         assert graph["graph_id"] == str(graph_id)
         assert graph["type"] == "bar"
         assert graph["name"] == "Aggregate Read Graph"
         assert graph["config"] == {"title": "Revenue"}
         assert graph["layout"] is None
+        # Two stored rows: under both caps, so nothing is truncated.
+        assert body["truncated"] is False
+        assert body["total_rows"] == 2
+        assert graph["total_rows"] == 2
+        assert graph["rows_truncated"] is False
 
         # Two rows were stored; each row is one data point whose dict is the
         # merge of dims and metrics.

@@ -208,6 +208,38 @@ class IAggregatedDataRepository(abc.ABC):
         pass
 
     @abc.abstractmethod
+    async def get_by_graph_id_limited(
+        self,
+        graph_id: UUID,
+        db: AsyncSession,
+        max_rows: int,
+        dashboard_id: UUID | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> list[Any]:
+        """Get at most ``max_rows`` aggregated rows for graph."""
+        pass
+
+    @abc.abstractmethod
+    async def count_by_graph_id(
+        self,
+        graph_id: UUID,
+        db: AsyncSession,
+        dashboard_id: UUID | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> int:
+        """Return the true, untruncated row count for graph."""
+        pass
+
+    @abc.abstractmethod
+    async def count_by_dashboard_id(
+        self,
+        dashboard_id: UUID,
+        db: AsyncSession,
+    ) -> int:
+        """Return the true, untruncated row count for dashboard."""
+        pass
+
+    @abc.abstractmethod
     async def delete_by_graph_id(
         self,
         graph_id: UUID,

@@ -34,6 +34,50 @@ vi.mock('../../upload/ui/UploadModal', () => ({
   UploadModal: () => null,
 }))
 
+// The aggregated response the mocked hook returns. Mutable so individual tests
+// can drive the truncation contract; the default is untruncated.
+let mockAggregatedData: {
+  graphs: Array<{
+    graph_id: string
+    type: string
+    name: string
+    data: unknown[]
+    total_rows: number
+    rows_truncated: boolean
+  }>
+  total_rows: number
+  truncated: boolean
+} = {
+  graphs: [
+    {
+      graph_id: 'graph-1',
+      type: 'bar',
+      name: 'Sales by Category',
+      data: [{ x: ['A', 'B', 'C'], y: [1, 2, 3], type: 'bar' }],
+      total_rows: 1,
+      rows_truncated: false,
+    },
+    {
+      graph_id: 'graph-2',
+      type: 'line',
+      name: 'Trend Over Time',
+      data: [{ x: [1, 2, 3], y: [10, 20, 30], type: 'scatter', mode: 'lines' }],
+      total_rows: 1,
+      rows_truncated: false,
+    },
+    {
+      graph_id: 'graph-3',
+      type: 'table',
+      name: 'Data Table',
+      data: [{ category: 'A', value: 100 }, { category: 'B', value: 200 }],
+      total_rows: 2,
+      rows_truncated: false,
+    },
+  ],
+  total_rows: 4,
+  truncated: false,
+}
+
 // Mock dashboard API
 vi.mock('../api/dashboardApi', () => ({
   useDashboard: () => ({
@@ -50,28 +94,7 @@ vi.mock('../api/dashboardApi', () => ({
     error: null,
   }),
   useAggregatedData: () => ({
-    data: {
-      graphs: [
-        {
-          graph_id: 'graph-1',
-          type: 'bar',
-          name: 'Sales by Category',
-          data: [{ x: ['A', 'B', 'C'], y: [1, 2, 3], type: 'bar' }],
-        },
-        {
-          graph_id: 'graph-2',
-          type: 'line',
-          name: 'Trend Over Time',
-          data: [{ x: [1, 2, 3], y: [10, 20, 30], type: 'scatter', mode: 'lines' }],
-        },
-        {
-          graph_id: 'graph-3',
-          type: 'table',
-          name: 'Data Table',
-          data: [{ category: 'A', value: 100 }, { category: 'B', value: 200 }],
-        },
-      ],
-    },
+    data: mockAggregatedData,
     isLoading: false,
     error: null,
   }),
@@ -100,9 +123,41 @@ const createWrapper = () => {
   )
 }
 
+const defaultGraphs = (): typeof mockAggregatedData => ({
+  graphs: [
+    {
+      graph_id: 'graph-1',
+      type: 'bar',
+      name: 'Sales by Category',
+      data: [{ x: ['A', 'B', 'C'], y: [1, 2, 3], type: 'bar' }],
+      total_rows: 1,
+      rows_truncated: false,
+    },
+    {
+      graph_id: 'graph-2',
+      type: 'line',
+      name: 'Trend Over Time',
+      data: [{ x: [1, 2, 3], y: [10, 20, 30], type: 'scatter', mode: 'lines' }],
+      total_rows: 1,
+      rows_truncated: false,
+    },
+    {
+      graph_id: 'graph-3',
+      type: 'table',
+      name: 'Data Table',
+      data: [{ category: 'A', value: 100 }, { category: 'B', value: 200 }],
+      total_rows: 2,
+      rows_truncated: false,
+    },
+  ],
+  total_rows: 4,
+  truncated: false,
+})
+
 describe('DashboardView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockAggregatedData = defaultGraphs()
   })
 
   it('renders dashboard title', async () => {
@@ -197,5 +252,53 @@ describe('DashboardView', () => {
     await waitFor(() => {
       expect(screen.getByTestId('table-chart')).toBeInTheDocument()
     })
+  })
+
+  it('renders the status line from the server counts, not a client count', async () => {
+    // The server says the graph has 5000 rows and returned 3. A client that
+    // invented the upper bound from `data.length` would render "3 of 3" and
+    // never say "truncated"; this pins the server field as the source.
+    mockAggregatedData = {
+      graphs: [
+        {
+          graph_id: 'graph-1',
+          type: 'bar',
+          name: 'Sales by Category',
+          data: [{ x: ['A'], y: [1], type: 'bar' }],
+          total_rows: 5000,
+          rows_truncated: true,
+        },
+      ],
+      total_rows: 5000,
+      truncated: true,
+    }
+
+    const Wrapper = createWrapper()
+    render(
+      <Wrapper>
+        <DashboardView />
+      </Wrapper>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Showing 1 of 5000')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('Showing 1 of 1')).not.toBeInTheDocument()
+  })
+
+  it('renders no status line when the graph is not truncated', async () => {
+    mockAggregatedData = defaultGraphs()
+
+    const Wrapper = createWrapper()
+    render(
+      <Wrapper>
+        <DashboardView />
+      </Wrapper>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Sales by Category')).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/^Showing /)).not.toBeInTheDocument()
   })
 })

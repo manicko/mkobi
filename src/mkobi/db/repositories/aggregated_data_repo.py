@@ -196,6 +196,40 @@ class AggregatedDataRepository(IAggregatedDataRepository):
                 e,
             )
             raise
+    @staticmethod
+    def _graph_filter_conditions(
+        graph_id: UUID,
+        dashboard_id: UUID | None,
+        filters: dict[str, Any] | None,
+    ) -> list[Any]:
+        """Build the shared WHERE conditions for a graph's aggregate read/count.
+
+        Both the bounded row select and its ``COUNT(*)`` companion filter on the
+        same predicates, so the reported total can never disagree with the rows
+        the same request is allowed to return.
+
+        Args:
+            graph_id: Graph identifier (UUID).
+            dashboard_id: Optional dashboard identifier for additional filtering.
+            filters: Optional dictionary of filters for JSONB field dims.
+
+        Returns:
+            list[Any]: SQLAlchemy boolean expressions to pass to ``where``.
+        """
+        conditions: list[Any] = [
+            aggregated_data_model.AggregatedData.graph_id == graph_id
+        ]
+        if dashboard_id is not None:
+            conditions.append(
+                aggregated_data_model.AggregatedData.dashboard_id == dashboard_id
+            )
+        if filters:
+            for key, value in filters.items():
+                conditions.append(
+                    aggregated_data_model.AggregatedData.dims[key].astext == str(value)
+                )
+        return conditions
+
     async def get_by_graph_id(
         self,
         graph_id: UUID,
@@ -220,25 +254,12 @@ class AggregatedDataRepository(IAggregatedDataRepository):
             List of data points for graph, ordered by ascending id.
         """
         try:
-            query = select(aggregated_data_model.AggregatedData).where(
-                aggregated_data_model.AggregatedData.graph_id == graph_id
+            query = (
+                select(aggregated_data_model.AggregatedData)
+                .where(*self._graph_filter_conditions(graph_id, dashboard_id, filters))
+                .order_by(aggregated_data_model.AggregatedData.id)
+                .options(*_response_columns_only())
             )
-
-            # Apply dashboard_id filter for data isolation
-            if dashboard_id is not None:
-                query = query.where(
-                    aggregated_data_model.AggregatedData.dashboard_id == dashboard_id
-                )
-
-            # Apply filters to JSONB field dims
-            if filters:
-                for key, value in filters.items():
-                    query = query.where(
-                        aggregated_data_model.AggregatedData.dims[key].astext == str(value)
-                    )
-
-            query = query.order_by(aggregated_data_model.AggregatedData.id)
-            query = query.options(*_response_columns_only())
 
             result = await db.execute(query)
             data = list(result.scalars().all())
@@ -252,6 +273,127 @@ class AggregatedDataRepository(IAggregatedDataRepository):
             logger.error(
                 "Error getting data graph_id=%s: %s",
                 graph_id,
+                e,
+            )
+            raise
+
+    async def get_by_graph_id_limited(
+        self,
+        graph_id: UUID,
+        db: AsyncSession,
+        max_rows: int,
+        dashboard_id: UUID | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> list[aggregated_data_model.AggregatedData]:
+        """Get at most ``max_rows`` aggregated rows for a graph, in chart order.
+
+        Identical to ``get_by_graph_id`` except for the ``LIMIT``. The
+        ``ORDER BY id`` guarantee is preserved, so which rows a capped read
+        returns is stable across identical requests -- a truncation that varied
+        per call would be worse than no bound.
+
+        Args:
+            graph_id: Graph identifier (UUID).
+            db: Async database session.
+            max_rows: Hard ceiling on returned rows.
+            dashboard_id: Optional dashboard identifier for additional filtering.
+            filters: Optional dictionary of filters for JSONB field dims.
+
+        Returns:
+            List of at most ``max_rows`` data points, ordered by ascending id.
+        """
+        try:
+            query = (
+                select(aggregated_data_model.AggregatedData)
+                .where(*self._graph_filter_conditions(graph_id, dashboard_id, filters))
+                .order_by(aggregated_data_model.AggregatedData.id)
+                .limit(max_rows)
+                .options(*_response_columns_only())
+            )
+
+            result = await db.execute(query)
+            data = list(result.scalars().all())
+            logger.info(
+                "Data retrieved (bounded) for graph_id=%s, count=%s, limit=%s",
+                graph_id,
+                len(data),
+                max_rows,
+            )
+            return data
+        except SQLAlchemyError as e:
+            logger.error(
+                "Error getting bounded data graph_id=%s: %s",
+                graph_id,
+                e,
+            )
+            raise
+
+    async def count_by_graph_id(
+        self,
+        graph_id: UUID,
+        db: AsyncSession,
+        dashboard_id: UUID | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> int:
+        """Return the true, untruncated row count for a graph.
+
+        A single index-only ``COUNT(*)`` over the same predicates as the row
+        read -- rows are never loaded to be counted, and the count is never
+        taken over a truncated page.
+
+        Args:
+            graph_id: Graph identifier (UUID).
+            db: Async database session.
+            dashboard_id: Optional dashboard identifier for additional filtering.
+            filters: Optional dictionary of filters for JSONB field dims.
+
+        Returns:
+            int: The number of stored rows matching the graph's predicates.
+        """
+        try:
+            result = await db.execute(
+                select(func.count())
+                .select_from(aggregated_data_model.AggregatedData)
+                .where(*self._graph_filter_conditions(graph_id, dashboard_id, filters))
+            )
+            return int(result.scalar_one())
+        except SQLAlchemyError as e:
+            logger.error(
+                "Error counting data graph_id=%s: %s",
+                graph_id,
+                e,
+            )
+            raise
+
+    async def count_by_dashboard_id(
+        self,
+        dashboard_id: UUID,
+        db: AsyncSession,
+    ) -> int:
+        """Return the true, untruncated row count for a whole dashboard.
+
+        A single index-only ``COUNT(*)``, used for the response's grand total.
+
+        Args:
+            dashboard_id: Dashboard identifier.
+            db: Async database session.
+
+        Returns:
+            int: The number of stored rows for the dashboard.
+        """
+        try:
+            result = await db.execute(
+                select(func.count())
+                .select_from(aggregated_data_model.AggregatedData)
+                .where(
+                    aggregated_data_model.AggregatedData.dashboard_id == dashboard_id
+                )
+            )
+            return int(result.scalar_one())
+        except SQLAlchemyError as e:
+            logger.error(
+                "Error counting data dashboard_id=%s: %s",
+                dashboard_id,
                 e,
             )
             raise

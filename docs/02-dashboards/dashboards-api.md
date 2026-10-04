@@ -986,6 +986,65 @@ Browser                          FastAPI                     PostgreSQL
 
 ---
 
+### Aggregate read bounds and the truncation contract
+
+The aggregate read is **bounded**. Before this change it had no row bound; the
+read path allocates roughly **3,402 B/row** (linear; the 1,277 B/row floor
+after removing the eager ORM cascade is the raw JSONB payload), and the linear
+memory curve crosses the application's 1 GiB cgroup limit between **250,000 and
+300,000 rows**. An uncapped read was the defect.
+
+Two settings bound it (`src/mkobi/config.py`, `DataSettings`):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `DATA__MAX_ROWS_PER_GRAPH` | `2000` | Rows returned for one graph in one response. |
+| `DATA__MAX_ROWS_TOTAL` | `20000` | Rows returned across the whole dashboard response. |
+
+**Derivation.** 20,000 rows × 3,402 B/row is roughly **68 MB** for one dashboard
+response, which leaves comfortable headroom inside the 1 GiB application limit
+while `--workers 4` serve concurrently. The per-graph cap keeps any single
+chart's payload small; the total cap bounds the whole response.
+
+**Truncation is visible, never silent.** The response reports the true,
+untruncated counts alongside the bounded rows:
+
+```json
+{
+  "graphs": [
+    {
+      "graph_id": "…",
+      "type": "bar",
+      "name": "Sales by Category",
+      "data": [ {"category": "A", "revenue": 1000} ],
+      "total_rows": 5000,
+      "rows_truncated": true
+    }
+  ],
+  "total_rows": 5000,
+  "truncated": true
+}
+```
+
+- `GraphDataResponse.total_rows` — the graph's true row count, from a
+  `COUNT(*)` query, never the length of the bounded page. **Mandatory**
+  (`DP-11-B`).
+- `GraphDataResponse.rows_truncated` — true exactly when `data` holds fewer
+  rows than `total_rows`.
+- `AggregatedDataResponse.total_rows` — the dashboard-wide true row count.
+- `AggregatedDataResponse.truncated` — true when any graph was bounded.
+
+When the dashboard-wide budget is exhausted, the remaining graphs still appear
+in the response with their counts and an empty `data` list. Which rows come
+back is **deterministic**: the `ORDER BY aggregated_data.id` order is
+preserved, so identical requests return the identical slice. The server does
+**not** aggregate to fit the cap — the row content and its shape are unchanged;
+only the number of rows is bounded. The client renders "Showing N of M" from
+the server's `total_rows`/`rows_truncated` fields (`DP-13-C`), not from any
+client-side count.
+
+---
+
 ## UI Page References
 
 The following frontend pages consume the dashboards API:

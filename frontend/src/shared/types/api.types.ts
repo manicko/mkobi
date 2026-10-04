@@ -181,6 +181,10 @@ export interface AggregatedDataRequest {
 
 export interface AggregatedDataResponse {
   graphs: GraphDataWithConfig[]
+  /** The dashboard-wide true, untruncated row count (server-supplied). */
+  total_rows: number
+  /** True when any graph's rows were bounded by the server caps. */
+  truncated: boolean
 }
 
 export interface AxisConfig {
@@ -205,6 +209,14 @@ export interface GraphDataWithConfig {
   type: GraphType
   name: string
   data: Data[]
+  /**
+   * The graph's true, untruncated row count, supplied by the server. The
+   * "Showing N of M" status line renders from this field — never from a
+   * client-side count of `data`, which would be an invented signal.
+   */
+  total_rows: number
+  /** True exactly when `data` holds fewer rows than `total_rows`. */
+  rows_truncated: boolean
   layout?: ChartLayoutConfig
   config?: {
     x?: string
