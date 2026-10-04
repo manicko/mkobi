@@ -95,6 +95,16 @@ services:
         condition: service_healthy
     # Run migrations once and exit - no restart needed
     restart: "no"
+    # Security: prevent privilege escalation via setuid/setgid binaries. The
+    # migrator runs ``alembic upgrade``, whose write surface is the database, so
+    # it carries the same boundary as app and rq-worker but not ``read_only``:
+    # a read-only filesystem here buys nothing for a job that writes only SQL.
+    security_opt:
+      - no-new-privileges:true
+    # Security: drop all Linux capabilities. ``alembic upgrade`` needs none; a
+    # migrator that needs a capability wants more privilege than its job requires.
+    cap_drop:
+      - ALL
 
   app:
     # Locally-built artefact consumed locally, never pushed to a registry. See
@@ -266,6 +276,24 @@ services:
       - ../alembic:/app/alembic:ro
       - ../alembic.ini:/app/alembic.ini:ro
     restart: unless-stopped
+    # Security: read-only root filesystem. Every path the worker writes is either
+    # the app_data volume (/app/data, shared with app so the uploaded file the
+    # app admits is the file the worker consumes) or /tmp, which is covered by
+    # the tmpfs below. /tmp is required under read_only because Python's
+    # tempfile.gettempdir() probes /tmp and /var/tmp and finds no usable
+    # directory in a read-only rootfs; the size exceeds UPLOAD__MAX_FILE_SIZE_MB
+    # (100 MiB default), the code's own ceiling on a temp copy of the largest
+    # accepted upload.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,size=128m
+    # Security: prevent privilege escalation via setuid/setgid binaries.
+    security_opt:
+      - no-new-privileges:true
+    # Security: drop all Linux capabilities. The worker binds no privileged port
+    # and needs no capability to fork a work-horse and read Redis/db sockets.
+    cap_drop:
+      - ALL
     healthcheck:
       # Observe the worker registry, not the broker: a Redis ping is green even
       # when the worker is dead, wedged or in a startup retry. This checks that a
@@ -277,10 +305,16 @@ services:
         - "/app/.venv/bin/python"
         - "-c"
         - "from mkobi.rq_worker_wrapper import main; main()"
-      interval: 30s
-      timeout: 10s
+      # DP-10-12: worst-case detection = interval * retries + timeout +
+      # start_period. Old (30s/10s/3/40s) = 30*3 + 10 + 40 = 130s. New
+      # (10s/5s/3/60s) = 10*3 + 5 + 60 = 95s wall, i.e. 35s after the 60s grace
+      # period the migrate dependency chain can consume. The period is kept at
+      # 60s so it still covers the slowest real startup; the probe stays
+      # registry-based (proof of a live worker), only the window is retuned.
+      interval: 10s
+      timeout: 5s
       retries: 3
-      start_period: 40s
+      start_period: 60s
     deploy:
       resources:
         limits:

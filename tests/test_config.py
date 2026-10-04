@@ -1713,3 +1713,134 @@ def _function_body(makefile_text: str, function_name: str) -> str:
         if line.rstrip() == "}":
             break
     return "\n".join(body)
+
+
+class TestRuntimeBoundaryAndSupervision:
+    """OPS-014 / DP-10-12: the hardened boundary spans app, worker and migrator.
+
+    ``app`` alone carried ``cap_drop``, ``security_opt`` and ``read_only``.
+    These tests read docker/docker-compose.yml and docker/docker-compose.override.yml
+    directly and pin that ``rq-worker`` and ``migrate`` carry the same capability
+    and privilege-escalation boundary, that ``read_only`` is enabled on the
+    worker (its writes land on the app_data volume and tmpfs /tmp) but *not* on
+    the migrator (whose write surface is the database), that ``app``'s four keys
+    are unchanged, and that the worker healthcheck remains the proof-based
+    registry probe with the retuned DP-10-12 window.
+    """
+
+    @staticmethod
+    def _compose_files() -> dict:
+        from pathlib import Path
+
+        docker_dir = Path(__file__).resolve().parent.parent / "docker"
+        return {
+            "base": docker_dir / "docker-compose.yml",
+            "override": docker_dir / "docker-compose.override.yml",
+        }
+
+    @staticmethod
+    def _service_block(text: str, service: str) -> str:
+        """Return one top-level service block from a compose file's text."""
+        lines = text.splitlines()
+        start = None
+        for index, line in enumerate(lines):
+            if line.rstrip() == f"  {service}:":
+                start = index
+                break
+        assert start is not None, f"{service} service not found"
+        block = [lines[start]]
+        for line in lines[start + 1:]:
+            if line.startswith("  ") and not line.startswith("    ") and line.strip():
+                break
+            block.append(line)
+        return "\n".join(block)
+
+    @staticmethod
+    def _top_level_key(block: str, key: str) -> str | None:
+        """Value text of a service-level ``key:`` (two-space indent) or None.
+
+        ``read_only: true`` and its false form both match; a nested key (four
+        spaces) does not, which matters for ``healthcheck``'s sub-keys.
+        """
+        for line in block.splitlines():
+            if line.startswith(f"    {key}:"):
+                return line.split(":", 1)[1].strip()
+        return None
+
+    def test_rq_worker_and_migrate_carry_the_boundary(self) -> None:
+        """The base file gives both services no-new-privileges and cap_drop ALL.
+
+        The boundary is defined once, in the base file; the dev override inherits
+        it rather than repeating it. The override is checked separately below to
+        ensure it does not relax the inherited posture.
+        """
+        base = self._compose_files()["base"].read_text(encoding="utf-8")
+        for service in ("rq-worker", "migrate"):
+            block = self._service_block(base, service)
+            assert "no-new-privileges:true" in block, f"base:{service}"
+            assert "cap_drop:" in block, f"base:{service}"
+            assert "- ALL" in block, f"base:{service}"
+
+    def test_dev_override_does_not_relax_the_boundary(self) -> None:
+        """The dev override never re-enables privileges or drops the cap_drop.
+
+        A later edit that added ``read_only: false`` to the worker, or replaced
+        ``cap_drop`` with an empty list, would silently widen the boundary in the
+        tier developers actually run. Pinning the absence of those relaxations is
+        the guard.
+        """
+        override = self._compose_files()["override"].read_text(encoding="utf-8")
+        worker = self._service_block(override, "rq-worker")
+        # read_only must not be flipped off in dev.
+        assert self._top_level_key(worker, "read_only") != "false"
+        # cap_drop, if present at all, must still contain ALL.
+        if "cap_drop:" in worker:
+            assert "- ALL" in worker
+
+    def test_app_boundary_is_unchanged(self) -> None:
+        """app keeps read_only true, cap_drop ALL and no-new-privileges in base."""
+        base = self._compose_files()["base"].read_text(encoding="utf-8")
+        block = self._service_block(base, "app")
+        assert self._top_level_key(block, "read_only") == "true"
+        assert "cap_drop:" in block
+        assert "- ALL" in block
+        assert "no-new-privileges:true" in block
+
+    def test_rq_worker_is_read_only_with_tmpfs_in_both_tiers(self) -> None:
+        """The worker is read-only and covers /tmp with a tmpfs in both tiers.
+
+        /tmp is required under read_only because Python's tempfile.gettempdir()
+        finds no usable directory in a read-only rootfs. The app_data volume
+        covers /app/data, so no tmpfs may be placed over tmp_uploads: a tmpfs
+        there would mask the volume and hide the file the app admitted.
+        """
+        for name, compose_path in self._compose_files().items():
+            text = compose_path.read_text(encoding="utf-8")
+            block = self._service_block(text, "rq-worker")
+            assert self._top_level_key(block, "read_only") == "true", name
+            assert "tmpfs:" in block, name
+            assert "/tmp:rw,size=128m" in block, name
+
+    def test_migrate_does_not_declare_read_only(self) -> None:
+        """The migrator writes only SQL, so read_only buys nothing and is absent."""
+        for name, compose_path in self._compose_files().items():
+            text = compose_path.read_text(encoding="utf-8")
+            block = self._service_block(text, "migrate")
+            assert self._top_level_key(block, "read_only") is None, name
+
+    def test_worker_healthcheck_is_registry_probe_with_new_window(self) -> None:
+        """The probe stays proof-based; the DP-10-12 window is the retuned one."""
+        for name, compose_path in self._compose_files().items():
+            text = compose_path.read_text(encoding="utf-8")
+            block = self._service_block(text, "rq-worker")
+            assert "mkobi.rq_worker_wrapper" in block, name
+            assert "Redis(" not in block, name
+            assert "redis-cli" not in block, name
+            assert "disable: true" not in block, name
+            for key, value in (
+                ("interval", "10s"),
+                ("timeout", "5s"),
+                ("retries", "3"),
+                ("start_period", "60s"),
+            ):
+                assert f"{key}: {value}" in block, f"{name}:{key}"
