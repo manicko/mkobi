@@ -17,6 +17,14 @@ related:
 
 # Configuration
 
+## Purpose
+
+This document describes how the application loads configuration: the multi-source
+priority order exposed by `Settings`, the environment-variable contract, Docker
+secrets support, production credential enforcement and the settings singleton. It
+is the reference for adding or changing a setting and for understanding startup
+validation.
+
 ## Overview
 
 The application uses **pydantic-settings** for configuration management with a multi-source priority system. All configuration is loaded into a singleton `Settings` instance via `get_config()`.

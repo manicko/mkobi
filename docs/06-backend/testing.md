@@ -16,6 +16,13 @@ related:
 
 # Testing
 
+## Purpose
+
+This document describes how the mkobi test suite is structured and run: the
+pytest configuration, the `tests/` layout, the shared fixtures in `conftest.py`,
+the test database model and the coverage areas. It is the reference for adding
+tests and for understanding what the fixtures guarantee and what they do not.
+
 ## Overview
 
 The project uses **pytest** as its testing framework with async support via `pytest-asyncio`. Tests cover API endpoints, business logic services, data processing, authentication, configuration, and Pydantic model validation.
