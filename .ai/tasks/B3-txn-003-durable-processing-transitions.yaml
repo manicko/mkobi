@@ -1,0 +1,777 @@
+id: B3-txn-003-durable-processing-transitions
+phase: 03-db-concurrency-remediation
+block: B3
+findings: [TXN-003, C-3]
+status: ready
+depends_on: [B1, B2]
+
+summary: >-
+  Make the worker's processing-log transitions durable by committing the PROCESSING transition
+  before the work begins and the terminal transition after it. Two ordered commits: a short
+  own-session transaction that publishes PROCESSING (so any independent connection observes the
+  job in flight), and the existing main transaction, unchanged in composition, which holds B2's
+  advisory lock and commits aggregates together with the COMPLETED write. Also resolves Tech Lead
+  ruling C-3 by replacing mark_orphaned_uploaded_logs_failed's hard-coded one-minute cutoff with the
+  same configured stale-processing horizon the periodic sweep already uses.
+
+why_this_shape: >-
+  The helper _update_processing_log_status stays non-committing and the boundary moves to the
+  caller. That preserves the three commit.assert_not_called() assertions in tests/test_data_worker.py,
+  which encode a real contract (in SAVEPOINT/test mode the caller owns the transaction). Making the
+  helper commit would be faster to write and would destroy that contract. The PROCESSING write goes
+  through the helper with NO session argument, so it reuses the helper's existing production branch -
+  the same own-session shape 0717b65 established for the FAILED compensation. No new helper is needed
+  and no new session-management pattern is introduced.
+
+  Why PROCESSING must commit BEFORE the lock is acquired, and not after: B2's lock is
+  transaction-scoped (released on commit AND on rollback). Putting the PROCESSING write in its own
+  transaction after the lock would release the lock at that commit and defeat the exclusion.
+  Putting it after the lock inside the main transaction would not be durable at all - the row would
+  still be invisible to every other connection, which is the defect. Committing first is therefore
+  the only correct order, and it also delivers the honest state: a job blocked waiting for the lock
+  reports processing for the whole wait instead of uploaded.
+
+transaction_shape: >-
+  PRODUCTION BRANCH (db_session is None) - exactly TWO ordered commits.
+
+  COMMIT 1 - the processing announcement. A short transaction on its OWN short-lived session,
+  containing exactly one statement: the ProcessingLog UPDATE setting status=PROCESSING,
+  message="Processing started", started_at=now(UTC), error_code=NULL, finished_at=NULL. Obtained by
+  calling _update_processing_log_status with no session argument, so the helper opens it via its
+  existing production branch (async with get_session() as db: async with db.begin(): db.execute(stmt)).
+  That async with closes the session on exit, so the connection is returned to the pool BEFORE the
+  main transaction's session is opened - no dangling session, and no extra simultaneous pool
+  pressure. Placed as the FIRST statement inside the existing try, so a failure to publish the
+  transition is still reported as FAILED by the compensation below it.
+
+  COMMIT 2 - the work plus the terminal transition. The existing main transaction, composition
+  UNCHANGED. First statement inside async with session.begin() remains B2's
+  acquire_dashboard_rebuild_lock(session, dashboard_id, task_id=task_id). Then the body of
+  _run_with_transaction: validate config -> read CSV -> parse -> transform -> aggregate ->
+  _store_aggregates -> temp-file unlink -> COMPLETED UPDATE. Committed when session.begin() exits
+  normally.
+
+  The COMPLETED write STAYS INSIDE the main transaction, immediately after the aggregate write. This
+  is what preserves the invariant "a dashboard never shows completed with aggregates that did not
+  commit". There is no third commit and none is needed: the terminal transition commits at the end
+  of the main transaction, which is after the aggregate write.
+
+  TEST-MODE BRANCH (db_session is not None) - UNCHANGED IN COMMIT COUNT, deliberately. The PROCESSING
+  write is passed session=db_session and stays non-committing inside the caller's SAVEPOINT.
+  A durable PROCESSING commit in test mode would be actively harmful: Session.commit() commits to the
+  root and releases the SAVEPOINT (verified in B1 against SQLAlchemy 2.0.50), so async_db_session's
+  teardown rollback could not undo it and rows would leak across tests. Test mode therefore keeps
+  writing PROCESSING non-committing and the caller's own commit/rollback governs it.
+
+scope:
+
+  update:
+    - path: src/mkobi/workers/data_worker.py
+      symbols:
+        - _process_csv_file_async
+        - _run_with_transaction
+        - mark_orphaned_uploaded_logs_failed
+      change: >-
+        _process_csv_file_async, production branch: insert the PROCESSING transition as the first
+        statement inside the existing try, BEFORE async with get_session() opens the main session,
+        by calling _update_processing_log_status with task_id, status=ProcessingStatus.PROCESSING,
+        message="Processing started", started_at=datetime.now(UTC), error_code=None,
+        finished_at=None and NO session argument. Update the try's comment to name both transactions
+        and to say the first one exists so the row is durable before any work. Do not move the
+        acquire_dashboard_rebuild_lock call: it stays the first statement inside
+        async with session.begin().
+
+        _process_csv_file_async, test-mode branch: insert the same transition as the first statement
+        inside the existing try, but WITH session=db_session so it stays non-committing.
+
+        _run_with_transaction: remove ONLY the PROCESSING transition and its status_update comment;
+        the function becomes the main transaction body. Everything else stays byte-for-byte in place
+        - the config validation and its FAILED write plus ValueError, the CSVLoader read, parse_csv,
+        transform_dataframe, apply_decimal_separator, cast_column_types, apply_column_renames,
+        apply_computed_fields, _validate_processing_config, aggregate_data, _store_aggregates, the
+        success-path temp-file unlink in its try/except OSError, and the COMPLETED transition. The
+        unlink must NOT move out of the transaction body: deleting after the commit would leak the
+        file when the commit fails.
+
+        mark_orphaned_uploaded_logs_failed: add keyword-only timeout_minutes: int | None = None and
+        replace the hard-coded timedelta(minutes=1) with
+        get_config().stale_processing_timeout_minutes when the argument is None. See the C-3 section
+        for the exact rule. Update the docstring and the return type comment to state the single
+        horizon, and fix the log line - it currently interpolates f"(cutoff=1m)" and must report the
+        resolved horizon instead.
+
+      does_not_change:
+        - _update_processing_log_status - UNCHANGED. It must not gain a commit, a rowcount check, or
+          a new parameter. Its test-mode branch must keep doing execute + flush only.
+        - cleanup_stale_processing_logs - UNCHANGED. No signature, predicate, message, or threshold
+          change. Its own timeout_minutes parameter and DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES
+          signature default stay as they are.
+        - _store_aggregates, _map_processing_error_to_code, _validate_processing_config,
+          apply_decimal_separator, cast_column_types, apply_column_renames, apply_computed_fields,
+          aggregate_data, transform_dataframe - UNCHANGED.
+        - the success-path temp-file unlink - UNCHANGED in position (still inside the transaction
+          body, still after _store_aggregates, still before the COMPLETED write, still guarded by
+          try/except OSError).
+        - the failure-compensation block (the except Exception handler that writes FAILED on its own
+          session after the rolled-back transaction has exited, landed by 0717b65) - UNCHANGED. Its
+          try/except ValueError guard around the temp-file unlink must survive verbatim. Do not
+          regress 0717b65.
+        - the inner FAILED write on validation failure inside _run_with_transaction - UNCHANGED.
+          It is still inside the main transaction, so it is still rolled back, and the compensation
+          still writes the surviving FAILED row. Removing it is not this block's work.
+        - process_csv_background, process_csv_background_sync, start_stale_processing_cleanup_task,
+          _sleep_with_lease_renewal - UNCHANGED.
+
+  create:
+    - path: tests/test_processing_logs.py
+      symbols:
+        - TestDurableProcessingTransitions
+      change: >-
+        New DB-backed class. This file is the established home for sweep and transition effects
+        against a real session - it already hosts TestStaleProcessingCleanup and already imports
+        cleanup_stale_processing_logs from mkobi.workers.data_worker. It is NOT concurrently owned
+        by any other phase, which makes it the safe home for the independent-connection probe.
+
+  read_only:
+    - path: src/mkobi/workers/data_worker.py
+      symbols: [_update_processing_log_status, cleanup_stale_processing_logs, _store_aggregates, DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES]
+    - path: src/mkobi/db/session.py
+      symbols: [get_session]
+      note: >-
+        Confirms async with SessionLocal() closes the session on exit, so the PROCESSING transaction's
+        connection is returned to the pool before the main transaction's session is opened. This is
+        the evidence that COMMIT 1 leaves no dangling session.
+    - path: src/mkobi/db/repositories/processing_log_repo.py
+      symbols: [ProcessingLogRepository.create_log]
+      note: >-
+        Sets started_at = datetime.now(UTC) at creation, which is why both sweeps' started_at < cutoff
+        predicates have an input at all. Used by the test to seed committed rows.
+    - path: src/mkobi/app.py
+      symbols: [lifespan]
+      note: >-
+        READ ONLY. Its two lease-guarded call sites of mark_orphaned_uploaded_logs_failed() must keep
+        working unchanged and must keep being called with no arguments - that is why the horizon is
+        resolved inside the function and not passed in. Do not edit app.py.
+    - path: src/mkobi/config.py
+      symbols: [Settings.stale_processing_timeout_minutes, get_config]
+    - path: src/mkobi/models/enums.py
+      symbols: [ProcessingStatus, ErrorCode]
+      note: >-
+        ProcessingStatus.valid_transitions() already permits UPLOADED -> PROCESSING and
+        PROCESSING -> COMPLETED/FAILED. No enum change is needed or wanted.
+    - path: src/mkobi/db/advisory_lock.py
+      symbols: [acquire_dashboard_rebuild_lock, is_lock_timeout_error]
+    - path: src/mkobi/services/data_service.py
+      symbols: [DataService.get_processing_status]
+      note: >-
+        READ ONLY. Produces progress=50 for PROCESSING and progress=0 for FAILED. B3 makes that
+        branch reachable for the first time. Do not edit.
+    - path: tests/test_data_worker.py
+      note: >-
+        READ before editing (see coordination). Home of the three commit.assert_not_called()
+        assertions and of the _store_aggregates tests that use a MagicMock/AsyncMock db_session.
+    - path: tests/test_file_cleanup.py
+      symbols: [TestProcessingFailureReportedOnOwnSession]
+    - path: tests/test_app_lifespan.py
+      note: >-
+        READ ONLY. Patches mark_orphaned_uploaded_logs_failed at five sites and pins boot-only
+        invocation. Must stay green - which it will, because app.py's call sites are unchanged.
+    - path: tests/conftest.py
+      symbols: [async_test_engine, async_session_maker, async_db_session]
+    - path: frontend/src/features/upload/ui/UploadModal.tsx
+      symbols: [FileUploadState, the statusData useEffect]
+      note: >-
+        READ ONLY - documentation phase, not code. Findings recorded in documentation.
+    - path: frontend/src/shared/types/enums.ts
+      symbols: [ProcessingStatus, FileUploadStatus]
+    - path: frontend/src/features/upload/api/uploadApi.ts
+      symbols: [useProcessingStatus]
+
+  delete: []
+
+c3_horizon_change:
+  literal_replaced: >-
+    cutoff = datetime.now(UTC) - timedelta(minutes=1) inside
+    src/mkobi/workers/data_worker.py::mark_orphaned_uploaded_logs_failed.
+  replacement: >-
+    cutoff = datetime.now(UTC) - timedelta(minutes=resolved_horizon), where resolved_horizon is the
+    new keyword-only timeout_minutes parameter when supplied, and
+    get_config().stale_processing_timeout_minutes when it is None.
+  single_source_of_truth: >-
+    Settings.stale_processing_timeout_minutes (env STALE_PROCESSING_TIMEOUT_MINUTES, default 30).
+    This is the exact same setting app.py::lifespan already hands to
+    start_stale_processing_cleanup_task(timeout_minutes=config.stale_processing_timeout_minutes) as
+    cleanup_stale_processing_logs' horizon. After this change there is one number in the system for
+    "this job is stale", read from one setting.
+  why_the_argument_is_optional: >-
+    app.py::lifespan calls mark_orphaned_uploaded_logs_failed() with no arguments at both its
+    lease-guarded boot sites, and tests/test_app_lifespan.py patches that function at five sites and
+    pins boot-only invocation. Resolving the horizon inside the function keeps app.py untouched,
+    keeps those tests green, and adds no second call-site convention. The parameter exists so a test
+    can pin the horizon explicitly without monkeypatching global config.
+  forbidden:
+    - Do NOT read DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES for this function. It is the signature
+      default of cleanup_stale_processing_logs and start_stale_processing_cleanup_task (value 5) and
+      app.py overrides both. It must never become the marker's answer - that would reintroduce a
+      second number, which is the exact failure C-3 exists to remove.
+    - Do NOT add a new settings key, alias, or .env entry. Ruling C-3 authorises replacing the
+      literal with an existing configured horizon, nothing more.
+    - Do NOT change mark_orphaned_uploaded_logs_failed's message text, its predicate (status ==
+      UPLOADED AND started_at < cutoff), its return value, or its lease behaviour. It stays
+      boot-only. Making it periodic is DP-015, phase 05's, under PB-13.
+  precision_the_implementor_must_not_get_wrong: >-
+    The two predicates are DISJOINT by status - the marker selects UPLOADED, the periodic sweep
+    selects PROCESSING - so there is no write-write collision on a single row and no deadlock to
+    avoid. What C-3 removes is a divergence of meaning: two constants declaring one concept, where an
+    operator who widens the 30-minute horizon cannot widen the one that actually decides an orphan.
+    The concrete new hazard B3 itself creates is this: once PROCESSING is durable, a row still
+    reading UPLOADED means only that the job has not been picked up yet. On any worker restart, a
+    one-minute cutoff flips those queued-but-not-started rows to FAILED, and the still-queued job
+    then flips them back to processing and completed - a false regression report for a job that
+    succeeded. Sharing the horizon closes that window. Do not describe the fix in terms of two
+    sweeps racing over one row.
+
+lock_interaction_with_b2:
+  rule: >-
+    The lock stays exactly where B2 put it: the FIRST statement inside the existing
+    async with session.begin() block in _process_csv_file_async's production branch, before
+    _run_with_transaction is called. B3 restructures that block and must carry the lock, not drop it.
+    Do not lift the lock out of the transaction, do not move it before the PROCESSING commit inside
+    the same transaction, and do not touch db/advisory_lock.py.
+  why_before_and_not_after: >-
+    B2's lock is transaction-scoped: pg_advisory_xact_lock is released on commit AND on rollback.
+    A PROCESSING commit after the lock would release the lock at that very commit, so two jobs could
+    hold it at once and the exclusion would be gone. A PROCESSING write after the lock but inside the
+    main transaction would not be durable - the row would remain invisible to every other connection,
+    which is the whole defect. Therefore PROCESSING commits first, in its own transaction, and the
+    lock is taken afterwards at the head of the main transaction.
+  consequences_to_accept:
+    - A job that blocks waiting for the lock now reports status=processing for the whole wait,
+      instead of uploaded. That is the honest state and it is the fix for the complaint B2 recorded
+      (a waiter used to read uploaded for the entire wait because its processing write was inside
+      the blocked transaction). get_processing_status will therefore serve progress=50 for it.
+    - Because the lock is taken after the PROCESSING commit, a waiter that is swept by
+      cleanup_stale_processing_logs while still waiting is a real possibility in principle. It does
+      not happen with the shipped configuration: the lock bound is DATABASE__LOCK_TIMEOUT_MS, default
+      180000 ms (3 minutes), which is far below the 30-minute stale horizon. Preserve that ordering
+      property; do not raise the stale horizon below the lock bound.
+    - B2's validator noted that the transaction-scoped lock_timeout bounds EVERY lock wait in the
+      transaction, not only the advisory one. That is unchanged by B3 and still maps to
+      ErrorCode.PROCESSING_IN_PROGRESS via the first branch of _map_processing_error_to_code.
+    - After a 55P03 lock timeout the main transaction is aborted, so the compensation FAILED write
+      must stay on a fresh session. 0717b65 already does this. Do not change it.
+
+failure_semantics_preserved:
+  - >-
+    Exactly one FAILED row per failed job, written on a fresh session AFTER the rolled-back
+    transaction has exited, with the exception still propagating. This is 0717b65's property and it is
+    asserted by tests/test_file_cleanup.py::TestProcessingFailureReportedOnOwnSession. That class
+    must stay green unmodified; note that it patches _update_processing_log_status itself, so the
+    new early PROCESSING call is captured by the same mock and does not add a FAILED write - the
+    assertion that exactly one FAILED write exists remains true.
+  - >-
+    The sharp edge the implementor must understand and not "fix": a rollback between the new early
+    commit and the terminal commit leaves the aggregates absent, a FAILED row, and the file already
+    gone. The existing compensation only unlinks if file_path.exists(), so it is a no-op and stays
+    safe. Keep it that way - do not make the compensation tolerant of a missing file in any new way,
+    and do not restore the file.
+  - >-
+    Do NOT add a rowcount check to _update_processing_log_status. If no committed row matches the
+    task_id - which TXN-002's producer-side bug can cause - the early PROCESSING transition silently
+    matches zero rows. That detection is DP-001, phase 05's, and is explicitly out of scope here. Its
+    consequence for this block is that the new durable transition can only publish a row that already
+    exists and is committed; B3 makes the worker's transitions durable, it cannot make the row exist.
+
+documentation_impact:
+  - path: docs/03-processing/processing-api.md
+    change: >-
+      Under "Background Processing" / "Task Lifecycle", state that the worker's PROCESSING transition
+      is committed before the pipeline runs and the COMPLETED transition commits with the aggregate
+      write in the main transaction, so processing_logs.status is truthful to an independent reader
+      during the run. Correct the status table's Success row: it names ProcessingStatus.SUCCESS,
+      which does not exist in the enum (the members are STARTED, UPLOADED, PROCESSING, COMPLETED,
+      FAILED). Add the one-line note that GET /upload/status/{task_id} can now genuinely return
+      status="processing" with progress=50 mid-job, which it previously never could.
+  - path: docs/00-overview/data-flow.md
+    change: >-
+      Under "Processing Details", extend the status-tracking bullet to say the processing state is
+      committed before the work and the terminal state after it, so a killed worker's row stays
+      PROCESSING for the periodic sweep to find. LEAVE THE "Transaction safety" bullet EXACTLY AS IT
+      IS - see out_of_scope below.
+  - path: docs/07-frontend/upload-ui.md
+    change: >-
+      Record the renderer finding in the block's report (see below), and correct the "Processing
+      Status Lifecycle" table, which currently lists a `processing` state the upload modal does not
+      render, plus the flow diagram's "On success: { status: \"started\" }" which the endpoint does
+      not return (the real UploadResponse carries status="uploaded"). Do not add a frontend code
+      change; this is documentation only.
+  - path: docs/SPEC.md
+    change: >-
+      NONE. No version row. Neither B1 (2174895) nor B2 (ab76989) added one; the phase close records
+      a single row for the whole phase. This overrides the block section's earlier mention of a row.
+
+  frontend_renderer_finding:
+    verdict: >-
+      The renderer's mapping does NOT cover processing - and the omission is harmless.
+    evidence: >-
+      frontend/src/features/upload/ui/UploadModal.tsx stores the polled status into
+      FileUploadState.processingStatus on every poll, but no render branch ever reads that field;
+      the visible state comes from FileUploadState.status, whose enum
+      (frontend/src/shared/types/enums.ts::FileUploadStatus) has only PENDING, UPLOADING, SUCCESS,
+      ERROR. The mapping reacts to exactly two values: 'failed' -> FileUploadStatus.ERROR, and
+      'completed' -> success toast plus onUploadComplete. The LinearProgress value is
+      FileUploadState.progress, which is the axios upload percentage set to 100 when the upload
+      request returns - statusData.progress is never read anywhere in the frontend, so the new
+      progress: 50 is never displayed.
+    consequence: >-
+      B3's newly observable processing state changes nothing the user sees: the row already reads
+      "Success" with a full green bar from the moment the upload request returns, and stays that way
+      until completed fires the toast. There is no crash, no wrong terminal state, and no new branch -
+      processing is a non-terminal value and useProcessingStatus in
+      frontend/src/features/upload/api/uploadApi.ts simply keeps polling, stopping only on COMPLETED
+      or FAILED. The pre-existing "success shown before completion" display is unchanged by this
+      block and belongs to a documentation correction, not to B3.
+
+required_tests:
+  - id: independent_connection_observes_processing
+    file: tests/test_processing_logs.py
+    class: TestDurableProcessingTransitions
+    name: >-
+      test_processing_transition_is_visible_to_an_independent_connection_while_the_job_is_in_flight
+    intent: >-
+      The audit's own probe, turned into a test. Seed a committed ProcessingLog row (create_log plus
+      an explicit commit on async_db_session), then drive _process_csv_file_async with db_session=None.
+      Inside the job, at a point after the PROCESSING transaction has committed and while the main
+      transaction is open, read the row back from a SEPARATE session obtained from
+      async_session_maker() and assert status == ProcessingStatus.PROCESSING and started_at is not
+      None.
+    technique: >-
+      The probe must run from INSIDE the job's own flow, at a patched seam - patch _store_aggregates
+      (or CSVLoader.load_csv) with a side effect that performs the second-connection read and records
+      what it saw. Drive the worker as a single awaited call; never use asyncio.create_task to race it
+      against the probe. B2's research established that racing two coroutines through SQLAlchemy's
+      greenlet bridge hangs, so the assertion is sequenced into the worker's flow instead of run
+      concurrently with it. At the moment the seam runs, COMMIT 1 has already committed and the main
+      transaction has not yet committed, which is exactly the instant that was previously invisible.
+    asserts: >-
+      The row read from the independent session is PROCESSING, not UPLOADED and not COMPLETED. A
+      regression to the old shape shows up here as UPLOADED.
+    also_assert: >-
+      At that same instant the aggregates have NOT been written, and no second connection holds the
+      row locked by the worker's uncommitted transaction - the early UPDATE committed, so it holds
+      only its own brief lock.
+
+  - id: terminal_transition_commits_after_the_aggregate_write
+    file: tests/test_processing_logs.py
+    class: TestDurableProcessingTransitions
+    name: test_terminal_status_and_aggregates_become_visible_together
+    intent: >-
+      Run a successful job end to end (patch CSVLoader.load_csv to return a valid Polars frame, or
+      reuse the shape tests/test_e2e_upload.py already uses), then from an independent session assert
+      the row is COMPLETED and that the aggregate rows for the dashboard exist.
+    asserts: >-
+      status == COMPLETED, finished_at is not None, and the aggregated rows are present. The pairing
+      is the point: a design that committed COMPLETED separately from the aggregates could pass a
+      "status is completed" assertion while the data was missing.
+
+  - id: mid_job_failure_yields_exactly_one_failed_row_on_a_fresh_session
+    file: tests/test_processing_logs.py
+    class: TestDurableProcessingTransitions
+    name: test_mid_job_failure_leaves_exactly_one_failed_row_written_on_its_own_session
+    intent: >-
+      The 0717b65 property, proven against the real database rather than only against mocks. Drive a
+      production-path job (db_session=None) that fails after the main transaction has begun - patch
+      _store_aggregates to raise - then read processing_logs from an independent session.
+    asserts: >-
+      Exactly one row for that task_id, status == FAILED, a populated message and an error_code from
+      _map_processing_error_to_code, and started_at preserved. The row must have survived the
+      rollback it is reporting, which is only possible because the write happened on its own session
+      after the failed transaction exited. Also assert no aggregates were persisted for the dashboard.
+    companion: >-
+      tests/test_file_cleanup.py::TestProcessingFailureReportedOnOwnSession must stay green
+      unmodified - both its assertions (exactly one FAILED write, and no session argument on it) and
+      its test_failure_before_transaction_begin_reports_failed_not_nameerror case, which proves the
+      handler covers failures that happen before the transaction body and must not fall through to
+      unbound error_msg/error_code.
+
+  - id: helper_stays_non_committing
+    file: tests/test_data_worker.py
+    name: >-
+      test_update_processing_log_status_started, test_update_processing_log_status_completed,
+      test_update_processing_log_status_failed
+    intent: >-
+      The three existing commit.assert_not_called() assertions MUST keep passing UNMODIFIED. Do not
+      edit them, do not relax them, and do not add a commit to _update_processing_log_status to make
+      the new boundary easier to write.
+    asserts: >-
+      mock_session.commit.assert_not_called() in all three, unchanged. Re-read the file immediately
+      before editing it (see coordination).
+
+  - id: no_temp_file_leak_on_a_commit_failure
+    file: tests/test_file_cleanup.py
+    class: a new class beside TestProcessingFailureReportedOnOwnSession
+    name: test_rolled_back_main_transaction_leaves_no_leaked_file_and_no_secondary_failure
+    intent: >-
+      Pin the sharp edge end to end. Patch mkobi.workers.data_worker.get_session with a factory that
+      counts invocations and raises from the commit of the SECOND transaction (the main one), so the
+      early PROCESSING transaction commits and the main transaction's commit fails. Let the
+      compensation run.
+    asserts: >-
+      The exception propagates; the row ends FAILED with exactly one FAILED write; no aggregates were
+      persisted; the temp file was already unlinked inside the transaction body and the
+      compensation's `if file_path.exists()` guard makes its own unlink a no-op, so no second
+      exception is raised; and no temp file is left behind in tmp_path. This is the property the
+      plan protects by keeping the unlink inside the transaction body - a design that moved the
+      unlink after the commit would leak the file here.
+
+  - id: temp_file_still_deleted_on_the_success_path
+    file: tests/test_data_worker.py or tests/test_file_cleanup.py
+    name: a success-path assertion in the new or an adjacent class
+    intent: >-
+      Keep the existing success-path coverage explicit and adjacent to the new boundary tests, since
+      test_e2e_upload.py already asserts it but for the db_session path.
+    asserts: >-
+      After a successful production-path run the temp file no longer exists, and the row is COMPLETED.
+
+  - id: the_two_sweeps_share_one_horizon
+    file: tests/test_data_worker.py
+    name: >-
+      test_mark_orphaned_uploaded_logs_failed_uses_the_configured_stale_processing_horizon
+    intent: >-
+      The C-3 contract. Monkeypatch or override the config so stale_processing_timeout_minutes is a
+      distinctive value, then assert two things.
+    asserts: >-
+      (1) mark_orphaned_uploaded_logs_failed() called with no arguments resolves its cutoff from
+      get_config().stale_processing_timeout_minutes - not from timedelta(minutes=1) and not from
+      DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES. Assert on the compiled statement's bound cutoff value
+      or on the returned count against a planted row whose age separates the two horizons.
+      (2) An explicit timeout_minutes argument overrides the config, so a test can pin the horizon
+      without touching global state.
+    db_backed_counterpart: >-
+      In TestDurableProcessingTransitions, plant a row 2 minutes old (old enough for the retired
+      one-minute literal, far inside any sane horizon) and assert the marker now leaves it UPLOADED;
+      then set that same row to PROCESSING and assert cleanup_stale_processing_logs does sweep it.
+      That pair is the audit's two probes inverted - it fails against the pre-C-3 code and passes
+      after it, and it demonstrates the two sweeps acting on disjoint statuses under one horizon.
+
+  - id: existing_suites_that_must_stay_green
+    file: (no new tests)
+    intent: >-
+      These are regression guards, not new work. Run them and confirm.
+    suites:
+      - tests/test_data_worker.py - all classes, including TestReconcilerLoop,
+        TestReconcilerLeaseOwnership, TestStoreAggregates and TestConcurrentAppendUploads, whose
+        MagicMock/AsyncMock db_session must keep working through the restructured call order.
+      - tests/test_processing_logs.py::TestStaleProcessingCleanup - drives
+        cleanup_stale_processing_logs with an explicit session and must stay green unchanged; B3
+        does not touch that function.
+      - tests/test_file_cleanup.py - the whole file, including the malformed-CSV cleanup tests that
+        pass db_session=mock_session.
+      - tests/test_app_lifespan.py - five mark_orphaned_uploaded_logs_failed patch sites and the
+        boot-only invocation pin. If B3 required editing app.py to pass a horizon, these would be at
+        risk; it does not.
+      - tests/test_e2e_upload.py, tests/test_filter_persistence.py,
+        tests/test_filter_values_consistency.py, tests/test_upload_api.py - all pass
+        db_session=async_db_session and assert the row reaches COMPLETED; the test-mode branch's
+        single non-committing PROCESSING write keeps them meaningful.
+
+architectural_constraints:
+  - >-
+    Layering is unchanged. data_worker.py remains the infrastructure worker; it talks to the database
+    through SQLAlchemy Core UPDATE statements on the ProcessingLog model and through
+    db/repositories/processing_log_repo.py in tests. No repository or service layer is bypassed or
+    newly invented, and no route or Pydantic model changes.
+  - >-
+    _update_processing_log_status MUST remain non-committing. The caller owns every transaction
+    boundary. This is the contract the three commit.assert_not_called() assertions encode.
+  - >-
+    Use SQLAlchemy Core update() constructs with bound parameters. No f-string or %-formatted SQL
+    anywhere, including in tests. No new raw text() SQL is needed by this block.
+  - >-
+    All statuses and codes come from the existing StrEnums - ProcessingStatus.PROCESSING,
+    ProcessingStatus.COMPLETED, ProcessingStatus.FAILED - never string literals. No new enum
+    member, no ErrorCode change, and no models/enums.py or utils/exceptions.py edit.
+  - >-
+    Do not raise HTTPException and do not introduce a new exception type. The only new failure
+    surface is the one B2 already added: a lock timeout still classifies as
+    ErrorCode.PROCESSING_IN_PROGRESS through the first branch of _map_processing_error_to_code.
+    B3 adds no new error path, so B3 adds no new failure that needs classification.
+  - >-
+    Type hints on every signature you touch. mark_orphaned_uploaded_logs_failed gains
+    timeout_minutes: int | None = None and keeps returning int. Docstrings in English, comments in
+    English, logs via logger = logging.getLogger(__name__) with %s lazy formatting - never print(),
+    never an f-string in a logger call.
+  - Polars only. No pandas. tempfile/tempfile_path semantics unchanged - the production branch does
+    not delete the artefact it was handed; phase 06's ART-007 owns that.
+  - >-
+    No Alembic migration. No schema change, no column change, no index. The reconciliation
+    stale_processing_log row that DP-015 wants is phase 05's; do not create it here.
+  - >-
+    If you believe you need a schema change, a new settings key, a frontend code change, or an edit
+    to app.py, db/session.py, db/advisory_lock.py, services/data_service.py or models/enums.py -
+    stop and report it. That is out of scope for this block and the plan says so explicitly.
+
+execution_sequence:
+  - step: 1
+    action: >-
+      Read, in this order: src/mkobi/workers/data_worker.py in full (especially _process_csv_file_async,
+      its nested _run_with_transaction, the failure-compensation block and
+      mark_orphaned_uploaded_logs_failed); src/mkobi/db/advisory_lock.py; tests/test_data_worker.py;
+      tests/test_file_cleanup.py::TestProcessingFailureReportedOnOwnSession; tests/conftest.py's
+      async_session_maker and async_db_session; tests/test_processing_logs.py::TestStaleProcessingCleanup.
+    verify: >-
+      You can state, without re-reading, the current commit count of the production branch, the exact
+      position of the unlink relative to _store_aggregates and the COMPLETED write, and that B2's lock
+      call is the first statement inside session.begin().
+  - step: 2
+    action: >-
+      Move the PROCESSING transition out of _run_with_transaction and into both branches of
+      _process_csv_file_async as the first statement inside the existing try - without a session in
+      the production branch, with session=db_session in the test branch. Remove only the transition
+      and its status_update comment from _run_with_transaction; change nothing else there.
+    verify: >-
+      git diff shows exactly one statement removed from _run_with_transaction and one added to each
+      branch of the caller. The unlink, the validation FAILED write, and the COMPLETED write are
+      untouched.
+  - step: 3
+    action: >-
+      Update the try's comment in the production branch to describe both transactions and why the
+      first one exists, and to state that B2's lock must remain the first statement inside
+      session.begin().
+    verify: >-
+      The comment names the durability reason, not just "transaction".
+  - step: 4
+    action: >-
+      Apply the C-3 change to mark_orphaned_uploaded_logs_failed: add the keyword-only
+      timeout_minutes parameter, resolve None from get_config().stale_processing_timeout_minutes,
+      replace the timedelta(minutes=1) literal, fix the cutoff=1m log line, update the docstring and
+      the return-type comment. Add the get_config import.
+    verify: >-
+      No literal minute-count remains in that function; DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES is
+      not referenced by it; app.py is unmodified; both its call sites still call it with no arguments.
+  - step: 5
+    action: >-
+      Run the gates on the production file before writing any test: ruff and mypy.
+    verify: Both clean.
+  - step: 6
+    action: >-
+      Write tests/test_processing_logs.py::TestDurableProcessingTransitions - the independent-
+      connection probe first, then the terminal-transition pairing, then the one-FAILED-row case.
+      Use the single-awaited-call-with-an-in-job-probe technique; no create_task race.
+    verify: >-
+      The independent-connection probe passes, and you confirm it FAILS when you temporarily restore
+      the old in-transaction PROCESSING write. A test that passes against the pre-fix shape is not
+      evidence - prove it discriminates.
+  - step: 7
+    action: >-
+      Add the horizon tests to tests/test_data_worker.py (config-derived cutoff, explicit override,
+      and the db-backed disjoint-status pair). Re-read the file immediately before editing it.
+    verify: >-
+      The three commit.assert_not_called() assertions are still present and unmodified - diff them.
+  - step: 8
+    action: >-
+      Add the commit-failure file test to tests/test_file_cleanup.py.
+    verify: >-
+      It passes, and you confirm it discriminates by checking it fails if the unlink is moved after
+      the commit.
+  - step: 9
+    action: >-
+      Run the affected suites, then the full suite, then all gates.
+    verify: >-
+      No new failure beyond the known pre-existing set (10 failed / 1088 passed as measured by B2's
+      validator). Any NEW failure is this block's.
+  - step: 10
+    action: >-
+      Update the three documentation files. Report the frontend renderer finding verbatim - the
+      mapping does not cover processing, processingStatus is stored but never rendered,
+      statusData.progress is never read, and therefore progress: 50 is never displayed; the visible
+      state is unchanged and no frontend code change is required or in scope.
+    verify: >-
+      docs/00-overview/data-flow.md's "Transaction safety" bullet is byte-identical to before.
+  - step: 11
+    action: >-
+      Write the block report. Record the transaction shape, the two-commit proof, the C-3 resolution
+      and the exact single source of truth, the lock-ordering argument and the
+      bound-below-horizon property, the coordinator flags below, and an explicit statement that the
+      first time cleanup_stale_processing_logs fires on a genuinely stuck worker it will produce
+      failed rows the system has never produced - that is the intent, not a regression.
+    verify: >-
+      Every claim is backed by a command you actually ran.
+
+risk_gates:
+  - risk: >-
+      HIGH - implementation. The transaction is shared with the aggregate write; a boundary placed
+      one statement wrong either publishes a half-built state or loses the failure report.
+    gate: >-
+      If the PROCESSING transition is not independently observable from a second connection at a
+      point where the main transaction is open, the block has not achieved its purpose - do not
+      proceed to the docs step. That is asserted by the first required test and must be shown to
+      discriminate.
+  - risk: >-
+      HIGH - rollout. cleanup_stale_processing_logs becomes live for the first time: a genuinely
+      stuck worker will now produce failed rows the system has never produced, and it will read as a
+      regression the first time it fires.
+    gate: >-
+      Say so in the report, with the horizon that governs it. This is intended behaviour and must
+      not be "fixed" by suppressing the sweep.
+  - risk: >-
+      HIGH - regression against TOPO-001 and TOPO-005 (phase 01) and against 0717b65. Restructuring
+      the block that owns the own-session FAILED report can silently regress it.
+    gate: >-
+      tests/test_file_cleanup.py::TestProcessingFailureReportedOnOwnSession must pass unmodified,
+      including test_failure_before_transaction_begin_reports_failed_not_nameerror. If it needs
+      editing, the design is wrong - revert and rethink rather than adjusting the test.
+  - risk: >-
+      MEDIUM - coordination. tests/test_data_worker.py is shared, and phase 01 work touched it
+      (cea2d06).
+    gate: >-
+      Re-read the file immediately before editing. Add only new test classes/functions; do not
+      restructure or rename existing ones, and do not revert anything you did not write.
+  - risk: >-
+      MEDIUM - concurrency semantics. Taking the lock before the PROCESSING commit would silently
+      destroy B2's exclusion, because a transaction-scoped lock is released by the very commit that
+      would publish the status.
+    gate: >-
+      grep the diff and confirm acquire_dashboard_rebuild_lock is still the first statement inside
+      session.begin(), and that db/advisory_lock.py is untouched.
+  - risk: >-
+      LOW - perception. GET /api/v1/upload/status/{task_id} starts returning status=processing with
+      progress=50, which no client has ever observed.
+    gate: >-
+      No code change. Record the renderer finding in the report and correct the documentation only.
+
+flags_for_coordinator:
+  - >-
+      TXN-002 -> DP-001 (phase 05, PB-1). Not fixed here. Its consequence for B3 is explicit: with no
+      rowcount check, the early PROCESSING UPDATE can match zero rows when the producer has not
+      committed, so B3 makes transitions durable but cannot make the row exist. Record it in the
+      block report; do not add the check.
+  - >-
+      DP-016 (phase 05, PB-14) is hard-blocked on B3 and restructures the same session.begin(). It must
+      preserve both the success-path unlink inside the transaction body and the own-session FAILED
+      compensation. Record the resulting transaction shape in the block report so PB-14 can design
+      against it.
+  - >-
+      DP-015 (phase 05, PB-13) must not re-apply the C-3 change. PB-13 owns placement and config key
+      only. The coordination ledger in the plan carries this.
+  - >-
+      C-2 (TXN-004 -> DP-004, phase 05) is a notification, not a gate: B3 proceeded without waiting
+      for the phase 05 status-contract confirmation. Record that it is still outstanding.
+
+out_of_scope:
+  - >-
+    TXN-002 -> DP-001 and the false "proper transaction atomicity" comment at
+    src/mkobi/services/file_processing.py. Not this block's, and the file is not edited here.
+  - TXN-004 -> DP-004 (an overwrite matching no graph dimension wiping filter values). Phase 05's.
+  - >-
+    The rest of DP-015: making mark_orphaned_uploaded_logs_failed periodic, its placement in the
+    lease-guarded loop, the stale_processing_log reconciliation table and its settings keys. B3
+    touches only the one-minute literal, under C-3.
+  - B1 and B2 territory. api/deps.py, db/session.py, api/routes/admin.py, services/user_service.py,
+    interfaces/service_interfaces.py, db/repositories/user_repo.py, src/mkobi/db/advisory_lock.py,
+    src/mkobi/config.py's lock keys, and the B2 code comments warning against lifting the lock out of
+    the block. Read B2's lock, do not edit it.
+  - B7 territory - deleting the artefact the production worker was handed.
+  - >-
+    docs/06-backend/architecture.md's "Stale Processing Log Cleanup" section (both paragraphs,
+    including the "default: 5 minutes" claim) is B10's, and so is the stale-processing line there.
+    Do not touch that file.
+  - >-
+    Any docs/ file other than the three named in documentation_impact. In particular
+    docs/09-database/schema-processing.md and docs/06-backend/configuration.md.
+  - >-
+    docs/00-overview/data-flow.md's "Transaction safety" bullet - "File move to final path occurs after
+    DB commit to prevent orphan files" - is FALSE today (the move happens before the commit) and is
+    TXN-002/DP-001's defect. B3 edits a neighbouring bullet in that file and must leave this one
+    byte-identical; report it for phase 05 instead.
+  - >-
+    Any frontend/ source change. The renderer gap is a documentation matter, reported not fixed.
+  - >-
+    The validation defects VAL-03-001 and VAL-03-002 (a duplicated BEGIN in the audit probe; "two
+    transactions" where the code has one). Do not edit any audit corpus file.
+  - >-
+    Cleaning up the existing multi-line ternary in DataService.get_processing_status. B3 makes that
+    expression reachable with value 50 for the first time; reformatting it is a cosmetic edit in
+    another block's file and is not this block's.
+
+risks:
+  - id: R-03-1
+    probability: medium
+    impact: high
+    description: >-
+      Placing the boundary wrongly publishes a half-built state - a processing row whose aggregates
+      never arrive, or aggregates committed with the status still saying processing.
+    mitigation: >-
+      Two commits only, with COMPLETED kept inside the main transaction next to the aggregate write;
+      the independent-connection probe and the terminal-pairing test both assert the pair.
+  - id: R-03-2
+    probability: low
+    impact: high
+    description: >-
+      Moving the PROCESSING write into a durable commit regresses TOPO-001 by losing the own-session
+      FAILED report that 0717b65 established.
+    mitigation: >-
+      The compensation block is untouched; TestProcessingFailureReportedOnOwnSession must pass
+      unmodified; the new DB-backed test asserts exactly one FAILED row that survived its own
+      rollback.
+  - id: R-03-3
+    probability: medium
+    impact: medium
+    description: >-
+      A durable PROCESSING commit in test mode would break fixture isolation, because
+      Session.commit() releases the SAVEPOINT and async_db_session's teardown rollback cannot undo it.
+    mitigation: >-
+      The test-mode branch keeps session=db_session and stays non-committing. Pin this in the block
+      report so a later block does not "fix" it.
+  - id: R-03-4
+    probability: low
+    impact: medium
+    description: >-
+      Widening the orphan horizon from one minute to the configured 30 leaves a genuinely dead
+      UPLOADED row looking healthy for up to 30 minutes after a crash.
+    mitigation: >-
+      This is the ruling's intent and it is bounded: the row is repaired at the next process boot by
+      the marker, which is why the boot-time pass exists. Record it in the report rather than
+      compensating with a second number.
+  - id: R-03-5
+    probability: low
+    impact: low
+    description: >-
+      Editing tests/test_data_worker.py collides with another phase's concurrent work there.
+    mitigation: >-
+      Re-read immediately before editing, add only, never revert, and diff the three
+      commit.assert_not_called() assertions before and after.
+
+handoff_notes:
+  - >-
+    PB-14 (DP-016, phase 05) is unblocked by this block. It owns the success-path unlink and the two
+    except Exception handlers in _process_csv_file_async. After B3 the production branch's shape is:
+    one early own-session PROCESSING transaction, then the lock-headed main transaction. It must
+    preserve that shape and both 0717b65 properties.
+  - >-
+    PB-13 (DP-015, phase 05) must not touch the horizon literal and must not re-apply the C-3 change.
+    It may change placement and add its own config key; it owns neither this number's source nor the
+    one-minute default, both of which B3 has retired.
+  - >-
+    Phase 05's C-2 status-contract confirmation is still outstanding. B3 did not wait for it.
+  - >-
+    Nothing in this block changes the public API contract's shape. GET /api/v1/upload/status/{task_id}
+    gains a reachable branch, not a new field.
+
+references:
+  plan: .ai/plans/03-db-concurrency-remediation.md
+  report: .ai/audit/99-validation/03-db-concurrency-validated-findings.md
+  prior_tasks:
+    - .ai/tasks/B1-txn-001-transaction-ownership.yaml
+    - .ai/tasks/B2-txn-005-rebuild-exclusion.yaml
+  landed_commits:
+    - "2174895 (B1, user write path)"
+    - "cea2d06 (B1 follow-up)"
+    - "ab76989 (B2, advisory lock)"
+    - "863b81b (B2 follow-up)"
+    - "0717b65 (phase 01, own-session FAILED compensation - must not regress)"
+  cross_phase_plans:
+    - .ai/plans/05-data-pipeline-remediation-execution.md
+    - .ai/plans/06-file-artifacts-remediation-execution.md
+  coordination_ledger: >-
+    .ai/plans/03-db-concurrency-remediation.md, "Cross-phase coordination items", row C-3.

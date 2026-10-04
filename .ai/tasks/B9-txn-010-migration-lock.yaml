@@ -1,0 +1,964 @@
+id: task_b9_txn_010_migration_lock
+
+title: >
+  B9 / TXN-010 lock half + TXN-011 — the Alembic migration lock binds its key as a parameter,
+  retries a bounded number of times, and refuses to migrate when the lock is lost
+
+status: pending
+priority: medium
+depends_on: []
+
+source_reference: C:\py_dev\mkobi\.ai\plans\03-db-concurrency-remediation.md
+source_section: B9 — Fix the Alembic advisory lock's shape (TXN-010 lock half + TXN-011)
+source_blocks:
+  - "B9 — Fix the Alembic advisory lock's shape (TXN-010 lock half + TXN-011)"
+  - "B9 design ruling (Planner) — settled 2026-10-02"
+  - "Correction 1 — `alembic/env.py` does not manipulate `sys.path`, and it already imports the package"
+  - "Ruling R-B9 — FAIL CLOSED on a refused lock"
+  - "Ruling R-B9-shape — the retry shape (no further choice)"
+  - "Ruling R-B9-helper — extract the retry loop; it is the only way to test any of this"
+  - "Ruling R-B9-unlock — one unlock, in one `finally`, entered only after acquisition"
+
+
+description: >
+  One code region, two findings. `alembic/env.py::run_async_migrations` builds its advisory-lock calls as
+  `text(f"SELECT pg_advisory_lock({MIGRATION_ADVISORY_LOCK_KEY})")` — a direct violation of the project's
+  no-f-string-SQL rule that `ruff` cannot catch, in a file that both quality gates now name individually
+  (`8178610`, `7e37aa2`). The same call uses the **blocking** form with no `lock_timeout`, so a blocked process
+  waits as long as the holder's migration takes and **nothing logs the wait**. Its docstring claims the lock
+  prevents concurrent migrations and never says what it does **not** cover — and it covers nothing
+  `DatabaseStarter.startup` mutates *after* `alembic upgrade head` returns: the admin user, the development
+  seeders, orphan temp-file cleanup, old-log cleanup, and test-database recreation.
+
+  **TXN-011's election half is already shipped** (`4a5db54`): `core/reconciler_lease.py` and the lease-guarded
+  loop in `start_stale_processing_cleanup_task`, documented in `docs/06-backend/architecture.md`. **Do not rebuild
+  it, do not re-elect a sweeper, do not add a key for the sweep.** The remaining scope is `alembic/env.py` plus the
+  one helper module ruled below.
+
+  **The design decision is the work.** The plan's open point — fail closed, or warn and proceed — is **decided:
+  fail closed.** `run_async_migrations` raises `RuntimeError` when every attempt at `pg_try_advisory_lock` is
+  refused; the process exits non-zero, and because `app`/`test-app` gate on `service_completed_successfully`, the
+  deployment stops and an operator reads the log. Retry shape: **30 attempts, 10.0 s fixed interval, no backoff**
+  (~4 m 50 s of waiting). Full rationale and cost table in the plan's `Ruling R-B9`.
+
+  Scope: one new module (`src/mkobi/db/migration_lock.py`), one rewritten function body plus docstring in
+  `alembic/env.py`, one new test file, three documentation edits. Nothing else.
+
+
+goals:
+  - >-
+    Remove the f-string from every statement in `alembic/env.py` that touches the lock: the key is bound as a
+    `:lock_key` parameter on both the acquire and the release, so the project's no-f-string-SQL rule holds in the
+    one file `ruff` cannot check.
+  - >-
+    Replace the unbounded blocking `pg_advisory_lock` with `pg_try_advisory_lock` behind a **bounded, logged** retry:
+    30 attempts at 10.0 s, no backoff, one warning per refusal that will be retried and one final warning carrying
+    the operator's next action.
+  - >-
+    **Fail closed.** A permanently refused lock must stop the migration, not warn and continue. The one mechanism
+    of mutual exclusion the system has must not be reduced to a log line.
+  - >-
+    Say what the lock **does not cover** — in the `run_async_migrations` docstring and in
+    `docs/06-backend/architecture.md`'s Alembic step — so no reader infers that `DatabaseStarter.startup`'s
+    post-migration mutations are protected.
+  - >-
+    Guarantee the release on **every** path that acquired the lock, with **one** unlock statement, and never issue
+    an unlock for a lock this session never took.
+  - >-
+    Make the refusal path testable without Alembic and without a database, by extracting the retry loop into one
+    small importable module that holds **three constants and one coroutine** and nothing else.
+
+
+extra_context: |
+  ## Correction 1 — `env.py` does not manipulate `sys.path`; it already imports the package
+
+  The hand-off premise that `alembic/env.py` "manipulates `sys.path` itself" is **false**. The file contains no
+  `sys.path` statement; `alembic.ini`'s `prepend_sys_path = .` is what puts the project on the path.
+
+  This matters for exactly one decision — whether importing a `src/mkobi/**` helper from `env.py` is safe — and the
+  answer is unaffected. `env.py` already performs `from mkobi.db.models import …` and `from mkobi.config import
+  get_config`, both of which pull in the `mkobi.db` package. A new `from mkobi.db.migration_lock import …` adds no
+  import edge that does not already exist and introduces no Alembic-specific import into a module that must stay
+  runnable by Alembic alone.
+
+  **The helper lives in the package; `env.py` keeps only SQL and control flow.** Do not add a `sys.path` fixup to
+  `env.py`, and do not make the helper import anything from `alembic`.
+
+  ## Ruling R-B9 — fail closed, and why warn-and-proceed loses
+
+  **Decision: refuse to migrate.** `run_async_migrations` raises `RuntimeError`; the process exits non-zero; the
+  `service_completed_successfully` gate stops `app` and `test-app`.
+
+  | | Shipped topology | Topology the compose files do not cover |
+  | - | - | - |
+  | Contenders | **one** `migrate` service per stack; `app`, `rq-worker` and `test-app` gate on `service_completed_successfully` | N replicas (or N host processes) each running `alembic upgrade head` |
+  | Fail closed | **unreachable** — nothing else takes the key, so attempt 1 succeeds and the cost is zero | the waiter queues, then fails the deployment instead of corrupting the schema |
+  | Warn and proceed | unreachable | two `upgrade head` runs interleave DDL on one schema and race the single-row `alembic_version` upsert |
+
+  Three reasons, in order of weight:
+
+  1. **The lock's practical effect is confined to exactly the case where proceeding is most dangerous.** The shipped
+     tiers already serialise migrations through Compose, so the try-lock earns nothing there. Its entire value is in
+     the uncovered topology — and warn-and-proceed would leave the system with **zero** exclusion, since TXN-011's
+     report established this is the only exclusion primitive in the tree.
+  2. **Fail closed is the only option whose failure mode is visible.** Non-zero exit → the deployment stops → an
+     operator reads the log. Warn-and-proceed's failure mode is silent schema divergence discovered weeks later.
+  3. **The real cost of fail closed — a slow holder — is paid by the retry window, not by weakening the refusal.**
+     The common race (holder finishes; schema already at `head`; the second `upgrade head` is then a no-op) resolves
+     inside the window and becomes a clean sequential run. The residual case is a holder that outlives the window,
+     which is a deployment that genuinely should stop and be looked at.
+
+  **Rejected — warn and proceed.** **Rejected — fail closed with no retry**: one slow migration would then fail every
+  replica that started alongside it.
+
+  Note the exception type. `RuntimeError`, **not** `AppException`: `AppException` + `ErrorCode` is the *API* layer's
+  RFC 7807 mechanism, and Alembic has no HTTP response — it has a process exit code. Do not add an `ErrorCode`
+  member, do not import `utils.exceptions` into `alembic/env.py` or into the helper.
+
+  ## Ruling R-B9-shape — the retry shape (no further choice)
+
+  - **30 attempts**, **10.0 s** fixed interval, **no backoff** — `MIGRATION_LOCK_MAX_ATTEMPTS = 30`,
+    `MIGRATION_LOCK_RETRY_INTERVAL_SECONDS = 10.0`. Total window `(30 - 1) × 10 s = 290 s` (~4 m 50 s).
+  - **Why 30 × 10 s.** Long enough to queue behind a normal or slow migration that includes a data backfill, short
+    enough that a genuinely stuck holder fails the deployment inside the time an operator waits before reading logs.
+    `DATABASE__LOCK_TIMEOUT_MS` (default 180 000) is **not** reused: that value bounds one rebuild transaction, and
+    borrowing it for a schema migration gives one number two unrelated meanings.
+  - **Why no backoff.** One peer holds the lock and releases it when it finishes. There is no thundering herd, and
+    the contender count in an uncovered topology is single-digit. Exponential backoff would require a cap constant,
+    a second constant and a wider window, to serve a case that does not exist here.
+  - **The interval is a `float`** (`10.0`), not an `int`, so a test can pass `0.0` and the suite stays fast.
+
+  ## The log lines — exactly three kinds, and the reason for the split
+
+  **`alembic.ini` sets `[logger_root] level = WARNING`.** The helper's logger is `logging.getLogger(__name__)` →
+  `mkobi.db.migration_lock` → effective level `WARNING`. So an `info` emitted from the helper is **silently dropped**
+  in a real migration run. (`env.py`'s own `alembic.env` logger *is* configured at `INFO` by `alembic.ini`.)
+
+  **Therefore: no `info` inside the helper.** Every line the helper emits is a `warning` and is always visible.
+
+  1. **Per refusal that will be retried** — one line, immediately on the refusal, naming the key, `attempt N/max`,
+     and the interval. This is what closes the finding's "nothing logs the wait": the **first** refusal is logged at
+     once, not the last.
+  2. **One final refusal**, after the last attempt, naming the key, the attempt count, the total seconds waited, and
+     **the operator's next action inside the message** — wait for the other migration to finish and re-run, or stop
+     it if it is stuck. This is the "agreed next action" the test asserts.
+  3. **One `info` in `env.py`, on `alembic.env`, after a successful acquisition.** Not on refusal — the helper's
+     final warning already says it, and repeating it would put two lines in the operator's face.
+
+  There is **no** log line between the refusal and the retry sleep other than #1, and **no** `info` on the
+  successful acquisition inside the helper.
+
+  ## Ruling R-B9-helper — extract the retry loop; it is the only way to test any of this
+
+  `tests/` never imports `alembic/env.py` — importing it would execute Alembic's module-level dispatch
+  (`if context.is_offline_mode(): … else: run_migrations_online()`) with no Alembic context, which is why nothing in
+  the suite touches that file today. And a test that shells out to run a real migration cannot exercise a **refused**
+  lock without a second process holding it.
+
+  So the retry loop is extracted into **`src/mkobi/db/migration_lock.py`** and driven with a stub attempt callable —
+  no database, no Alembic, milliseconds.
+
+  **Rejected — leave the loop inline in `env.py`.** The block's only testable assertion would then be the absence of
+  a string in a file: it proves the f-string is gone and says nothing about the refusal behaviour, the attempt count
+  or the operator message.
+
+  **Rejected — a test that shells out and runs a real migration.** It proves the success path (the one that already
+  worked), it is slow, and it **cannot produce a refusal at all** — so it could never test the one thing this block
+  changes.
+
+  **Rejected — a DB-backed two-session test** (hold the key from one session, retry from another). It needs a real
+  second backend, real sleeps, and it tests the loop through the network. The seam is the attempt callable; test the
+  loop there.
+
+  **Do not let the extraction grow.** The module is **three constants and one `async def`**. Explicitly rejected:
+  a lock class, a strategy/protocol abstraction, a callback *interface*, configurable attempts/interval through
+  `config.py`, an `ErrorCode` member, a custom exception type, and any `StrEnum` for the retry policy. The policy
+  numbers are plain module constants beside `MIGRATION_ADVISORY_LOCK_KEY` — the same shape as
+  `db/starter.py`'s `STARTER_POOL_*` block and `db/advisory_lock.py`'s `REBUILD_LOCK_NAMESPACE`.
+
+  ### The signature (use this shape)
+
+      async def retry_migration_lock_acquisition(
+          try_acquire: Callable[[], Awaitable[bool]],
+          *,
+          max_attempts: int = MIGRATION_LOCK_MAX_ATTEMPTS,
+          interval_seconds: float = MIGRATION_LOCK_RETRY_INTERVAL_SECONDS,
+      ) -> bool:
+
+  `try_acquire` performs **one** non-blocking attempt and returns whether it got the lock. The coroutine returns
+  `True` on success and `False` when every attempt was refused, and **never raises for a refusal** — the caller
+  decides what a refusal means. `max_attempts` and `interval_seconds` are keyword-only with the module constants as
+  defaults purely so a test can shorten them; production always uses the defaults.
+
+  ### `MIGRATION_ADVISORY_LOCK_KEY` moves here
+
+  It is currently a module constant of `alembic/env.py`. It **moves** to `mkobi.db.migration_lock.py`, next to the
+  policy that guards it, so the key and the retry shape live together and `42` is defined **once**. `env.py`
+  imports it and keeps using the name. **Do not** leave a second definition behind and **do not** inline the literal
+  `42` at either SQL site — that would reintroduce the same "key is a magic number duplicated in the file" defect
+  this block removes.
+
+  ## Ruling R-B9-unlock — one unlock, in one `finally`, entered only after acquisition
+
+  **What the current code does, read it before changing it:** `run_async_migrations` unlocks **twice** on the
+  failure path. The inner `finally` (around `run_sync(do_run_migrations)`) releases the lock and commits; then the
+  outer `except Exception` releases it a **second** time and commits, under a bare `except Exception: pass`. The
+  second release is dead in the normal case, because the `finally` always runs first.
+
+  **The new shape has one unlock**, and its placement is the guarantee:
+
+  - the refusal `RuntimeError` is raised **before** the `try`/`finally` is entered, so a refusal never issues an
+    unlock for a lock this session never took (which would return `false` and be meaningless);
+  - the `finally` wraps **only** `connection.run_sync(do_run_migrations)`, so it runs on success and on every
+    migration failure, and those are the only two paths that reach it;
+  - the unlock's own handler **logs and swallows** rather than `pass`, because an exception raised inside a `finally`
+    **replaces** the migration's own exception — and here the swallow is provably safe:
+    `pg_try_advisory_lock` is **session-scoped**, so the lock cannot outlive the `async with connectable.connect()`
+    block that closes the connection immediately afterwards. Log it at `warning` with the exception interpolated;
+    `exc_info=True` would print a traceback for a non-event.
+
+  **Recorded, not this block's:** `await connectable.dispose()` sits after the `async with`, so any failure skips it.
+  That is identical to HEAD's behaviour on every failure today, in a one-shot process that is about to exit. **Do
+  not restructure it into a `try`/`finally` here** — it is a separate observation for the commit body.
+
+  ## What the lock does NOT cover — the exact list for the docstring
+
+  From `src/mkobi/db/starter.py::DatabaseStarter.startup`, everything that runs **after** `_apply_migrations`
+  returns is outside the lock. Name these in the `run_async_migrations` docstring:
+
+  - `ensure_admin_user()` — the admin user upsert;
+  - `run_dev_seeders()` — the development seeders;
+  - `cleanup_stale_temp_files()` — orphan temp-file cleanup;
+  - `cleanup_old_logs()` — the retention-based `DELETE` on `processing_logs`;
+  - `recreate_test_database()` — test-database drop/create and its second `_apply_migrations` call.
+
+  Each of those is idempotent today, which is why no exclusion is needed *yet*; the docstring must say the lock does
+  not cover them, not imply they are safe by design. Also state that the lock is **session-scoped** (released when
+  the connection closes or the backend exits) and that it guards the **migration run only**.
+
+  ## The quality gates must keep naming this file individually
+
+  `Makefile.ps1`'s `lint` and `format` targets run `ruff check [--fix] src/ tests/ alembic/env.py`, and `typecheck`
+  runs `mypy src/ alembic/env.py`. These are load-bearing, because **`pyproject.toml` excludes `alembic/` from both
+  tools** (`[tool.mypy] exclude = ["alembic/"]`, and ruff's global `exclude` list); naming the file on the command
+  line is what pulls it back in.
+
+  **Do not widen or narrow the gate.** Do not remove `alembic/` from either `exclude`, do not add
+  `alembic/env.py` to `src/`-style globs, and do not edit `Makefile.ps1`. The gates stay exactly as they are, which
+  is why the file is under gate at all.
+
+  ## Documentation — the shape established by B7 and B8
+
+  - `docs/06-backend/architecture.md` §"Step 3: Alembic Migrations" — add the lock's actual scope: the
+    try-lock with a bounded retry, **and what it does not cover**. Do not touch §"Step 4: Admin User Creation",
+    §"Stale Processing Log Cleanup" (the shipped lease, TXN-011's other half) or §"Connection-Pool Budget" —
+    B7 and B10 own those.
+  - `docs/10-deployment/deployment.md` §"Migration advisory lock" — it currently describes the **blocking** form
+    (`pg_advisory_lock(42)`) and **misattributes** the lock to `_apply_migrations()`; the lock is taken in
+    `alembic/env.py`. Correct both, state the retry shape and the refusal.
+  - `docs/SPEC.md` — **one new version row `3.16`**, following the established shape: `| 3.16 | 2026-10-02 |
+    Database concurrency remediation, continuation (plan: \`.ai/plans/03-db-concurrency-remediation.md`). … |`, with
+    bolded lead-ins per change. Rows `3.14` (B7) and `3.15` (B8) stay byte-identical.
+
+
+files:
+  - path: src/mkobi/db/migration_lock.py
+    change: add
+    targets:
+      - type: module
+        name: mkobi.db.migration_lock
+    instructions: |
+      **New module. Three constants and one coroutine — nothing else.**
+
+      Follow the shipped sibling `src/mkobi/db/advisory_lock.py` exactly in shape, because it is the house style
+      for this kind of decision: a module docstring that states what the mechanism is, why, and the **rejected
+      alternatives one clause each**; then `logger = logging.getLogger(__name__)`; then module constants; then typed
+      public functions with Google-style docstrings (`Args:` / `Returns:` / `Note:`).
+
+      Contents:
+
+      1. **Module docstring.** State: the lock is `pg_try_advisory_lock` (session-scoped) behind a bounded retry;
+         the bound is 30 attempts at 10.0 s; **a permanently refused lock refuses to migrate**; and the rejected
+         alternatives, one clause each —
+         `pg_advisory_lock` (the form this replaces: an unbounded, unlogged wait),
+         `lock_timeout` (bounds every lock wait in the session, not only this one, and a migration legitimately
+         exceeds a rebuild's bound),
+         exponential backoff (one holder, no herd; a wider window and two more constants for a case that does not
+         exist),
+         warn-and-proceed (leaves the system with no exclusion at all in the only topology that needs one),
+         `pg_advisory_xact_lock` (transaction-scoped; Alembic's own per-migration transactions would release it
+         between revisions, so it would not exclude the run).
+         Note that `db/advisory_lock.py` owns the rebuild exclusion and that the two key spaces are kept apart by
+         the derivation namespace there — do not restate the rebuild key derivation here.
+
+      2. **`MIGRATION_ADVISORY_LOCK_KEY = 42`** — moved verbatim from `alembic/env.py`. Add a short comment saying
+         it is the shared, deliberately-fixed key for the migration run and that the value is unchanged.
+
+      3. **`MIGRATION_LOCK_MAX_ATTEMPTS = 30`** and **`MIGRATION_LOCK_RETRY_INTERVAL_SECONDS = 10.0`** — with a
+         one-line comment giving the resulting window (≈4 m 50 s) and why `DATABASE__LOCK_TIMEOUT_MS` is not reused
+         here.
+
+      4. **`async def retry_migration_lock_acquisition(try_acquire, *, max_attempts=…, interval_seconds=…) -> bool`**
+         — the signature above. The body is a plain loop; it must be obviously correct at a glance:
+
+             for attempt in range(1, max_attempts + 1):
+                 if await try_acquire():
+                     return True
+                 if attempt < max_attempts:
+                     logger.warning(<retry line: key, attempt, max_attempts, interval_seconds>)
+                     await asyncio.sleep(interval_seconds)
+             logger.warning(<final line: key, max_attempts, total waited, operator next action>)
+             return False
+
+         Required properties, each of which the tests pin:
+         - **no `sleep` after the last attempt** (so `max_attempts=1` yields exactly one attempt, zero sleeps, and
+           exactly one warning — the final one);
+         - **no trailing `sleep` after a success**;
+         - `try_acquire` is called **at most** `max_attempts` times;
+         - the final warning is emitted **once**, after the loop, and never when the lock was acquired;
+         - the total-seconds figure in the final warning is `interval_seconds * (max_attempts - 1)`, so it is `0`
+           when `max_attempts` is `1`;
+         - the coroutine **never raises for a refusal** and returns `bool`.
+
+         **No `info`, `debug` or `error` call in this module** — see the log-level ruling above. Only the two
+         `warning` calls exist.
+
+      **Imports allowed:** `asyncio`, `logging`, `typing.Awaitable`, `typing.Callable`. Nothing from
+      `sqlalchemy`, `alembic`, `mkobi.config` or `utils.exceptions`. The module must stay importable in the
+      Alembic runtime with no other `mkobi` package loaded.
+
+  - path: alembic/env.py
+    change: modify
+    targets:
+      - type: function
+        name: run_async_migrations
+      - type: constant
+        name: MIGRATION_ADVISORY_LOCK_KEY
+    semantic_anchors:
+      - "module scope — `MIGRATION_ADVISORY_LOCK_KEY = 42` and its two-line leading comment (deleted here; the name is re-imported)"
+      - "module imports — the `from sqlalchemy import Connection, pool, text` line and the `from mkobi.db.models import ( … )` block"
+      - "run_async_migrations — its docstring"
+      - "run_async_migrations — `async with connectable.connect() as connection:` and everything inside it: the blocking acquire, `await connection.commit()`, the inner `try: … finally:` around `run_sync(do_run_migrations)`, and the outer `except Exception:` re-unlock"
+      - "run_async_migrations — the trailing `await connectable.dispose()`"
+    instructions: |
+      **The only file whose behaviour changes.**
+
+      1. **Delete** the local `MIGRATION_ADVISORY_LOCK_KEY = 42` constant and its leading comment, and add
+         `from mkobi.db.migration_lock import (MIGRATION_ADVISORY_LOCK_KEY, MIGRATION_LOCK_MAX_ATTEMPTS, MIGRATION_LOCK_RETRY_INTERVAL_SECONDS, retry_migration_lock_acquisition)`.
+         Place it with the other `mkobi` imports; run `.\Makefile.ps1 format` afterwards so isort orders it.
+         **All four names are used** — an unused import fails `ruff`'s `F401`.
+
+      2. **Rewrite `run_async_migrations`'s docstring.** It must state, in prose:
+         - the run is guarded by `pg_try_advisory_lock(MIGRATION_ADVISORY_LOCK_KEY)` — **session-scoped**,
+           released when the connection closes or the backend exits, and explicitly released in a `finally`;
+         - the wait is **bounded** (30 attempts × 10.0 s ≈ 4 m 50 s) and **every refusal is logged**;
+         - a lock that cannot be taken is a **refusal to migrate**, not a warning;
+         - **what it does not cover**: the admin user, the development seeders, orphan temp-file cleanup, old-log
+           cleanup and test-database recreation all run in `DatabaseStarter.startup` **after** `alembic upgrade head`
+           returns and are therefore unprotected by this lock (they are idempotent today; this is not a design
+           claim about them).
+
+      3. **Replace the body inside `async with connectable.connect() as connection:`** with this shape, in this
+         order — the ordering *is* the correctness argument:
+
+             async def _try_acquire() -> bool:
+                 """One non-blocking attempt at the session-scoped migration lock."""
+                 result = await connection.execute(
+                     text("SELECT pg_try_advisory_lock(:lock_key)"),
+                     {"lock_key": MIGRATION_ADVISORY_LOCK_KEY},
+                 )
+                 return bool(result.scalar())
+
+             acquired = await retry_migration_lock_acquisition(_try_acquire)
+             if not acquired:
+                 raise RuntimeError(<message naming key, attempts, total waited, and the refusal to migrate>)
+
+             logger.info("Acquired migration advisory lock %s", MIGRATION_ADVISORY_LOCK_KEY)
+             try:
+                 await connection.run_sync(do_run_migrations)
+             finally:
+                 try:
+                     await connection.execute(
+                         text("SELECT pg_advisory_unlock(:lock_key)"),
+                         {"lock_key": MIGRATION_ADVISORY_LOCK_KEY},
+                     )
+                     await connection.commit()
+                 except Exception as exc:
+                     logger.warning(<message naming key and exc; the session is closing and PostgreSQL releases
+                                     session-scoped locks with it>)
+
+         Binding points:
+         - **Both SQL statements bind `:lock_key`.** No f-string, no literal `42`, no `%`-formatting. This is the
+           part of the block `ruff` cannot check and is the reason the file is under gate — the test in
+           `tests/test_migration_lock.py` pins it.
+         - **`bool(result.scalar())`** — `pg_try_advisory_lock` returns one boolean; `scalar()` is the accessor.
+         - **The refusal `RuntimeError` is raised before the `try`/`finally`.** This is what guarantees no unlock is
+           issued for a lock this session never took.
+         - **The `finally` wraps only `run_sync(do_run_migrations)`.** The outer `except Exception:` block that
+           re-unlocked is **deleted**, and the inner bare `except Exception: pass` becomes a `logger.warning`.
+         - `_try_acquire` is **nested inside `run_async_migrations`** and closes over `connection`. Do not promote it
+           to module scope, do not add `functools.partial`, do not pass `connection` into the helper.
+         - `logger.info` goes on `env.py`'s existing `logging.getLogger("alembic.env")`, which `alembic.ini`
+           configures at `INFO`.
+
+      4. **Everything else in the file is byte-identical.** Specifically untouched: `run_migrations_offline`,
+         `do_run_migrations`, `run_migrations_online`, the `context.is_offline_mode()` dispatch at the bottom, the
+         `fileConfig` call, the model imports, the `db_url` resolution and its `postgresql://` rewrite, the
+         `create_async_engine(..., poolclass=pool.NullPool)` call, and the trailing `await connectable.dispose()`.
+         **Do not** wrap the dispose in a `try`/`finally` (recorded above as out of scope).
+
+  - path: tests/test_migration_lock.py
+    change: add
+    targets:
+      - type: module
+        name: test_migration_lock
+    instructions: |
+      **New file. No database, no Alembic, no sleeps longer than a few milliseconds.**
+      `pyproject.toml` sets `asyncio_mode = "auto"`; `tests/test_advisory_lock.py` still marks its async class with
+      `@pytest.mark.asyncio` — match that.
+
+      Use `unittest.mock.AsyncMock` (or a hand-rolled counting async stub) for the attempt callable and
+      `monkeypatch`/`unittest.mock.patch` on `mkobi.db.migration_lock.asyncio.sleep` so no test ever sleeps for real.
+      A hand-rolled stub is preferred for the attempt callable because it makes the call **count** the assertion:
+
+          attempts = 0
+          async def _stub() -> bool:
+              nonlocal attempts
+              attempts += 1
+              return attempts > 2
+
+      Two classes:
+
+      **`TestMigrationLockRetry`** — the logic. `@pytest.mark.asyncio`.
+
+      1. `test_lock_is_acquired_on_the_first_attempt` — the stub succeeds immediately. Assert the result is `True`,
+         the attempt callable was called **exactly once**, `asyncio.sleep` was **not** called, and **no** warning was
+         logged (success logs nothing from the helper).
+      2. `test_lock_is_acquired_after_several_refusals` — the stub refuses twice then succeeds, with
+         `max_attempts=5`, `interval_seconds=0.0`. Assert `True`, **exactly three** calls, exactly **two** sleeps,
+         and exactly **two** retry warnings (one per refusal that was retried, and **not** one for the successful
+         attempt). This is the case that fails against a single-attempt implementation.
+      3. `test_permanent_refusal_returns_false_and_states_the_next_action` — the stub always refuses,
+         `max_attempts=3`, `interval_seconds=0.0`. Assert the result is `False`, exactly **three** calls, and that
+         the **last** warning record names the lock key, the attempt count, the total waited, and the operator's
+         next action — match on distinctive substrings of the agreed message, not on the whole string. Assert no
+         exception escaped (the helper must not raise for a refusal).
+      4. `test_no_sleep_and_no_retry_warning_after_the_final_attempt` — `max_attempts=1`, always refuses. Assert
+         exactly **one** call, `asyncio.sleep` **not** called, and **exactly one** warning whose text is the final
+         refusal (it must not claim a retry is coming). This pins the off-by-one in both directions.
+      5. `test_interval_is_passed_to_sleep_on_every_retry` — three refusals then success,
+         `max_attempts=4`, `interval_seconds=0.25`. Assert `asyncio.sleep` was awaited with `0.25` exactly **three**
+         times and never with anything else. Pins that the configured interval is the one used.
+
+      **`TestMigrationLockSourceContract`** — the plan's f-string check, as a test. Match the
+      `tests/test_config.py` precedent of reading a project file from
+      `Path(__file__).resolve().parent.parent`. No database fixture, no network.
+
+      6. `test_env_py_binds_the_lock_key_rather_than_interpolating_it` — read `alembic/env.py` as text and assert
+         `text(f"` does not occur, and that the file contains no `text("SELECT pg_advisory_lock(` / no
+         `text("SELECT pg_advisory_unlock(` / no `text("SELECT pg_try_advisory_lock(` — i.e. **neither** lock
+         statement interpolates. Also assert both statements are present **with** a `:lock_key` bind parameter, so
+         the test cannot be passed by deleting the lock entirely.
+      7. `test_env_py_defines_no_local_lock_key` — assert `MIGRATION_ADVISORY_LOCK_KEY = 42` appears **once** in
+         the repository's Python sources (walk `alembic/` and `src/mkobi/`) and that the single definition is in
+         `mkobi.db.migration_lock`, so a reader cannot end up with two keys in two files. Keep the walk to
+         `alembic/env.py` plus `src/mkobi/db/` — do not walk the whole repository.
+
+      **No existing test file is modified.** `tests/test_advisory_lock.py` is the sibling precedent and stays
+      untouched.
+
+  - path: docs/06-backend/architecture.md
+    change: modify
+    targets:
+      - "§ \"Step 3: Alembic Migrations\""
+    instructions: |
+      Add to the existing Step 3 bullet list (do **not** replace the three existing bullets):
+
+      - The migration run is guarded by a **session-scoped** `pg_try_advisory_lock` whose wait is **bounded**
+        (30 attempts at 10 s, ≈4 m 50 s) and **logged at every refusal**;
+      - a lock that cannot be acquired in that window is a **refusal to migrate** — the process exits non-zero and
+        the stack does not start;
+      - **what it does not cover** — everything `DatabaseStarter.startup` does after `alembic upgrade head`
+        returns: the admin user, the development seeders, orphan temp-file cleanup, old-log cleanup and
+        test-database recreation.
+
+      Do **not** touch §"Step 4: Admin User Creation" (B10 owns the SAVEPOINT sentence), §"Stale Processing Log
+      Cleanup" (the shipped lease is TXN-011's other half and its text is already correct), or §"Connection-Pool
+      Budget" (B7's, including the migration-engine `NullPool` row).
+
+  - path: docs/10-deployment/deployment.md
+    change: modify
+    targets:
+      - "§ \"Migration advisory lock\" — the bullet beginning \"**Migration advisory lock**\""
+    instructions: |
+      Rewrite that **one bullet**. It currently says the lock is acquired by `_apply_migrations()` using the
+      **blocking** `pg_advisory_lock(42)`; both halves are now wrong.
+
+      It must say: the lock is taken in `alembic/env.py` (not by `_apply_migrations()`); it is
+      `pg_try_advisory_lock` with a bounded retry of 30 attempts at 10 s; every refusal is logged; and a lock that
+      cannot be acquired within that window **stops the migration** rather than proceeding.
+
+      Leave the neighbouring **"Migration job pattern"** bullet exactly as it is — the single `migrate` service and
+      `service_completed_successfully` gate it describes are still true, and they are the reason the refusal is
+      unreachable in the shipped tiers. Leave **"AUTO_MIGRATE"** alone.
+
+  - path: docs/SPEC.md
+    change: modify
+    targets:
+      - "version table — the row after `| 3.15 | …`"
+    instructions: |
+      Add **exactly one** row, `3.16`, immediately after row `3.15`, in the established shape:
+
+          | 3.16    | 2026-10-02 | Database concurrency remediation, continuation (plan: `.ai/plans/03-db-concurrency-remediation.md`). **…** |
+
+      Content, three bolded lead-ins in the house style:
+      **the f-string is gone** — both lock statements in `alembic/env.py` bind `:lock_key` as a parameter;
+      **the wait is bounded and refusal fails closed** — `pg_try_advisory_lock` with 30 attempts at 10 s, every
+      refusal logged, and a lock that cannot be acquired stops the migration instead of proceeding;
+      **the lock's scope is now stated** — the docstring and the architecture document name what it does not cover.
+
+      Rows `3.14` and `3.15` stay byte-identical. One row for this block, not one per file.
+
+  - path: src/mkobi/db/advisory_lock.py
+    change: none
+    targets:
+      - type: module
+        name: mkobi.db.advisory_lock
+    instructions: |
+      **Read-only, and read for three reasons.** (1) It is the **style precedent** for the new module —
+      module docstring stating the mechanism and the rejected alternatives one clause each, `logger =
+      logging.getLogger(__name__)`, module constants, Google-style docstrings. (2) Its `REBUILD_LOCK_NAMESPACE`
+      comment states that the Alembic migration lock lives in the same 2^64 key space and that naming the purpose
+      keeps the two apart — the new module's docstring should be consistent with that, and the migration key must
+      not be derived from the rebuild namespace. (3) `acquire_dashboard_rebuild_lock` and
+      `dashboard_rebuild_lock_key` are a shipped, B2-validated API that phases later read. **Not edited.**
+
+  - path: src/mkobi/db/starter.py
+    change: none
+    targets:
+      - type: class
+        name: DatabaseStarter
+      - type: method
+        name: startup
+      - type: method
+        name: _apply_migrations
+    instructions: |
+      **Read-only — the evidence for the "what it does not cover" list, not a target.** Read `startup` and confirm
+      the post-migration call sequence that the docstring must name (`ensure_admin_user`, `run_dev_seeders`,
+      `cleanup_stale_temp_files`, `cleanup_old_logs`, `recreate_test_database`) and read `_apply_migrations`'s
+      docstring, which currently points at `alembic/env.py` for the lock. **Do not edit it** — B8 owns this file
+      and its `_apply_migrations` call sites must not move.
+
+  - path: Makefile.ps1
+    change: none
+    targets:
+      - "the `lint` target's `ruff check src/ tests/ alembic/env.py` line"
+      - "the `typecheck` target's `mypy src/ alembic/env.py` line"
+    instructions: |
+      **Read-only — and the reason is a constraint, not an oversight.** `pyproject.toml` excludes `alembic/` from
+      both `ruff` and `mypy`, so naming `alembic/env.py` on these command lines is the only thing that puts it
+      under gate. **Do not widen the gate, do not narrow it, do not edit this file.**
+
+  - path: docs/06-backend/architecture.md § "Stale Processing Log Cleanup"
+    change: none
+    instructions: |
+      **Read-only. TXN-011's election half shipped in `4a5db54`** (`core/reconciler_lease.py` plus the guarded loop
+      in `start_stale_processing_cleanup_task`) and its paragraph here is already correct. Do not re-elect a
+      sweeper, do not add a second advisory key for the sweep, do not edit this paragraph. **If it needs no change,
+      that is the expected outcome** — record in the commit body that you read it and left it.
+
+  - path: .ai/audit/99-validation/03-db-concurrency-validated-findings.md
+    change: none
+    instructions: |
+      **Never edited, per B0's convention.** Read TXN-010 and TXN-011 if you have not; the task file carries their
+      substance.
+
+
+acceptance_criteria:
+  - >-
+    `alembic/env.py` contains **no** `text(f"` and no f-string, `%`-format or concatenation in either lock
+    statement. Both use `text("…:lock_key")` with `{"lock_key": MIGRATION_ADVISORY_LOCK_KEY}`.
+  - >-
+    `MIGRATION_ADVISORY_LOCK_KEY = 42` is defined **exactly once** in the Python sources, in
+    `src/mkobi/db/migration_lock.py`, and is imported by `alembic/env.py` under the same name.
+  - >-
+    Acquisition uses `pg_try_advisory_lock` behind `retry_migration_lock_acquisition`, with
+    `MIGRATION_LOCK_MAX_ATTEMPTS = 30`, `MIGRATION_LOCK_RETRY_INTERVAL_SECONDS = 10.0` and **no backoff** — one
+    fixed `asyncio.sleep(interval_seconds)` per retry, no multiplier, no cap constant.
+  - >-
+    A permanently refused lock makes `run_async_migrations` **raise `RuntimeError`** and the migration **not run**.
+    No warning-and-continue path exists anywhere in the file.
+  - >-
+    There is **exactly one** unlock statement. It lives in a `finally` wrapping only
+    `connection.run_sync(do_run_migrations)`, and the refusal `RuntimeError` is raised **before** that
+    `try`/`finally` is entered — so a refusal issues no unlock, and both the success path and every migration
+    failure do.
+  - >-
+    The unlock's own failure is caught, **logged at `warning` with the exception interpolated** (not silently
+    swallowed, not `exc_info=True`), and does not replace the migration's exception.
+  - >-
+    The helper emits **only `warning` lines** (per retry + one final), and the final one carries the lock key, the
+    attempt count, the total seconds waited and **the operator's next action**. No `info`, `debug` or `error` call
+    exists in `mkobi.db.migration_lock`.
+  - >-
+    `env.py` emits exactly **one** lock log line, at `info` on `alembic.env`, on successful acquisition.
+  - >-
+    No `sleep` occurs after the final attempt and none after a success; the final warning is emitted exactly once
+    and never on success.
+  - >-
+    `run_async_migrations`'s docstring names, as **not** covered by the lock, everything
+    `DatabaseStarter.startup` does after `alembic upgrade head` returns: the admin user, the development seeders,
+    orphan temp-file cleanup, old-log cleanup and test-database recreation. It also states that the lock is
+    session-scoped and guards the migration run only.
+  - >-
+    `tests/test_migration_lock.py` exists with **seven** cases in two classes: five retry-logic cases (first-attempt
+    success with no sleep and no warning; success after N refusals with exact call/sleep/warning counts; permanent
+    refusal returning `False` with the next action in the last warning; `max_attempts=1` producing one call, zero
+    sleeps and one final warning; the interval passed to `sleep` on every retry) and two source-contract cases (no
+    `text(f"` and no interpolated lock statement in `alembic/env.py`, with both bind-parameter statements present;
+    and `42` defined once, in the new module).
+  - >-
+    **Discrimination demonstrated, not asserted.** With `retry_migration_lock_acquisition` reduced to a single
+    `try_acquire()` call and `return`, `test_lock_is_acquired_after_several_refusals` **fails** (it returns `False`
+    after one call). With the loop's off-by-one inverted, `test_no_sleep_and_no_retry_warning_after_the_final_attempt`
+    **fails**. With the retry helper deleted and the old blocking acquire restored,
+    `test_env_py_binds_the_lock_key_rather_than_interpolating_it` **fails**. Restore and re-run to green; record the
+    observed pre-fix outcomes in the commit body.
+  - >-
+    The whole suite runs in **well under a second** for `tests/test_migration_lock.py` — no real sleeps, no
+    database, no Alembic.
+  - >-
+    `run_migrations_offline`, `do_run_migrations`, `run_migrations_online`, the `context.is_offline_mode()`
+    dispatch, the `fileConfig` call, the model imports, the `db_url` resolution, the
+    `create_async_engine(..., poolclass=pool.NullPool)` call and the trailing `await connectable.dispose()` are
+    byte-identical to HEAD in `alembic/env.py`.
+  - >-
+    `src/mkobi/db/advisory_lock.py`, `src/mkobi/db/starter.py`, `Makefile.ps1`, `alembic.ini`, `pyproject.toml`,
+    `src/mkobi/models/enums.py` and `src/mkobi/utils/exceptions.py` are byte-identical to HEAD.
+  - >-
+    No `ErrorCode` member, no new exception class, no `AppException`, no `StrEnum` member, no `config.py` setting,
+    no Alembic revision, no schema change, no API/OpenAPI change, no frontend change.
+  - >-
+    `docs/06-backend/architecture.md` gained content **only** in §"Step 3: Alembic Migrations";
+    `docs/10-deployment/deployment.md` changed by **exactly one** bullet; `docs/SPEC.md` gained **exactly one** row
+    (`3.16`) and rows `3.14`/`3.15` are byte-identical.
+  - >-
+    Both quality gates still name `alembic/env.py` individually and pass: `.\Makefile.ps1 lint` and
+    `.\Makefile.ps1 typecheck` are green, with `Makefile.ps1` and the `exclude` lists in `pyproject.toml`
+    unmodified.
+  - >-
+    English only in docstrings, comments and log messages; no `print()`; type hints on the new coroutine and on
+    every new test; no audit or plan identifiers in committed code, tests, comments, docstrings, log messages or
+    the version row.
+
+
+out_of_scope: |
+  Everything below is another phase's, another block's, or a pre-existing defect this finding does not name. Do
+  not touch it, and do not "improve" it while passing through. Widening the block to fix any of these is a scope
+  failure, not diligence.
+
+  - **TXN-011's election half — already shipped in `4a5db54`.** `core/reconciler_lease.py` and the lease-guarded
+    loop in `start_stale_processing_cleanup_task` are not to be rebuilt, re-tuned or re-documented. **No** second
+    advisory key for the sweep, and no relocation of the sweep into `rq-worker` — TXN-011's recommendation listed
+    that as an option and the plan routed it to phase 01 (`TOPO-001`, the inert `rq-worker`).
+  - **`src/mkobi/db/starter.py`** — B8's file. `DatabaseStarter.startup`, `_apply_migrations`,
+    `recreate_test_database` and the transactional grants are not this block's. Read `startup` for the
+    "what it does not cover" list; **do not edit it**.
+  - **`src/mkobi/app.py`, `app.py::lifespan`, the lease, the sweep interval, `cleanup_stale_processing_logs`.** Not
+    this block's.
+  - **`src/mkobi/db/advisory_lock.py`** — the B2 rebuild exclusion, shipped and validated. Not edited, not
+    re-derived, not re-namespaced. Do not "share" the two modules' constants.
+  - **`Makefile.ps1` and the `exclude` lists in `pyproject.toml`.** The gates naming `alembic/env.py` individually
+    stay exactly as they are. Do not remove `alembic/` from `[tool.mypy] exclude` to "fix" the coverage — that
+    widens the gate and is forbidden by the plan.
+  - **`alembic.ini`.** In particular **do not** add a logger section for `mkobi` to make an `info` visible. The
+    design accepts that the helper emits only warnings precisely so no logging configuration has to change.
+  - **The blocking `lock_timeout` alternative.** B2's whole ruling was that PostgreSQL has no per-lock timeout;
+    do **not** add `set_config('lock_timeout', …)` to the migration path. The bounded retry replaces it, and
+    reusing `DATABASE__LOCK_TIMEOUT_MS` here would give one number two meanings.
+  - **`await connectable.dispose()` on the failure path.** Recorded above as skipped-on-failure at HEAD. Do not
+    restructure it into a `try`/`finally`; note it in the commit body.
+  - **A `StrEnum` for the retry policy, or a `StrEnum` member for the lock key.** The key is an `int` for
+    `pg_try_advisory_lock`; an enum would be an `int`-valued `StrEnum` used once. Plain module constants are the
+    house style here (cf. `STARTER_POOL_SIZE`, `REBUILD_LOCK_NAMESPACE`, `LOCK_TIMEOUT_SQLSTATE`).
+  - **Configurable attempts / interval via `src/mkobi/config.py` or `settings/`.** Rejected in the ruling: this is
+    a one-shot migration path with no operator-tunable need, and adding a setting makes it a value nobody can reach
+    in the shipped compose files — the same defect B7 recorded for `pool_pre_ping`.
+  - **`docs/06-backend/architecture.md` §"Step 4: Admin User Creation"** (the false SAVEPOINT sentence), §"Stale
+    Processing Log Cleanup" and §"Connection-Pool Budget". **B10 and B7 own those**; B10's whole reason for being
+    last is that it writes those sentences against final code.
+  - **`docs/06-backend/configuration.md`'s least-privilege paragraph.** B8's file. Not this block's.
+  - **`.ai/audit/**` and every other audit artefact** — never edited, per B0's convention.
+  - **Any other lock in the system.** B2's per-dashboard rebuild exclusion, `core/reconciler_lease.py`'s Redis
+    lease, and any lock `DatabaseStarter` or the seeders use are all out of scope. This block rewrites exactly the
+    three statements named by TXN-010 and TXN-011.
+
+
+sequence:
+  - step: 1
+    action: >-
+      Read the B9 block and **all six** `B9 design ruling` subsections in
+      `.ai/plans/03-db-concurrency-remediation.md`, then this task's `extra_context` in full. Then read, by symbol:
+      `run_async_migrations` in `alembic/env.py` (including the nested structure it must be replaced by),
+      `run_migrations_offline`, `do_run_migrations`, `run_migrations_online` and the bottom dispatch;
+      `src/mkobi/db/advisory_lock.py` in full (the style precedent); `DatabaseStarter.startup` and
+      `_apply_migrations` in `src/mkobi/db/starter.py`; `[logger_root]` in `alembic.ini`; the `lint` and
+      `typecheck` targets in `Makefile.ps1`; `[tool.mypy] exclude` and `[tool.ruff] exclude` in `pyproject.toml`;
+      TXN-010 and TXN-011 in the validated findings; §"Step 3: Alembic Migrations" in
+      `docs/06-backend/architecture.md`; the "Migration advisory lock" bullet in
+      `docs/10-deployment/deployment.md`; and version rows `3.14`/`3.15` in `docs/SPEC.md`.
+    verify: >-
+      You can state, without re-reading: that `env.py` has no `sys.path` statement and already imports
+      `mkobi.db.models`; that the root logger in `alembic.ini` is `WARNING` while `alembic.env` is `INFO`;
+      and the exact list of post-migration mutations `DatabaseStarter.startup` performs.
+  - step: 2
+    action: >-
+      Re-read `git status --porcelain` and `git log --oneline -3`. Expected HEAD is `9c46b7d` or later (B8 is
+      landed). **Expect pre-existing uncommitted drift** under `.ai/` and `frontend/coverage/` — that is baseline,
+      not yours. Confirm `alembic/env.py`, `src/mkobi/db/starter.py`, `src/mkobi/db/advisory_lock.py`,
+      `Makefile.ps1` and `tests/test_advisory_lock.py` carry no uncommitted changes of their own. Confirm
+      `src/mkobi/db/migration_lock.py` and `tests/test_migration_lock.py` **do not already exist** — if either
+      does, you are in a dirty tree: stop and report rather than overwrite.
+    verify: "You know which modifications predate your block, and your five new/edited targets are otherwise clean."
+  - step: 3
+    action: >-
+      **Regression gate before any edit:** run `.\Makefile.ps1 lint` and `.\Makefile.ps1 typecheck` and record that
+      both are green **including** the `alembic/env.py` argument. Then run
+      `.\Makefile.ps1 test-select -k "TestDashboardRebuildLockKey or TestStarter" -v` as the sibling baseline, and
+      confirm `tests/test_migration_lock.py` does not exist.
+    verify: >-
+      Both gates green. This is the block's key risk surface — `env.py` runs before the schema exists on a fresh
+      database, so a baseline here is evidence rather than a formality.
+  - step: 4
+    action: >-
+      Create `src/mkobi/db/migration_lock.py`: module docstring with the rejected alternatives, the logger, the
+      three constants, and `retry_migration_lock_acquisition` in the shape ruled above. Then run
+      `uv run ruff check --fix src/mkobi/db/migration_lock.py`.
+    verify: >-
+      `uv run mypy src/mkobi/db/migration_lock.py` is clean, the module contains exactly one `async def` and two
+      `logger.warning` calls and **no** `info`/`debug`/`error` call, and there is no sleep after the last attempt
+      in the loop.
+  - step: 5
+    action: >-
+      Edit `alembic/env.py`: delete the local `MIGRATION_ADVISORY_LOCK_KEY`, add the four-name import, rewrite
+      `run_async_migrations`'s docstring, and replace the body inside `async with connectable.connect()` with the
+      nested `_try_acquire` → helper → refusal → info → `try`/`finally` sequence. Delete the outer
+      `except Exception:` re-unlock block. Then run `.\Makefile.ps1 format`.
+    verify: >-
+      `uv run mypy alembic/env.py` is clean; the file contains no `text(f"` and no literal `42` in SQL; the refusal
+      `raise` sits **above** the `try:`; there is exactly one `pg_advisory_unlock` and one `pg_try_advisory_lock`
+      in the file; and `run_migrations_offline`, `do_run_migrations`, `run_migrations_online` and the bottom
+      dispatch are unchanged (`git diff` shows only the four regions the task names).
+  - step: 6
+    action: >-
+      Create `tests/test_migration_lock.py` with the two classes and seven cases. Run the file alone with
+      `.\Makefile.ps1 test-select -k "TestMigrationLockRetry or TestMigrationLockSourceContract" -v`.
+    verify: >-
+      Seven cases pass, and the file's wall time is well under a second — no real sleeps, no database, no
+      Alembic. If the run touches the database or takes seconds, the stub or the `sleep` patch is wrong.
+  - step: 7
+    action: >-
+      **Prove the tests discriminate.** Three separate temporary reversions, each re-running only the file's own
+      cases: (a) reduce `retry_migration_lock_acquisition` to a single `try_acquire()` call and `return` its
+      result — expect `test_lock_is_acquired_after_several_refusals` to fail; (b) invert the loop's off-by-one
+      (sleep and warn **after** the final attempt) — expect
+      `test_no_sleep_and_no_retry_warning_after_the_final_attempt` to fail; (c) restore the old blocking
+      `text(f"SELECT pg_advisory_lock({MIGRATION_ADVISORY_LOCK_KEY})")` acquire in `env.py` — expect
+      `test_env_py_binds_the_lock_key_rather_than_interpolating_it` to fail. Restore each and re-run to green.
+    verify: >-
+      You watched each test fail against the defect it exists to catch. A test that passes either way proves
+      nothing and must be strengthened before you continue. Record all three observed pre-fix outcomes in the
+      commit body.
+  - step: 8
+    action: >-
+      **Prove the migration path still runs.** This is the step nobody can skip: run
+      `.\Makefile.ps1 migration-status` (or, if the dev stack is not up, `.\Makefile.ps1 up` then
+      `.\Makefile.ps1 ps`) and confirm the `migrate` service completes successfully on the current schema. If
+      `alembic upgrade head` already ran, the refusal path is unreachable there, which is the expected result and
+      is **not** evidence the path works — say so in the commit body rather than claiming a test.
+    verify: >-
+      The `migrate` service exits 0 against a real database. This is the only end-to-end evidence available for
+      the success path, and its limitation is stated.
+  - step: 9
+    action: >-
+      Edit the three documentation surfaces: §"Step 3: Alembic Migrations" in `docs/06-backend/architecture.md`,
+      the single "Migration advisory lock" bullet in `docs/10-deployment/deployment.md`, and one new row `3.16` in
+      `docs/SPEC.md`.
+    verify: >-
+      `git diff --stat` on the docs shows exactly three files; `docs/SPEC.md` shows **one added row** and no other
+      change; rows `3.14` and `3.15` are byte-identical; the deployment bullet no longer names
+      `pg_advisory_lock(42)` and no longer attributes the lock to `_apply_migrations()`.
+  - step: 10
+    action: >-
+      Read `docs/00-overview/doc-maintenance-rules.md`'s checklist for a documentation change (frontmatter, English
+      only, relative links) and confirm none of your three edits disturbed frontmatter or introduced a link. Then
+      run the full verification list and `.\Makefile.ps1 test`.
+    verify: >-
+      Every command in `verification_steps` is green, and the commit body carries: the fail-closed rationale, the
+      three observed discrimination outcomes, the note that the `migrate` success path was exercised but the
+      refusal path was not (and why that is unreachable in the shipped topology), the `dispose()`-skipped-on-
+      failure observation, and the fact that TXN-011's lease paragraph was read and left unchanged.
+
+
+constraints:
+  architecture:
+    - >-
+      **No f-string SQL, anywhere.** Both lock statements bind `:lock_key`. This is the part of the block `ruff`
+      cannot catch — the finding exists because `ruff` has no rule for it — and it is the whole reason the file is
+      under gate. An f-string inside a **log message** or an **exception message** is fine and matches the house
+      style; an f-string that builds a statement is not.
+    - >-
+      **The helper holds no SQL and imports no database library.** `mkobi.db.migration_lock` imports only
+      `asyncio`, `logging` and two names from `typing`. The SQL stays in `alembic/env.py`, in the one function that
+      already owned it. This is what keeps the extraction from becoming an abstraction: the testable part is the
+      loop, and the loop has no opinions about SQL.
+    - >-
+      **`env.py` stays runnable by Alembic alone.** No Alembic-specific import may enter the helper, and the helper
+      must not import `mkobi.config`, `mkobi.models` or anything else that would change what `env.py` pulls in.
+      Its only imports are `asyncio`, `logging` and `typing`.
+    - >-
+      **`RuntimeError`, not `AppException`.** `AppException` + `ErrorCode` is the API layer's RFC 7807 mechanism;
+      Alembic has a process exit code, not an HTTP response. No new `ErrorCode` member, no
+      `utils.exceptions` import, no status-mapping change.
+    - >-
+      **`StrEnum` for constants does not apply here, and adding one would be over-engineering.** The lock key is an
+      `int` for `pg_try_advisory_lock`; the retry policy is two numbers. Both are plain module constants beside
+      `MIGRATION_ADVISORY_LOCK_KEY`, matching `STARTER_POOL_*` in `db/starter.py` and `REBUILD_LOCK_NAMESPACE` /
+      `LOCK_TIMEOUT_SQLSTATE` in `db/advisory_lock.py`.
+    - >-
+      **The quality gates stay exactly as they are.** `Makefile.ps1`'s `lint`/`format`/`typecheck` targets keep
+      naming `alembic/env.py` individually, and `pyproject.toml` keeps excluding `alembic/` from both tools. Do not
+      widen, narrow or "tidy" either.
+    - >-
+      **One function, one concern.** The new module is three constants and one coroutine. No class, no protocol,
+      no registry, no factory, no `config.py` plumbing. `env.py` keeps its existing shape: a nested `_try_acquire`
+      closure over `connection`, then the helper call, then the refusal, then the guarded `try`/`finally`.
+  correctness:
+    - >-
+      **Fail closed.** A permanently refused lock must raise and must **not** run the migration. There is no
+      warn-and-continue branch anywhere in the file, and adding one undoes the ruling.
+    - >-
+      **The refusal `raise` is above the `try`/`finally`, never inside it.** This is the guarantee that no unlock
+      is issued for a lock the session never took.
+    - >-
+      **Exactly one unlock, in a `finally` wrapping only `run_sync(do_run_migrations)`.** Both the success path and
+      every migration failure must release the lock; the refusal path must not attempt to.
+    - >-
+      **The unlock's own failure is caught and logged, never raised.** An exception raised in a `finally` replaces
+      the migration's exception, and the migration's exception is the informative one. The swallow is safe
+      *because* the lock is session-scoped and the connection closes immediately after: record that reasoning in
+      the comment, or the next reader will "fix" the swallow into a leak.
+    - >-
+      **No sleep and no "retrying" warning after the final attempt**, and none after a success. The final warning
+      is emitted exactly once, only when the lock was never acquired, and it is the only place the operator's next
+      action appears.
+    - >-
+      **`try_acquire` is called at most `max_attempts` times**, and the total-seconds figure in the final warning
+      is `interval_seconds * (max_attempts - 1)` so it is `0` when `max_attempts` is `1`.
+    - >-
+      **The helper never raises for a refusal.** Exceptions from `try_acquire` itself propagate — a broken
+      connection is a real failure and must not be retried as if the lock were merely held.
+    - >-
+      **Only `warning` inside the helper.** `alembic.ini` sets `[logger_root] level = WARNING`, so an `info` from a
+      `mkobi.*` logger is silently dropped in a real migration run. Do not "fix" this by editing `alembic.ini` or by
+      adding a logger section.
+  process:
+    - "English only — docstrings, comments and log messages."
+    - "No `print()`; the helper uses `logger = logging.getLogger(__name__)`, `env.py` keeps `logging.getLogger(\"alembic.env\")`."
+    - "No pandas. This block touches no data processing."
+    - "Type hints on the new coroutine (including `-> bool`) and on every new test signature, including `-> None`."
+    - >-
+      **No audit or plan identifiers in committed code, tests, comments, docstrings, log messages or the version
+      row.** No block IDs, no finding IDs, no ruling IDs, no phase references. "a lost migration lock refuses
+      rather than proceeding" reads correctly on its own.
+    - >-
+      Comments only where non-obvious: why the refusal precedes the `try`/`finally`, why the unlock swallows, why
+      the helper emits only warnings, and why the retry window is the size it is. No narration of the next line.
+    - >-
+      Run `.\Makefile.ps1 format` before committing — it runs `ruff check --fix`, which is what sorts imports.
+    - >-
+      One commit for the whole block (production + tests + the three documentation edits), so the behaviour change
+      and its evidence land together. Reference the plan and the findings **by name**, not by ID, in the body.
+  testing:
+    - >-
+      **Verify logic, not implementation detail.** Do not assert that `MIGRATION_LOCK_MAX_ATTEMPTS == 30` or that
+      the interval is `10.0` — those are the ruling's numbers, recorded in the docstring, the module docstring and
+      the documentation. Assert what the retry logic *does*: how many times it calls the attempt callable, how many
+      times it sleeps, with what argument, what it logs, and what it returns.
+    - >-
+      **Short intervals, real patches.** Every test passes `interval_seconds=0.0` or a small float **and** patches
+      `asyncio.sleep`, so no test ever sleeps. The suite must stay fast and must not be a hidden timing dependency.
+    - >-
+      **Every test must be shown to fail against the defect it covers** (step 7). A test that passes either way is
+      worse than no test, because it reads as coverage.
+    - >-
+      **No database, no Alembic, no network** in `tests/test_migration_lock.py`. The retry logic is testable through
+      the attempt callable; there is no reason to reach for a second session.
+
+
+verification_steps:
+  - command: "git status --porcelain; git log --oneline -3"
+    expect: >-
+      HEAD at or after `9c46b7d`. Your six paths are otherwise clean; `src/mkobi/db/migration_lock.py` and
+      `tests/test_migration_lock.py` are new. Pre-existing uncommitted drift under `.ai/` and `frontend/coverage/`
+      is baseline, not yours.
+  - command: "Select-String -Path alembic\\env.py -Pattern 'text\\(f\"' ; Select-String -Path alembic\\env.py -Pattern 'pg_advisory_(try_)?lock\\(\\d' ; Select-String -Path alembic\\env.py -Pattern 'pg_advisory_(un)?lock\\(:'"
+    expect: >-
+      **The f-string check, explicitly.** The first two searches return **nothing**; the third returns **two**
+      matches (the `pg_try_advisory_lock(:lock_key)` acquire and the `pg_advisory_unlock(:lock_key)` release).
+      (On PowerShell, `rg` is unavailable in this environment — use `Select-String`, or run the same pattern
+      through `findstr`.)
+  - command: "Select-String -Path src\\mkobi\\db\\migration_lock.py,alembic\\env.py -Pattern 'MIGRATION_ADVISORY_LOCK_KEY\\s*=\\s*42'"
+    expect: >-
+      **Exactly one** match, in `src/mkobi/db/migration_lock.py`. Zero in `alembic/env.py`. Two would mean the key
+      is defined in two files.
+  - command: "Select-String -Path alembic\\env.py -Pattern 'pg_advisory_unlock' -AllMatches"
+    expect: >-
+      **Exactly one** occurrence. Two or more means the old outer re-unlock block survived.
+  - command: ".\\Makefile.ps1 test-select -k \"TestMigrationLockRetry or TestMigrationLockSourceContract\" -v"
+    expect: >-
+      **Seven passed**, in well under a second, with no database fixture and no Alembic. This is the block's
+      primary gate.
+  - command: ".\\Makefile.ps1 test-select -k \"TestDashboardRebuildLockKey or TestRebuildLockExclusion\" -v"
+    expect: >-
+      Green **unmodified** — B2's shipped exclusion is read-only evidence in this block, not a target. If it fails,
+      the block has gone wrong.
+  - command: ".\\Makefile.ps1 test-select -k test_starter -v"
+    expect: >-
+      Green **unmodified** — `starter.py` is untouched and B8's grant-transaction assertions must still hold.
+  - command: ".\\Makefile.ps1 test-select -k \"TestAppLifespan or test_task_queue or test_health\" -v"
+    expect: >-
+      Green — these pin the shipped lease (TXN-011's election half) and must not move. A lease rebuild in the diff
+      means the block went wrong.
+  - command: ".\\Makefile.ps1 lint"
+    expect: >-
+      Green, and the invocation **still names `alembic/env.py`**. If the target's argument list changed, the gate
+      was altered and the block has failed its constraint.
+  - command: ".\\Makefile.ps1 typecheck"
+    expect: >-
+      Green, and the invocation **still names `alembic/env.py`**. Same caveat as above.
+  - command: "uv run ruff check src/mkobi/db/migration_lock.py tests/test_migration_lock.py alembic/env.py"
+    expect: >-
+      Clean, including import ordering (I001) on the new module and on `env.py`'s new import block.
+  - command: "uv run mypy src/mkobi/db/migration_lock.py alembic/env.py"
+    expect: >-
+      No errors. mypy passing is a **precondition, not the evidence** — the evidence is the discrimination check in
+      step 7 and the committed test results.
+  - command: ".\\Makefile.ps1 migration-status"
+    expect: >-
+      The `migrate` path still runs against a real database and reports the current revision. This is the only
+      end-to-end evidence available for the success path; the refusal path is **unreachable** in the shipped
+      topology by design, and the commit body must say so rather than imply it was tested.
+  - command: ".\\Makefile.ps1 test"
+    expect: >-
+      Full suite green, with the same known pre-existing failures only. The count must be the baseline **plus the
+      seven new cases** and nothing else.
+  - command: "git diff --stat"
+    expect: >-
+      Confined to **six** files: `alembic/env.py` (modify), `src/mkobi/db/migration_lock.py` (new),
+      `tests/test_migration_lock.py` (new), `docs/06-backend/architecture.md`, `docs/10-deployment/deployment.md`,
+      `docs/SPEC.md`. `src/mkobi/db/starter.py`, `src/mkobi/db/advisory_lock.py`, `Makefile.ps1`, `alembic.ini` and
+      `pyproject.toml` do not appear. `.ai/audit/**` does not appear anywhere.
+  - command: "git diff -- docs/SPEC.md"
+    expect: >-
+      **Exactly one added line** (row `3.16`) and nothing else. Rows `3.14` and `3.15` are byte-identical to HEAD.

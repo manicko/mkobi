@@ -1,0 +1,920 @@
+id: task_b4_txn_006_access_grant_conflict
+
+title: >
+  B4 / TXN-006 — Make a duplicate access grant the repository's own no-op (idempotent 200)
+
+status: pending
+priority: medium
+depends_on: []
+
+source_reference: C:\py_dev\mkobi\.ai\plans\03-db-concurrency-remediation.md
+source_section: B4 — Make a duplicate access grant the repository's own no-op (TXN-006)
+source_blocks:
+  - "B4 — Make a duplicate access grant the repository's own no-op (TXN-006)"
+
+description: >
+  `dashboard_access` carries a composite primary key on `(user_id, dashboard_id)`.
+  `AccessRepository.grant_access` reaches it by read-then-insert and defines a no-op
+  branch ("Access already exists") for the case it can *see*. Two simultaneous grants
+  both observe nothing, both insert, and the loser receives the driver's unique-violation
+  error — which the repository's `except SQLAlchemyError` re-raises and the route's
+  terminal handler maps to **500**, for an intent the repository itself treats as a
+  no-op, with the data correct afterwards.
+
+
+  This block makes the **write** the conflict-tolerant thing — `pg_insert(...).
+  on_conflict_do_nothing(index_elements=["user_id", "dashboard_id"])`, the form
+  `docs/SPEC.md` already names as the project's own answer to this class — and it fixes
+  the contract the endpoint promises for a duplicate: **200 with the same body as the
+  first grant**, not 409.
+
+
+  Scope is one repository method, one interface docstring, one documentation row, and two
+  new test modules. The route's handler chain is **not edited** — see
+  `extra_context` → "B4-IDEM".
+
+goals:
+  - >-
+    Close the TOCTOU window in `AccessRepository.grant_access`: correctness must no longer
+    depend on the leading SELECT seeing the other writer's row. The insert absorbs the
+    primary-key conflict itself.
+  - >-
+    Deliver **one** reportable outcome for a duplicate grant — 200 with the success body —
+    and make the racing duplicate and the sequential duplicate the *same code path*, not
+    two statuses for one conceptual condition.
+  - >-
+    Preserve the repository's defined no-op branch verbatim: a re-grant still returns the
+    **existing** row unchanged, and still writes nothing. (Making a re-grant write is phase
+    08's `QLT-001`, and this block must not pre-empt it.)
+  - >-
+    Prove the race deterministically through the repository with **two sessions from the
+    session-maker fixture**, never over HTTP and never by racing two coroutines.
+  - >-
+    Introduce **no** new error taxonomy: no new `ErrorCode`, no status-mapping change, no
+    `IntegrityError` clause in any HTTP handler, no change to the published OpenAPI
+    operation.
+
+extra_context: |
+  ## B4-IDEM — the idempotency contract, RULED (Planner, 2026-10-01)
+
+  **Ruling: a duplicate grant is answered with `200` and the same body as the first
+  grant. Not 409.** `ErrorCode.DUPLICATE_RESOURCE` is *not* used on this path, the
+  route's handler chain is *not* changed, and `DashboardService.grant_access`'s `-> bool`
+  is *not* changed.
+
+  ### Reason, in order of weight
+
+  1. **It preserves the sequential outcome and changes only the racing one.** Today the
+     *non-racing* duplicate already answers 200 with the success body: the repository's
+     no-op branch returns the existing row, the service returns `True`, the route returns
+     `{"message": "Access granted", …}`. If 409 were chosen, the **same** logical outcome
+     would be 200 when the first grant committed before the second request arrived and 409
+     when the two overlapped — **one conceptual condition, two statuses, decided by
+     whether you won a race.** The Tech Lead's ruling **D-1** (B1) rejected exactly that
+     shape as the worst of its three options ("Most backward-compatible, most complex, and
+     two different statuses for one conceptual condition"). Applying a different rule to
+     the sibling finding in the same phase would be incoherent.
+
+  2. **`on_conflict_do_nothing` makes the distinction nonexistent in code.** After the
+     change the racing duplicate and the sequential duplicate traverse the *same statement*
+     and converge on the *same* return. A 409 could only be produced by re-introducing a
+     read that asks "did I lose?" — which is the TOCTOU read this block removes. **Choosing
+     409 therefore requires adding back the very mechanism the finding is about.** That is
+     decisive on its own.
+
+  3. **The desired end state is "a grant exists for this pair"; absorbing the duplicate
+     loses nothing.** The report's own consequence is that "a client that retries on 5xx
+     will hammer a request whose precondition is already satisfied." 409 replaces the 500
+     with a better-labelled error and keeps both the retry amplification and the
+     success-reported-as-failure.
+
+  4. **The repository has already ruled.** `grant_access`'s no-op branch logs "Access
+     already exists" and returns the row — the code treats this condition as a no-op, not
+     as a conflict. `docs/SPEC.md`'s "atomic UPSERT … eliminating the TOCTOU race
+     condition" is the project's own statement of the same idea.
+
+  ### Compatibility consequence
+
+  - **Wire.** A duplicate grant moves from **500** (undocumented — absent from the endpoint's
+    error table) to **200** (documented). No published status code is removed.
+    `responses=admin_responses` gains nothing, so the published OpenAPI operation is
+    byte-identical and `tests/test_openapi.py::TestOpenAPIErrorSchemas` is untouched.
+  - **Documentation.** `docs/02-dashboards/dashboards-api.md` §"24. Grant Dashboard Access"
+    gains **one row** stating the duplicate outcome. Its table currently lists only 403,
+    404 and 422 — that absence is the gap the plan named. No row is removed or rewritten.
+  - **Clients.** The only frontend reference to this endpoint is
+    `frontend/src/features/admin/api/adminApi.ts::grantDashboardAccess` — an exported but
+    **uncalled** function typed `Promise<void>` with no conflict handling. There is no
+    shipped client to break. Under 409, whoever wires it up would turn a harmless
+    double-click into an error; under 200 it cannot. **No frontend change in either case.**
+  - **Interface.** `IAccessRepository.grant_access` still declares what the implementation
+    returns, so **no signature change** — only a docstring contract is added. This honours
+    phase-08's `C08-11` constraint ("Do **not** change `IAccessRepository`'s contract so
+    that it stops describing what the implementation returns").
+  - **Service.** `DashboardService.grant_access` keeps `-> bool` and its unconditional
+    `True`. It keeps discarding the repository's return value, because under this contract
+    nothing at the HTTP boundary needs the difference. The report's observation — "the
+    service discards the returned object and cannot report the difference" — **stops being
+    a defect**, not because the service learned to report it but because the contract no
+    longer asks it to. Say this in the commit body.
+
+  ## Does `grant_access` need B1's service-layer classifier? — No, and that is the ruling
+
+  B1's shape was verify-then-classify in `UserService.create_user`: the conflict target
+  there was a unique index on a column the caller supplies, and telling "duplicate email"
+  apart from every other `IntegrityError` needed a `get_by_email` re-read. **Here the
+  conflict target *is* the primary key that defines the row**, so
+  `on_conflict_do_nothing(index_elements=["user_id", "dashboard_id"])` absorbs it with no
+  residue and there is nothing to verify. A classifier would be dead code.
+
+  **No `IntegrityError` clause is added anywhere — including the route.** Adding one would:
+
+  - be dead for this race (the database absorbs it);
+  - put a **driver exception type in an HTTP handler**, which B1's ruling forbids;
+  - silently reclassify two defects that are **not** this block's: the `permission`
+    column's native-enum rejection (phase 08's `VAL-08-008`, a 500 today) and the
+    `user_id`/`dashboard_id` foreign-key violation (today a 500). Both keep their current
+    behaviour and stay theirs.
+
+  The repository's existing `except SQLAlchemyError: … raise` stays exactly as it is.
+
+  ## Corrections to the plan's B4 section (recorded so they are not repeated)
+
+  - **The plan says `data/storage/manager.py` "already uses `on_conflict_do_nothing`".
+    It does not.** `StorageManager.upsert_aggregate` and `StorageManager._bulk_upsert` use
+    `on_conflict_do_update`. The **only** `on_conflict_do_nothing` in `src/` is
+    `db/seeders/test_media_dash.py::ensure_test_media_dash` (two `Graph` inserts and the
+    filter-binding insert). So the in-repo idiom to match for this block is
+    **the seeder's**, plus `manager.py`'s `on_conflict_do_update` for statement shape.
+    Do not copy the seeder's **bare** `on_conflict_do_nothing()` (used for the filter
+    bindings) — see the `index_elements` constraint below.
+  - **`docs/SPEC.md` gets no version row.** B2's and B3's rulings both declined one and the
+    phase close records a single row for the whole phase. This overrides the block
+    section's mention of one.
+
+  ## Anchor census (read before editing; resolve by symbol, never by a number)
+
+  - `AccessRepository.grant_access` — a leading `select(DashboardAccess).where(user_id ==
+    …, dashboard_id == …)`, `scalar_one_or_none()`, a `if existing:` branch that logs
+    `logger.warning("Access already exists: user_id=%s, dashboard_id=%s")` and returns
+    `cast(DashboardAccess | None, existing)`, then `DashboardAccess(user_id=…,
+    dashboard_id=…, permission=permission)` + `db.add` + `flush` + `refresh` +
+    `logger.info("Access granted: …")`, all wrapped in `try/except SQLAlchemyError` that
+    logs and re-raises.
+  - `IAccessRepository.grant_access` — declared `(db, user_id, dashboard_id, permission:
+    str = "view") -> Any | None` with the one-line docstring "Grant user access to
+    dashboard." Signature order differs from the implementation's; that asymmetry is
+    pre-existing and **not** this block's to change.
+  - `DashboardService.grant_access` — returns `bool`, calls `self.access_repo.grant_access`
+    **discarding the result**, then `await db.commit()`, then returns `True`.
+    `DashboardService._create_dashboard_with_session`'s owner-grant is the **second**
+    production caller and also discards the result (phase 08's `VAL-08-005` correction —
+    do not assume one caller).
+  - `grant_dashboard_access_endpoint`'s chain is `except ValueError` → `VALIDATION_ERROR`
+    (422), `except AppException: raise`, `except Exception` → `INTERNAL_ERROR` (500), plus
+    an `if result:` / `else: raise AppException(DASHBOARD_NOT_FOUND)` where `result` is the
+    **service's** bool and the `else` is unreachable. **Read-only for this block.**
+  - `DashboardAccess.__table_args__` declares
+    `PrimaryKeyConstraint("user_id", "dashboard_id", name="dashboard_access_pkey")`. That is
+    the anchor, not the target — **do not edit `db/models/access.py`.**
+  - The harness, from `tests/conftest.py`: `async_test_engine` is built on **`NullPool`**;
+    `async_session_maker` is **session-scoped** and `expire_on_commit=False`;
+    `async_db_session` is SAVEPOINT-based (`begin_nested`); `async_client` overrides
+    `get_db_dependency` wholesale, so **the request's session *is* the test's session**;
+    `authenticated_client` = `async_client` + `auth_headers` from `test_user`, which is an
+    **admin** whose row is already committed.
+  - **No route-level test exists for `POST /dashboards/{dashboard_id}/access`** — confirmed
+    by search across `tests/`. The Implementor writes the first one. The only test callers
+    of the repository method are `tests/test_repositories.py::TestAccessRepository` and
+    `tests/test_dashboard_access.py::TestDashboardAccessCascadeDelete`, both on **fresh**
+    rows, so neither touches the branch being changed — both must stay green **unmodified**.
+  - **Durability trap (from B1's ruling, restated because these tests hit it).**
+    `DashboardService.grant_access` calls `await db.commit()`. On this harness
+    `Session.commit()` commits to the root and releases the SAVEPOINT, so
+    `async_db_session`'s teardown rollback **cannot** undo a row the route persisted.
+    **Every new HTTP-level test must delete what it created** — the grant row, the second
+    user and the dashboard — in a `finally`. Do not add a hard-coded email; use a
+    `uuid4()`-derived one, following `tests/test_dashboard_access.py`.
+
+files:
+  - path: src/mkobi/db/repositories/access_repo.py
+    change: modify
+    targets:
+      - type: class
+        name: AccessRepository
+      - type: method
+        name: grant_access
+    semantic_anchors:
+      - "module imports — add `insert as pg_insert` from `sqlalchemy.dialects.postgresql`"
+      - "module-private helper `_conflict_tolerant_access_insert(user_id, dashboard_id, permission)` — new"
+      - "AccessRepository.grant_access — the leading select, the `if existing:` no-op branch, the insert, the convergence re-read, the `except SQLAlchemyError` re-raise"
+    instructions: |
+      **Only production file this block changes.**
+
+      Add a module-private statement builder, so the test drives the *production* SQL
+      rather than a copy of it:
+
+          def _conflict_tolerant_access_insert(
+              user_id: UUID, dashboard_id: UUID, permission: str
+          ) -> Insert:
+              """Build the conflict-tolerant INSERT for one dashboard_access row.
+
+              The composite primary key on (user_id, dashboard_id) is what enforces
+              "one grant per pair"; naming those two columns in index_elements means the
+              conflict action applies to *that* constraint only, so any other integrity
+              violation still raises instead of being silently absorbed.
+              """
+              return (
+                  pg_insert(access_model.DashboardAccess)
+                  .values(
+                      user_id=user_id,
+                      dashboard_id=dashboard_id,
+                      permission=permission,
+                  )
+                  .on_conflict_do_nothing(index_elements=["user_id", "dashboard_id"])
+                  .returning(
+                      access_model.DashboardAccess.user_id,
+                      access_model.DashboardAccess.dashboard_id,
+                      access_model.DashboardAccess.permission,
+                  )
+              )
+
+      Constraints on this helper:
+      - **`index_elements` is required.** Do not call the bare `on_conflict_do_nothing()`
+        the seeder uses for its filter bindings — that swallows *every* conflict, and a
+        foreign-key violation would then look like a successful no-op.
+      - **No f-string, no `%`, no concatenation into SQL text.** The constraint names and
+        the column names are SQLAlchemy constructs or literal identifiers, never
+        interpolated values.
+      - `permission` is passed through **unchanged**. `DashboardPermission` is a `StrEnum`
+        and the column is `Enum(DashboardPermission, …, values_callable=…)`, so the `str`
+        the service supplies and an enum member are interchangeable at this boundary. Do
+        not add a conversion or a validation step here — that is phase 08's.
+      - Return type annotated; the statement builder is a pure function with no I/O.
+
+      Then rewrite `grant_access`'s body to this three-step shape:
+
+      1. **Keep the leading SELECT fast path verbatim.** The `select(…)` /
+         `scalar_one_or_none()` / `if existing:` / `logger.warning("Access already exists:
+         user_id=%s, dashboard_id=%s", …)` / `return cast(…, existing)` sequence stays
+         exactly as it is. It is the repository's defined no-op, phase 08's `QLT-001`
+         depends on it returning the existing row **unchanged**, and the plan requires
+         confirming the branch still exists. It is now a *fast path only* — correctness no
+         longer depends on it, which is the whole point.
+      2. **Execute the conflict-tolerant insert.** `result = await db.execute(
+         _conflict_tolerant_access_insert(user_id, dashboard_id, permission))`. Then
+         `inserted = result.first()`.
+      3. **Converge on one return.** If `inserted` is not `None`, this call created the row
+         and keeps today's `logger.info("Access granted: user_id=%s, dashboard_id=%s,
+         permission=%s", …)`. If `inserted` is `None`, the conflict was absorbed and the
+         call is a no-op: log the **same** `logger.warning("Access already exists: …")` the
+         fast path uses — same message, same severity, so one log line identifies the
+         condition wherever it is reached from. Then, **on both branches**, re-read the row
+         by the `(user_id, dashboard_id)` pair with the existing select pattern and return
+         that `DashboardAccess`.
+
+      Comments that must be present (each is non-obvious and a reader will otherwise
+      "simplify" the code back to the defect):
+      - On the fast path: it is an optimisation, not the correctness mechanism — a
+        concurrent winner's uncommitted row is invisible to this SELECT, which is exactly
+        the window that produced the 500.
+      - On the no-row branch: **why the re-read is guaranteed to find the row.** PostgreSQL
+        runs the conflict action only once the conflicting transaction has ended. Had the
+        winner rolled back, our INSERT proceeds and `RETURNING` yields a row — so reaching
+        the no-row branch means the winner **committed**, and under READ COMMITTED the next
+        statement takes a fresh snapshot and sees it. (This is the same soundness argument
+        B1's classifier rests on, and it is why no rollback/re-read dance is needed here.)
+      - On the re-read: it is what makes both branches return the **same type** — a
+        `DashboardAccess` — so the method's contract is one return, not two.
+
+      `db.add` / `db.flush` / `db.refresh` are **removed** from this method: the row is
+      created by the Core insert, so there is nothing in the identity map to refresh. Keep
+      the `try/except SQLAlchemyError: logger.error(…); raise` wrapper exactly as it is —
+      it is the repository's error discipline and B4 changes nothing about it. No
+      `AppException` import: **no repository in `src/mkobi/db/repositories/` raises
+      `AppException`**, and this block must not start one.
+
+      The re-read cannot find nothing: in the inserted case it is our own row, in the
+      absorbed case the winner's committed row. If it ever did, `logger.error` with both
+      ids and return `None` — the value `IAccessRepository` already declares and the value
+      no caller reads (`DashboardService.grant_access` and
+      `DashboardService._create_dashboard_with_session` both discard it). **Do not invent a
+      new exception type or an error path for this branch.**
+
+      `grant_access`'s docstring `Returns:` section is updated to state the contract: a
+      `DashboardAccess` representing the desired state, whether or not this call inserted
+      it; a re-grant writes nothing and returns the existing row unchanged. English only.
+
+  - path: src/mkobi/api/routes/dashboards_access.py
+    change: none
+    targets:
+      - type: function
+        name: grant_dashboard_access_endpoint
+    instructions: |
+      **Read-only. This block must not edit this file.** Recorded explicitly so the
+      decision is not re-litigated:
+
+      - The route's handler chain needs **no** new clause. Under B4-IDEM there is no
+        `IntegrityError` left to map (the database absorbs the conflict) and no new error
+        taxonomy to raise, so `except ValueError` → 422, `except AppException: raise` and
+        `except Exception` → `INTERNAL_ERROR` all stay exactly as they are. A genuine
+        database failure still 500s, which is correct and is what the handler's docstring
+        `Raises:` block already says.
+      - `responses=admin_responses` gains **no** 409, so the published OpenAPI operation is
+        unchanged and `tests/test_openapi.py::TestOpenAPIErrorSchemas` stays green
+        unmodified.
+      - The handler docstring's `Raises:` block needs **no** new row. Do not add a 409 row,
+        do not add a "duplicate" row, and do not "correct" the existing `AppException 404:
+        If dashboard not found` line — that line contradicts the live `ValueError` → 422
+        rendering and belongs to phase 12's `AUTZ-006`, not to this finding.
+      - The unreachable `else: raise AppException(code=ErrorCode.DASHBOARD_NOT_FOUND, …)`
+        branch (the service returns `True` or raises, so `if result:` is never false) is a
+        **separate, pre-existing** defect. Do not remove it, do not "fix" it, and do not
+        let its presence change this block's contract.
+
+  - path: src/mkobi/services/dashboard_service.py
+    change: none
+    targets:
+      - type: method
+        name: DashboardService.grant_access
+    instructions: |
+      **Read-only, and read for one reason:** confirm that `grant_access` still discards
+      the repository's return value and still returns `bool`. Under B4-IDEM it keeps doing
+      both — nothing at the HTTP boundary needs the inserted/absorbed distinction, so the
+      service needs no change and no signature change. **Do not** "improve" it to return
+      the row or a richer status; that would be a contract change this finding does not
+      ask for and phase 08 will revisit this method.
+
+  - path: src/mkobi/interfaces/repository_interfaces.py
+    change: modify
+    targets:
+      - type: class
+        name: IAccessRepository
+      - type: method
+        name: grant_access
+    instructions: |
+      **Docstring only. The signature must not change.**
+
+      Confirm first that the declared return type still describes what the implementation
+      returns: `grant_access` returns a `DashboardAccess` (insert branch and absorbed
+      branch alike) or `None`, and `-> Any | None` still describes that. So the change is
+      to the docstring, which currently says only "Grant user access to dashboard."
+
+      The docstring must state, in two or three lines: a `DashboardAccess` representing the
+      row that satisfies the grant; a grant for a pair that already has one is a **no-op**
+      that returns the existing row **unchanged** and writes nothing; the conflict is
+      absorbed by `ON CONFLICT DO NOTHING` on the `(user_id, dashboard_id)` primary key, so
+      two concurrent grants of the same pair cannot fail; and `None` means no row could be
+      read back, which the caller is not expected to distinguish.
+
+      Note in the docstring, or in a short comment, that `pyproject.toml` sets
+      `[[tool.mypy.overrides]] module = ["mkobi.interfaces.*"] ignore_errors = true`, so
+      **the type checker does not verify this file** — the docstring is documentation, and
+      the tests in `tests/test_access_grant_conflict.py` are the substitute evidence. Do
+      not change the signature "to make it checked"; phase 08 owns that question (`C08-11`).
+
+  - path: tests/test_access_grant_conflict.py
+    change: new
+    targets:
+      - type: class
+        name: TestGrantTwiceIsANoOp
+      - type: class
+        name: TestGrantAcrossTwoSessions
+      - type: class
+        name: TestNoOpBranchContract
+    instructions: |
+      New module for the repository-level contract and the race. Follow the naming
+      precedent of `tests/test_advisory_lock.py` and `tests/test_db_pool.py`.
+
+      **Harness rules, non-negotiable:**
+      - Two sessions come from the session-scoped `async_session_maker` fixture, opened
+        directly. `async_db_session` is SAVEPOINT-based and is **not** suitable for a
+        two-session test.
+      - **Never race two coroutines through SQLAlchemy's greenlet bridge.** `asyncio.
+        create_task` plus a concurrent `execute` hangs; B2's research had to kill the probe
+        at 180 s. The holder/second-session pattern is the only permitted shape.
+      - `async_test_engine` is `NullPool`, so a second session is a genuinely separate
+        connection — which is exactly what these tests need.
+
+      `TestGrantTwiceIsANoOp` — single session, no concurrency:
+      - grant a pair with `DashboardPermission.VIEW`, commit, grant the same pair again with
+        `DashboardPermission.ADMIN`;
+      - assert no exception, the returned object is a `DashboardAccess`, `user_id` and
+        `dashboard_id` match, and **`permission == DashboardPermission.VIEW`** — *not*
+        `ADMIN`. This assertion is the no-op contract and the guard against anyone quietly
+        turning this into `on_conflict_do_update`;
+      - re-read from an **independent session** (`async_session_maker`) and assert exactly
+        **one** row for the pair with the stored permission still `VIEW`.
+
+      `TestGrantAcrossTwoSessions` — the race, forced deterministically, three tests:
+      - **`test_winning_insert_is_absorbed_by_the_loser`.** Session A opens a transaction
+        and executes the production statement from
+        `access_repo._conflict_tolerant_access_insert` **without committing**. Session B
+        executes the **same production statement** with a bounded `lock_timeout`
+        (`select_config('lock_timeout', …, true)` in the transaction — the B2 precedent:
+        a bare `SET` leaks onto the pooled connection and must not be used, and the
+        assertion must run on the session that could have leaked). Assert B raises
+        `DBAPIError` with `.orig.sqlstate == "55P03"` and, explicitly, that it is **not** an
+        `IntegrityError` and **not** `"23505"`. Then A commits and B (after its rollback)
+        re-reads and sees the row. The bound is what keeps the test sub-second and makes
+        the loser *wait* rather than error. Comment must record that against the pre-fix
+        `db.add` + ORM insert this statement raises `IntegrityError`/`23505` after the
+        same wait, which is the defect.
+      - **`test_loser_returns_the_winners_row_through_the_production_method`** — the
+        sequenced, fully deterministic race, and the closest thing to the finding's own
+        two-session transcript:
+        1. session A executes the production insert and leaves it uncommitted;
+        2. session B asserts its own `SELECT` returns **nothing** — this is the TOCTOU
+           window, *forced*, and it is the assertion that proves the leading read cannot
+           see the winner and therefore that correctness cannot depend on it;
+        3. session A **commits**;
+        4. session B calls the **production `AccessRepository.grant_access`** and must
+           return the winner's row with no exception and with `permission` equal to **A's**
+           value, not B's.
+        No concurrency: the ordering is fixed by the test, not by the scheduler.
+      - **`test_committed_conflict_is_absorbed_without_an_exception`** — the sharpest
+        discriminator in the block and it needs no concurrency at all. Session A commits
+        the row; session B executes the **production** `pg_insert` statement directly and
+        asserts it raises **nothing** and returns **no row**. Pre-fix the same statement is
+        `IntegrityError`/`23505`.
+      - Every test that creates rows cleans them up (`dashboard_access` cascades from both
+        `users` and `dashboards`, but be explicit).
+
+      `TestNoOpBranchContract` — the two assertions the plan explicitly asks for:
+      - **`test_existing_row_branch_returns_a_dashboard_access`**: pre-create the pair,
+        call `grant_access`, assert `isinstance(result, DashboardAccess)`, and assert the
+        unchanged `AccessRepository.check_access` agrees with `result.permission`. This is
+        the defined no-op branch, proven to exist and to return what `IAccessRepository`
+        declares.
+      - **`test_declared_contract_matches_the_implementation`**: assert
+        `AccessRepository.grant_access` is still a concrete override of
+        `IAccessRepository.grant_access` and that the declared return annotation still
+        admits what the implementation returns. Keep it light — a signature/annotation
+        comparison via `inspect`, not a type-checker substitute (the interface module is
+        under `ignore_errors = true`). Comment states that the gate does not check this.
+
+  - path: tests/test_dashboards_access_api.py
+    change: new
+    targets:
+      - type: class
+        name: TestGrantDashboardAccessEndpoint
+    instructions: |
+      New module: the endpoint has **zero** route-level tests today. This module is the
+      first, and its job is to pin the chosen contract.
+
+      Use `authenticated_client` (its token is an **admin** — this endpoint's service
+      performs no role check of its own, phase 12's `AUTZ-001`/`AUTZ-002`), `async_db_session`
+      for setup, and `async_session_maker` for every independent re-read.
+
+      Setup for the contract tests: create a second `User` with a `uuid4()`-derived email
+      and a `Dashboard` via `UserRepository.create` / `DashboardRepository.create` +
+      `flush()` (create the dashboard **through the repository**, not through
+      `POST /dashboards`, so no owner-grant row is created and the row count stays clean).
+      The grant target's user must exist — `dashboard_access.user_id` is a foreign key.
+
+      Tests:
+      - **`test_grant_twice_returns_200_and_the_same_body`** — POST the identical body
+        twice to `/dashboards/{dashboard_id}/access`. Both responses: status **200**,
+        `message == "Access granted"`, and `dashboard_id`, `user_id`, `permission` matching
+        the request. Then re-read from an **independent session** and assert exactly one
+        `dashboard_access` row for the pair, with the stored `permission` equal to the first
+        request's value.
+      - **`test_grant_twice_is_neither_500_nor_409`** — the contract test, stated
+        negatively on purpose: assert the second response is **not** 500 and **not** 409.
+        This pins B4-IDEM so a later block cannot silently change the promise.
+      - **`test_path_body_mismatch_still_returns_422`** — the existing documented
+        behaviour, pinned so the untouched branch is proven untouched.
+      - **`test_unknown_dashboard_still_returns_422`** — pins the pre-existing
+        `ValueError` → 422 rendering of the missing-dashboard case. It is **wrong**
+        semantically and belongs to phase 12's `AUTZ-006`; this block does not change it,
+        and the test records that it did not move.
+      - **`cleanup is mandatory`.** `DashboardService.grant_access` commits, and on this
+        harness a commit is durable (it commits to the root and releases the fixture's
+        SAVEPOINT), so every row these tests create survives the test. Delete the grant row,
+        then the dashboard, then the second user, in a `finally`. Do not leave a hard-coded
+        email behind.
+
+  - path: docs/02-dashboards/dashboards-api.md
+    change: modify
+    targets:
+      - "§ \"Dashboard Access Management\" → \"24. Grant Dashboard Access\" → the \"Error responses:\" table"
+    instructions: |
+      One **additive** row in that endpoint's error table, matching the table's existing
+      three columns and formatting:
+
+      | `200` | A grant for this `(user_id, dashboard_id)` already exists — idempotent no-op | `Access granted` (same body as a first grant) |
+
+      The table currently lists only 403, 404 and 422 — the absence of any duplicate row is
+      the gap the plan named. Add the row; change nothing else in the file. If the
+      surrounding prose needs one clause saying the grant is idempotent, that is acceptable;
+      **no other section of this document is touched**, and in particular the graph-create
+      tables are B5's.
+
+acceptance_criteria:
+  - >-
+    `AccessRepository.grant_access` executes a conflict-tolerant insert built by a
+    module-private `_conflict_tolerant_access_insert` using
+    `pg_insert(DashboardAccess).on_conflict_do_nothing(index_elements=["user_id",
+    "dashboard_id"]).returning(...)`, and the whole method contains **no** `db.add` /
+    `db.flush` / `db.refresh` for the new row
+  - >-
+    `index_elements` names the two primary-key columns; the bare
+    `on_conflict_do_nothing()` form appears nowhere in the block's diff
+  - >-
+    The repository's defined no-op branch survives verbatim — the leading `SELECT`, the
+    `logger.warning("Access already exists: …")` and `return cast(…, existing)` — and both
+    the fast path and the absorbed-conflict path converge on **one** re-read and **one**
+    return of a `DashboardAccess`
+  - >-
+    A concurrent duplicate cannot produce an `IntegrityError`: no `except IntegrityError`
+    clause exists anywhere in the block's diff, and no driver exception type appears in
+    `src/mkobi/api/routes/dashboards_access.py`
+  - >-
+    `src/mkobi/api/routes/dashboards_access.py`, `src/mkobi/services/dashboard_service.py`
+    and `src/mkobi/db/models/access.py` are byte-identical to HEAD
+  - >-
+    `IAccessRepository.grant_access`'s **signature** is unchanged and its docstring states
+    that a duplicate grant is a no-op returning the existing row unchanged
+  - >-
+    Two sequential grants for one pair return the **same** row with the **stored**
+    permission — never the requested one — and leave exactly one row, confirmed by an
+    independent-session re-read
+  - >-
+    `tests/test_access_grant_conflict.py` forces the race with two sessions from
+    `async_session_maker`, proves the forced TOCTOU window (the loser's `SELECT` sees
+    nothing while the winner is uncommitted), and asserts no `IntegrityError` and no
+    `"23505"` on either path; no test in the block races two coroutines
+  - >-
+    `tests/test_dashboards_access_api.py` exists, is the first route-level coverage for this
+    endpoint, asserts 200 with the same body for a repeated grant, asserts explicitly that
+    the status is neither 500 nor 409, pins the pre-existing 422 renderings, and deletes
+    every row it created
+  - >-
+    Every new test is shown to **discriminate**: with the insert temporarily reverted to
+    `db.add` + `flush`, `test_committed_conflict_is_absorbed_without_an_exception` and the
+    route's status test fail. Restore the fix afterwards and re-run.
+  - >-
+    `tests/test_repositories.py::TestAccessRepository` and
+    `tests/test_dashboard_access.py::TestDashboardAccessCascadeDelete` pass **unmodified**,
+    as does `tests/test_openapi.py::TestOpenAPIErrorSchemas`
+  - >-
+    No new `ErrorCode` member, no change to the `ErrorCode` → HTTP mapping, no
+    `DUPLICATE_RESOURCE` use on this path, no Alembic migration, no Pydantic or OpenAPI
+    schema change, no frontend change, no `docs/SPEC.md` version row
+  - >-
+    `docs/02-dashboards/dashboards-api.md` gains exactly one table row and no other
+    documentation file is modified
+  - >-
+    `ruff check` and `mypy` pass on every touched path; no `print()`, no pandas, no
+    non-English comment or log message, full type hints on the new helper and the new
+    tests
+
+out_of_scope: |
+  Everything below is another block's, another phase's, or another finding's work. Do not
+  touch it, and do not "improve" it while passing through.
+
+  - **Phase 08 `QLT-001` / `VAL-08-008` — the highest-risk misreading here.** `QLT-001`
+    says a re-grant is a **silent no-op that reports success while writing nothing**, and
+    its remedy is the *opposite* direction: either make `grant_access` write `permission`
+    on an existing row, or rename the operation and answer 409. B4 deliberately
+    **preserves** the no-op: the stored permission must stay the first request's value,
+    and `tests/test_access_grant_conflict.py` asserts it. Phase 08 also owns typing the
+    four bare-`str` permission homes as `DashboardPermission`, deleting the `read`/`write`
+    alias branches in `_validate_permission`, and the enum-rejection 500. **None of that is
+    B4's.** If B4's no-op contract and phase 08's remedy conflict, phase 08 wins and B4's
+    docstring and test change with it — B4 does not pre-empt it.
+  - **Phase 12 `AUTZ-001` / `AUTZ-002` / `AUTZ-006`** — the missing authorization gate on
+    the three access endpoints, the `ValueError` → 422 versus `AppException 404` mismatch in
+    the route docstring, and the fourth/fifth refusal rendering. B4 changes no status code
+    on this path.
+  - **`api/routes/dashboards_access.py` entirely** — see its `change: none` instructions
+    above. Read-only.
+  - **The unreachable `else: raise AppException(DASHBOARD_NOT_FOUND)` branch** — a separate
+    pre-existing defect; do not remove it and do not let it change this block's contract.
+  - **B1 (TXN-001), B2 (TXN-005), B3 (TXN-003)** territory — landed at `2174895`/`cea2d06`,
+    `ab76989`/`863b81b`, `907e052`/`a215a40`. B4 shares **no file** with any of them and
+    must not touch the user write path, the advisory-lock module, or the worker.
+    `src/mkobi/db/advisory_lock.py` is B2's and is read-only here.
+  - **B5 (TXN-007)** — the graph-create contract, both graph routes, `GraphRepository.create`
+    and the graph error tables. Same class of finding, different file and different symbol.
+  - **B6, B7 (TXN-009), B8, B9 (TXN-010/011), B10 (TXN-012)** — out of scope in their
+    entirety. In particular B10 owns `docs/06-backend/architecture.md`, and B4 does not
+    touch it.
+  - **`.ai/audit/**` and every other audit artefact** — never edited, per B0's convention.
+    This block writes only production code, tests and the one `docs/02-dashboards/` row.
+  - **`docs/SPEC.md`** — no version row. B2's and B3's rulings both declined one and the
+    phase close records a single row for the whole phase. This overrides the B4 block
+    section's mention of a row.
+  - **`data/storage/manager.py`** — read-only, and note the plan's claim that it already
+    uses `on_conflict_do_nothing` is wrong: it uses `on_conflict_do_update`. The only
+    `on_conflict_do_nothing` precedent is `db/seeders/test_media_dash.py`.
+  - **No schema change.** `DashboardAccess.__table_args__` is the anchor this block works
+    against, not a target. No Alembic revision, no migration.
+  - **No new `ErrorCode`, no use of `DUPLICATE_RESOURCE`, no change to
+    `utils/exceptions.py`'s status mapping.** `DUPLICATE_RESOURCE` exists and maps to 409;
+    this block deliberately does not use it.
+  - **No change to `AccessRepository.revoke_access`, `check_access`, `get_user_dashboards`,
+    `get_all` or `get_by_dashboard`.** They are unchanged and must stay so.
+  - **No frontend change**, including no change to
+    `frontend/src/features/admin/api/adminApi.ts::grantDashboardAccess`.
+
+sequence:
+  - step: 1
+    action: >-
+      Read the B4 block of `.ai/plans/03-db-concurrency-remediation.md` and this task's
+      `extra_context` in full — especially **B4-IDEM** and the two recorded corrections to
+      the plan's B4 section. Then read, by symbol:
+      `AccessRepository.grant_access`, `IAccessRepository.grant_access`,
+      `DashboardService.grant_access`, `DashboardService._create_dashboard_with_session`'s
+      owner-grant, `grant_dashboard_access_endpoint`, `DashboardAccess.__table_args__`,
+      both `on_conflict_do_nothing` sites in `db/seeders/test_media_dash.py`, both
+      `on_conflict_do_update` sites in `data/storage/manager.py`, `ErrorCode` /
+      `DashboardPermission` in `src/mkobi/models/enums.py`, and
+      `docs/02-dashboards/dashboards-api.md` §"24. Grant Dashboard Access".
+    verify: >-
+      You can state, without re-reading, which of the plan's B4-section claims you are
+      overriding and why, and you know that `grant_access` has **two** production callers,
+      both of which discard its return value.
+  - step: 2
+    action: >-
+      Re-read `git status --porcelain` and `git log --oneline -3`. Confirm the five files in
+      `files:` are clean. If any shows uncommitted changes from another agent, re-read and
+      work with them; never revert. Expected HEAD is `a215a40` or later.
+    verify: "The working tree state you are about to edit matches what you last read."
+  - step: 3
+    action: >-
+      Add `_conflict_tolerant_access_insert` to `access_repo.py` and rewrite
+      `grant_access`'s body — keeping the fast path verbatim and converging both branches on
+      one re-read. Run the lint fix afterwards so the `pg_insert` import lands in order.
+    verify: >-
+      `uv run mypy src/mkobi/db/repositories/access_repo.py` is clean, and no `db.add`
+      remains in `grant_access`.
+  - step: 4
+    action: >-
+      Update `IAccessRepository.grant_access`'s **docstring only**. Confirm the signature is
+      untouched.
+    verify: "`git diff` on `repository_interfaces.py` touches the docstring and nothing else."
+  - step: 5
+    action: >-
+      **Regression gate before any new test is written:** run
+      `.\Makefile.ps1 test-select -k "TestAccessRepository" -v` and
+      `.\Makefile.ps1 test-select -k "TestDashboardAccessCascadeDelete" -v`.
+    verify: "Both green, unmodified. A failure here is a defect in your change, not a test to update."
+  - step: 6
+    action: >-
+      Write `tests/test_access_grant_conflict.py`: `TestGrantTwiceIsANoOp`, then
+      `TestGrantAcrossTwoSessions`, then `TestNoOpBranchContract`. Run the module alone.
+    verify: >-
+      All tests pass, the forced-TOCTOU assertion is in place, and no test uses
+      `asyncio.create_task` or a second coroutine.
+  - step: 7
+    action: >-
+      **Prove the repository tests discriminate.** Temporarily revert the insert to
+      `db.add(access_obj)` + `flush()`, re-run `test_committed_conflict_is_absorbed_without_an_exception`
+      and the two-session tests, confirm they **fail**, then restore the fix and re-run to
+      green. Record the result in the commit body.
+    verify: "You have watched the new tests fail against the pre-fix shape. If they pass either way, they prove nothing."
+  - step: 8
+    action: >-
+      Write `tests/test_dashboards_access_api.py`, with the `finally`-block cleanup in place.
+      Then repeat the discrimination check by temporarily restoring the pre-fix insert and
+      confirming the status test fails.
+    verify: "The route test fails pre-fix and passes post-fix; no durable rows survive the module."
+  - step: 9
+    action: >-
+      Add the single row to `docs/02-dashboards/dashboards-api.md`'s
+      §"24. Grant Dashboard Access" error table.
+    verify: "One row added; no other section of the file is touched."
+  - step: 10
+    action: >-
+      Run the targeted suites, then lint and typecheck, then the full suite.
+    verify: "Every command in `verification_steps` is green."
+
+constraints:
+  architecture:
+    - >-
+      API → Service → Repository holds absolutely. This block edits the repository only; the
+      service and the route are unchanged. **A driver exception type must never appear in an
+      HTTP handler** — and under B4-IDEM none is needed, so none is added.
+    - >-
+      The persistence layer never raises `AppException`: no module under
+      `src/mkobi/db/repositories/` imports it, and this block does not start one.
+      `AppException` + `ErrorCode` remain the only error-raising mechanism, and this block
+      adds no `ErrorCode` and no raised error.
+    - >-
+      The repository's role is to make the write conflict-tolerant. It does not classify
+      HTTP outcomes, does not know about status codes, and does not decide what a duplicate
+      means to a client. That decision was made once, in the contract, and it lives in the
+      documentation.
+    - >-
+      `grant_access` keeps exactly one responsibility and one return type. Do not add a
+      helper that decides policy, and do not widen the method to update `permission`.
+  correctness:
+    - >-
+      `index_elements=["user_id", "dashboard_id"]` is **required**. A bare
+      `on_conflict_do_nothing()` would absorb a foreign-key violation or an enum rejection
+      and report it as a successful no-op.
+    - >-
+      No f-string, no `%`, no concatenation into SQL text anywhere in the block's diff.
+    - >-
+      The leading SELECT is an optimisation, never the correctness mechanism. If you find
+      yourself relying on it, the fix is in the wrong place.
+    - >-
+      A re-grant must return the **existing** row and must write **nothing**. Do not
+      introduce `on_conflict_do_update` — that is phase 08's `QLT-001` remedy and it would
+      silently begin applying downgrades.
+    - >-
+      Two sessions, one coroutine, deterministic ordering. Never
+      `asyncio.create_task` / `asyncio.gather` against the engine.
+    - >-
+      Any `lock_timeout` used in a test is applied with
+      `set_config('lock_timeout', :value, true)` — never a bare `SET`, which survives
+      `COMMIT` on the pooled connection (B2's verified finding) — and the assertion runs on
+      the session that could have leaked, because `NullPool` makes a fresh-session check
+      vacuous.
+    - >-
+      Every new test that creates rows cleans them up. On this harness a production
+      `commit()` is durable and the fixture's SAVEPOINT rollback cannot undo it.
+  process:
+    - "English only — docstrings, comments and log messages."
+    - "No `print()`; use `logger = logging.getLogger(__name__)`."
+    - "No pandas. Polars only, and this block touches no data processing."
+    - "Type hints on the new helper and on every new test signature, including the `-> None` returns."
+    - >-
+      Comments only where non-obvious: why the fast path is not the correctness mechanism,
+      why the re-read is guaranteed to find the row, why `index_elements` names the two
+      columns. No narration of what the next line does.
+    - "Run `.\\Makefile.ps1 format` before committing — it runs `ruff check --fix`, which is what sorts imports."
+    - >-
+      Keep the two new test modules separate: repository/race behaviour in
+      `test_access_grant_conflict.py`, HTTP contract in `test_dashboards_access_api.py`.
+      Do not merge them, and do not add grant cases to `tests/test_dashboard_access.py`
+      (it pins the cascade and must stay unmodified).
+
+verification_steps:
+  - command: "git status --porcelain; git log --oneline -3"
+    expect: >-
+      HEAD at or after `a215a40`; the five in-scope files clean. The pre-existing
+      uncommitted deletions under `.ai/` and `frontend/coverage/` are baseline drift, not
+      yours.
+  - command: ".\\Makefile.ps1 test-select -k test_access_grant_conflict -v"
+    expect: >-
+      All three classes pass, including the forced-TOCTOU assertion and the two-session
+      tests. No test hangs and none races two coroutines.
+  - command: ".\\Makefile.ps1 test-select -k test_dashboards_access_api -v"
+    expect: >-
+      The repeated grant is 200 with the same body; the status is explicitly neither 500 nor
+      409; both pre-existing 422 renderings are pinned.
+  - command: ".\\Makefile.ps1 test-select -k \"TestAccessRepository\" -v"
+    expect: "Green **unmodified** — the fresh-row path still works."
+  - command: ".\\Makefile.ps1 test-select -k \"TestDashboardAccessCascadeDelete\" -v"
+    expect: "Green **unmodified**."
+  - command: ".\\Makefile.ps1 test-select -k \"TestOpenAPIErrorSchemas\" -v"
+    expect: >-
+      Green unmodified. This is the proof that the published operation gained no 409 — the
+      single most important compatibility assertion in the block.
+  - command: ".\\Makefile.ps1 test-select -k test_openapi -v"
+    expect: "Unchanged — no Pydantic or response-model change."
+  - command: ".\\Makefile.ps1 test-select -k test_dashboard_access -v"
+    expect: "Both modules green; the cascade test is untouched."
+  - command: "uv run ruff check src/mkobi/db/repositories/access_repo.py src/mkobi/interfaces/repository_interfaces.py tests/test_access_grant_conflict.py tests/test_dashboards_access_api.py"
+    expect: "Clean, including import ordering (I001) on the repository module."
+  - command: "uv run mypy src/mkobi/db/repositories/access_repo.py src/mkobi/interfaces/repository_interfaces.py src/mkobi/api/routes/dashboards_access.py src/mkobi/services/dashboard_service.py"
+    expect: >-
+      No errors. Remember `mkobi.interfaces.*` is under `ignore_errors = true`, so mypy
+      passing here is a precondition, not the evidence — the evidence is the two test
+      modules and the discrimination check.
+  - command: ".\\Makefile.ps1 test"
+    expect: >-
+      Full suite green. This is the block's release gate: many integration suites reach
+      `grant_access` and `DashboardService.create_dashboard`'s owner-grant.
+  - command: "git diff --stat"
+    expect: >-
+      Exactly the six in-scope files. If `src/mkobi/api/routes/dashboards_access.py`,
+      `src/mkobi/services/dashboard_service.py`, `src/mkobi/db/models/access.py` or any
+      file under `.ai/audit/` appears, the block has gone wrong.
+
+notes:
+  - >-
+    Repository state at hand-off: HEAD is `a215a40` — `cea2d06` plus B1's two commits,
+    B2's two and B3's two. B4 shares no file with any of them. The working tree carries
+    only the pre-existing uncommitted deletions under `.ai/` and `frontend/coverage/`;
+    re-check at step 2 regardless.
+  - >-
+    Tests run through the Docker test stack (`.\Makefile.ps1 test-select`); local
+    `uv run pytest` has no test database.
+  - >-
+    Two of the plan's B4-section claims are **overridden** by this task, deliberately:
+    `data/storage/manager.py` does not use `on_conflict_do_nothing`, and no `docs/SPEC.md`
+    version row is added. Both corrections are recorded in `extra_context`.
+  - >-
+    The finding's own evidence is a static proof plus the input report's admission that
+    eight concurrent HTTP grants did not reproduce it. That is why the race test is
+    repository-level and sequenced, not an HTTP concurrency test: the window is narrow and
+    a test that must win a race is a flaky test.
+  - >-
+    The report's line numbers are not binding (B0). Every target above is a symbol, a
+    module, a contract or a table. If a named symbol does not exist, stop and report it
+    rather than substituting the nearest match.
+  - >-
+    The one thing to carry into the commit body: **the contract was chosen, not inherited**
+    — 200 idempotent, over 409 — and the reason is that `on_conflict_do_nothing` makes the
+    racing and sequential duplicates the same code path, so a 409 could only be produced by
+    re-introducing the read that caused the defect.
+
+---
+
+id: task_b4_txn_006_access_grant_conflict_verify
+mode: verify
+status: pending
+title: >
+  B4 / TXN-006 verification — a duplicate grant is the repository's own no-op
+
+description: >
+  Independent verification that a concurrent duplicate access grant is absorbed by the
+  database and reported as the repository's defined no-op — checked against the block's
+  own acceptance criteria and against the ruling, not against the audit report.
+
+depends_on:
+  - task_b4_txn_006_access_grant_conflict
+
+files:
+  - path: src/mkobi/db/repositories/access_repo.py
+    role: the conflict-tolerant write and the preserved no-op branch
+  - path: src/mkobi/interfaces/repository_interfaces.py
+    role: the declared contract (docstring only)
+  - path: src/mkobi/api/routes/dashboards_access.py
+    role: unchanged — the pin is that it stayed unchanged
+  - path: tests/test_access_grant_conflict.py
+    role: repository contract and the forced two-session race
+  - path: tests/test_dashboards_access_api.py
+    role: the HTTP contract, the endpoint's first route-level tests
+  - path: docs/02-dashboards/dashboards-api.md
+    role: the one added error-table row
+
+verify:
+  - check: "git diff --name-only"
+    expect: >-
+      Exactly the six in-scope files. `src/mkobi/api/routes/dashboards_access.py`,
+      `src/mkobi/services/dashboard_service.py` and `src/mkobi/db/models/access.py` are
+      **absent**, and nothing under `.ai/audit/` appears.
+  - check: "read `AccessRepository.grant_access` end to end"
+    expect: >-
+      The leading SELECT and its `logger.warning(\"Access already exists: …\")` /
+      `return cast(…, existing)` branch are intact; the new path executes
+      `_conflict_tolerant_access_insert`; both branches converge on one re-read and one
+      returned `DashboardAccess`; no `db.add` / `db.flush` / `db.refresh` remains; the
+      `except SQLAlchemyError: … raise` wrapper is unchanged.
+  - check: "read `_conflict_tolerant_access_insert`"
+    expect: >-
+      `pg_insert(...).on_conflict_do_nothing(index_elements=[\"user_id\", \"dashboard_id\"]).
+      returning(...)`, parameters bound, **no** f-string or `%` in SQL, no bare
+      `on_conflict_do_nothing()`, and a comment saying why the two primary-key columns are
+      named rather than every conflict being absorbed.
+  - check: "grep the block's diff for `IntegrityError`"
+    expect: "No match. No `except IntegrityError` was added anywhere, and no route clause was added."
+  - check: "grep the block's diff for `on_conflict_do_update`"
+    expect: >-
+      No match. A re-grant still writes nothing — phase 08's `QLT-001` remedy was not
+      pre-empted, and `tests/test_access_grant_conflict.py` asserts the stored permission
+      is the first request's value.
+  - check: "read `IAccessRepository.grant_access` in the diff"
+    expect: >-
+      Docstring only. The signature is byte-identical to HEAD and still describes what the
+      implementation returns, per phase-08's `C08-11`.
+  - check: "read the two-session tests"
+    expect: >-
+      Two sessions from `async_session_maker`, deterministic ordering fixed by the test, an
+      assertion that the loser's SELECT sees nothing while the winner is uncommitted, and
+      assertions that no `IntegrityError` and no `\"23505\"` occurs. No `asyncio.create_task`,
+      no `asyncio.gather`, no second coroutine against the engine.
+  - check: "read the `lock_timeout` used in any test"
+    expect: >-
+      Applied via `set_config('lock_timeout', …, true)`, never a bare `SET`, and asserted on
+      the session that could have leaked rather than on a fresh session (which is vacuous
+      under `NullPool`).
+  - check: "run the new HTTP module twice in the same session"
+    expect: >-
+      Green both times, and the row count in `dashboard_access` is unchanged between runs —
+      the `finally` cleanup works and the tests leak nothing durable.
+  - check: ".\\Makefile.ps1 test-select -k \"TestOpenAPIErrorSchemas\" -v"
+    expect: >-
+      Green **unmodified**. The published operation gained no 409, which is the compatibility
+      claim this contract rests on.
+  - check: ".\\Makefile.ps1 test-select -k \"TestAccessRepository\" -v; .\\Makefile.ps1 test-select -k \"TestDashboardAccessCascadeDelete\" -v"
+    expect: "Both green unmodified."
+  - check: "ask for the discrimination evidence in the commit body"
+    expect: >-
+      The implementor recorded that the new tests **fail** when the insert is temporarily
+      reverted to `db.add` + `flush`. Tests that pass in both shapes prove nothing.
+  - check: "read the commit body for the contract decision"
+    expect: >-
+      It states that **200 idempotent was chosen over 409**, why
+      `on_conflict_do_nothing` makes the racing and sequential duplicates one code path, that
+      the compatibility consequence is 500 → documented-200 with no status code removed, and
+      that `DashboardService.grant_access`'s discarded return is no longer a defect because
+      the contract no longer asks it to report the difference.
+  - check: ".\\Makefile.ps1 lint; .\\Makefile.ps1 typecheck; .\\Makefile.ps1 test"
+    expect: "All three green."
+
+depends_on_candidates: []

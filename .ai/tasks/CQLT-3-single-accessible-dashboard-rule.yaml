@@ -1,0 +1,882 @@
+id: CQLT-3-single-accessible-dashboard-rule
+
+title: One implementation of the accessible-dashboard rule for the graphs and layouts list endpoints
+
+status: pending
+
+priority: high
+
+depends_on:
+  - CQLT-1
+  - CQLT-2
+
+# ── Plan/Audit report source ──
+source_reference: C:\py_dev\mkobi\.ai\plans\08-code-quality-remediation-execution.md
+source_section: "CQLT-3 — One implementation of the accessible-dashboard rule (QLT-008)"
+source_report: C:\py_dev\mkobi\.ai\audit\99-validation\08-code-quality-validated-findings.md
+source_report_section: "QLT-008 — The accessible-dashboard rule has two inline implementations, and a comment names a third that the code never calls"
+source_blocks:
+  - "CQLT-3 — One implementation of the accessible-dashboard rule (QLT-008)"
+  - "`R5` (code context §4 risk register)"
+  - "`DR-08-09` — 'the in-body import goes too' is half wrong"
+  - "`O-14`"
+  - "`DR-08-13` / `DR-08-14` — verification discipline"
+  - "`RE_SCOPED_BLOCKS` row for `CQLT-3`"
+
+# ── Risk ──
+# R5 is the phase's sharpest silent-regression risk: the obvious change drops the
+# admin bypass on two list endpoints with a green suite. status stays `pending`
+# (not `blocked`): the shape decision below removes the need for research, and the
+# mutation proof is this task's own obligation, not a prerequisite.
+risk: MEDIUM — a security regression that is invisible to CI unless a test is added
+
+description: >
+  Delete the two inline copies of the accessible-dashboard rule in
+  `api/routes/graphs.py::get_graphs_endpoint` and
+  `api/routes/layouts.py::get_layouts_endpoint`, and route both through one
+  shared, set-shaped filter that carries the admin bypass in the same commit.
+  This discharges `QLT-008` in full, including the misleading comment in
+  `graphs.py`. No wire change: response shapes, status codes and the two
+  endpoints' differing admin code paths are preserved exactly.
+
+goals:
+  - >
+    Exactly one implementation of the "which dashboards may this caller see"
+    rule remains for these two endpoints, named in the commit body, with the
+    admin bypass present in the same commit that deletes the inline code.
+  - >
+    Prove the admin bypass survives by mutation, not by prose: delete it once,
+    observe the admin-visibility tests fail, restore the file byte-for-byte.
+  - >
+    Replace the rule rather than merely deleting it: a non-admin caller still
+    sees only what it is granted, and a caller with no grant sees an empty
+    collection rather than an error.
+  - >
+    Change no published contract. The OpenAPI document for both endpoints must
+    be byte-identical before and after.
+
+# ── Decisions resolved here. The Implementor makes none of these. ──
+decisions_resolved_by_planner:
+  - id: "1 — how a collection route consumes a path-parameter-shaped dependency"
+    ruling: >
+      Neither option (a) nor option (c); a **new set-shaped dependency in
+      `api/deps.py`** that delegates to an already-existing service call.
+      Concretely: `api/deps.py::get_accessible_dashboard_ids`, which resolves the
+      filter and **returns `None` to mean "no filter applies"** (the admin
+      bypass), or a `list[UUID]` of the dashboards the caller may see.
+    why_this_shape: >
+      `check_dashboard_access` and `require_dashboard_read_access` both answer a
+      **per-dashboard** question — `require_dashboard_read_access` declares
+      `dashboard_id: UUID` as a bare parameter, which FastAPI binds from the
+      path, so on `GET /graphs/` or `GET /layouts` there is nothing to bind and
+      the request would fail with **422**. That is the whole reason the two
+      routes inlined the rule, and it is why the plan calls this block "not a
+      straight substitution".
+
+      The set-shaped home **already exists and already has a production caller**:
+      `services/dashboard_service.py::DashboardService.get_user_dashboards(user_id,
+      db, user_role)` is called by
+      `api/routes/dashboards_crud.py::get_my_dashboards_endpoint` for
+      `GET /dashboards/my`, and it delegates to
+      `db/repositories/dashboard_repo.py::DashboardRepository.get_by_user(user_id,
+      db, is_admin)`. Its non-admin branch is the **same query** as
+      `AccessRepository.get_user_dashboards` — `Dashboard JOIN DashboardAccess
+      WHERE DashboardAccess.user_id = :user_id` — verified by reading both, so
+      the resolved set is identical for a non-admin and the rule is not being
+      widened.
+
+      Option (b) in its raw form — "resolve the accessible set once through a
+      named service call and pass it in" — was rejected because the service
+      returns a **flat list**, which does not distinguish "all dashboards" from
+      "the ones I was granted". A route that called it directly would still have
+      to test `current_user.role == UserRole.ADMIN` itself, so **the duplication
+      would survive** and `QLT-008` would not be discharged. The dependency
+      wraps the service call and turns the role test into a `None` sentinel, so
+      the route contains **no role test at all** and only chooses a query
+      strategy.
+
+      No new *module*, no new *layer*, and **no new rule**: the sentinel is a
+      one-line adapter over a call that already ships. This is why option (a)
+      ("extend the dependency to accept a collection's resolved ids") is
+      rejected — `require_dashboard_read_access`'s contract, docstring and three
+      production callers (`dashboards_filters.py`, `dashboards_graphs.py`,
+      `filter_values.py`) are all per-dashboard, and stretching it would fork
+      the family rather than extend it.
+
+      **Naming:** `get_` not `require_`, matching `get_dashboard_permissions`
+      immediately below it. This dependency **filters**, it never refuses — no
+      `AppException`, no 403 — so a `require_` prefix would misdescribe it.
+  - id: "2 — how the admin bypass survives, per endpoint"
+    ruling: >
+      **It does not survive for free, and this is the block's central fact.**
+      `core/permissions.py::_check_access_with_session` short-circuits for
+      `UserRole.ADMIN` before reading any grant — but a collection route
+      **never reaches that function**, because the set-shaped filter never calls
+      `check_dashboard_access`. So the bypass must be **added deliberately**, and
+      it lives in exactly one place: the `UserRole.ADMIN` short-circuit inside
+      `deps.py::get_accessible_dashboard_ids`.
+
+      Per endpoint:
+      - `GET /graphs/` — `accessible_dashboards is None` ⇒ `graph_repo.get_all(db=db)`.
+      - `GET /layouts` — `accessible_dashboards is None` ⇒ `layout_service.get_all_layouts(db=db)`.
+
+      Neither route body contains a role comparison afterwards. That is what
+      makes the bypass a property of the shared path rather than of each route,
+      and it is why the mutation proof targets `deps.py` and **not**
+      `core/permissions.py::_check_access_with_session` (see
+      `mutation_proof`).
+  - id: "3 — the two endpoints are not symmetric"
+    ruling: >
+      Preserve both behaviours exactly, including the admin path's different code
+      route, because the difference is load-bearing and not cosmetic.
+      `graph_repo.get_all(db=db)` (all graphs) on the admin branch;
+      `layout_service.get_all_layouts(db=db)` on the admin branch; and
+      `layout_service.get_layouts_by_dashboard_ids(dashboard_ids=..., db=db)` on
+      the non-admin branch, **not** `get_all_layouts`.
+
+      Proof that the layouts admin branch must stay `get_all_layouts`:
+      `db/repositories/layout_repo.py::get_layouts_by_dashboard_ids` selects
+      `Layout JOIN Dashboard ON Dashboard.layout_id == Layout.id`, so it returns
+      **only layouts bound to a dashboard**, while `get_all` returns every
+      layout. `db/models/dashboard.py::Dashboard.layout_id` is a **nullable**
+      foreign key (`ondelete="SET NULL"`), so unbound layouts exist and are
+      visible to an admin and to nobody else. `tests/test_layouts.py::TestLayoutsAPI::test_get_layouts_list`
+      creates an **unbound** layout and asserts `len(data) >= 1` — that named pin
+      fails if the admin branch is routed through `get_layouts_by_dashboard_ids`.
+
+      By contrast `db/models/graphs.py::Graph.dashboard_id` is `NOT NULL` with
+      `ondelete="CASCADE"`, so `get_all` and `get_by_dashboard_ids(all ids)` are
+      equivalent for graphs. That equivalence is **not** relied upon: the admin
+      branch calls `get_all` on both endpoints, unchanged.
+  - id: "4 — the fate of the `graphs.py` comment"
+    ruling: >
+      **DELETE** `# Admin bypass is handled inside check_dashboard_access`,
+      together with the block it misnames, in the same commit.
+
+      It does **not** stay. The comment would only become true if the route
+      called `check_dashboard_access`, and `get_graphs_endpoint` does not call it
+      and will not: the comment names a call that does not exist in that
+      function's body, which is exactly the defect `QLT-008` was filed for ("a
+      reader who trusts it concludes the admin bypass is centralised"). Leaving
+      it, or "fixing" it into a reference to `get_accessible_dashboard_ids`,
+      would leave a comment in a route body pointing at a dependency the route
+      body no longer reasons about. The new fact is documented once, in the
+      dependency's docstring, where the rule now lives.
+  - id: "5 — the unused imports"
+    ruling: >
+      Two removals, and the brief names only one of them:
+      - `layouts.py`: delete the **module-level**
+        `from mkobi.db.repositories.access_repo import AccessRepository`
+        (line 28). `UserRole` **stays** in `layouts.py` — it is still used at the
+        create, get-by-id, update and delete endpoints.
+      - `graphs.py`: delete the **in-body**
+        `from mkobi.db.repositories.access_repo import AccessRepository` with the
+        block, **and** remove `UserRole` from
+        `from mkobi.models.enums import DashboardPermission, ErrorCode, UserRole`.
+        `UserRole` has exactly two occurrences in `graphs.py` — the import and the
+        role test being deleted — so `ruff` `F401` fires if it is left. This is
+        an addition to the brief, found by re-reading the file.
+      - `graphs.py` keeps `check_dashboard_access` (four other call sites) and
+        `check_dashboard_access` stays in `deps.py::__all__`.
+      - `deps.py`: add `"get_accessible_dashboard_ids"` to `__all__`, next to
+        `"get_dashboard_permissions"`. Do **not** add the three
+        `require_dashboard_*` names that are missing from `__all__` today —
+        out of scope, recorded below for `CQLT-4`.
+  - id: "6 — `O-14` confirmed"
+    ruling: >
+      `Select-String src/mkobi/api/routes/*.py -Pattern "AccessRepository\(\)"`
+      returns exactly two hits — `graphs.py:192` and `layouts.py:158` — both this
+      block's anchors. There is no third in-body `AccessRepository()`
+      construction in the route layer. Nothing else to do for `O-14`.
+
+# ── Verbatim from the plan and the code context; do not paraphrase ──
+extra_context: |
+  `R5` (.ai/plans/_code-context/08-code-quality-code-context.md §4, verbatim):
+
+  > | R5 | **QLT-008's fix can silently drop the admin bypass** | the two inline
+  > blocks are the only admin check on `graphs` and `layouts` list endpoints; no
+  > test names them | the replacement must be specified with "admin bypass
+  > included" *before* deletion, or an admin loses visibility on two list
+  > endpoints with a green suite |
+
+  `CQLT-3` · Risk — implementation (verbatim, abridged only where it repeats the
+  R5 row):
+
+  > **MEDIUM, and the failure mode is a security regression with a green suite.**
+  > The obvious change — replace the two inline blocks with the shared dependency
+  > — **silently drops the admin bypass** on `graphs` and `layouts` list
+  > endpoints, because the inline blocks are the **only** admin check those two
+  > endpoints have. `check_dashboard_access` does contain an admin bypass, so a
+  > replacement built on it *does* behave correctly for single-dashboard
+  > decisions — but it answers a **per-dashboard** question, and these two
+  > endpoints need an **accessible-dashboard-set** computation. There is no
+  > shared helper for the second question; `require_dashboard_read_access` takes
+  > a `dashboard_id` path parameter and cannot serve a collection route. **The
+  > block therefore cannot be a straight substitution.**
+
+  Rollout safety (verbatim):
+
+  > **`CQLT-3` is the failure mode this plan is most careful about, because
+  > nothing will catch it.** The obvious change — replace the two inline
+  > access-set computations with the shared dependency — **silently drops the
+  > admin bypass** on `GET /graphs` and `GET /layouts`. There is **no shipped
+  > test naming either endpoint**, so the regression is invisible to CI; an
+  > admin sees an empty collection and no error, and every automated dashboard
+  > they drive silently stops rendering. The mitigation is not a caveat: it is
+  > **the replacement being specified with the bypass included in the same commit
+  > that deletes the inline code**, and an admin-visibility test that **fails if
+  > the bypass is removed** — proven by removing it once and observing the
+  > failure.
+
+  `DR-08-09` (verbatim, RECORD_ONLY, applies to this block):
+
+  > Only `graphs.py` imports `AccessRepository` **in-body**. `layouts.py`
+  > imports it at **module level**, so its clause becomes "the module-level
+  > import becomes unused". `require_dashboard_read_access` is still
+  > path-parameter-shaped and unusable for a collection route
+
+  `RE_SCOPED_BLOCKS` row for `CQLT-3` (verbatim):
+
+  > | `CQLT-3` | `EXECUTE_AS_PLANNED` + one correction | none added |
+  > **Corrected:** "the in-body import goes too" applies to `graphs.py` only; for
+  > `layouts.py` it is the module-level import that becomes unused. Admin-sees-all
+  > **and** non-admin-sees-only tests both required, unchanged |
+
+  `O-14` (verbatim):
+
+  > **`api/deps.py`'s in-body `AccessRepository()` constructions in
+  > `graphs.py`/`layouts.py`** beyond the two named by `QLT-008` | Only two
+  > exist; both are `QLT-008`'s anchors | `CQLT-3` | — |
+
+  `QLT-008` (verbatim, Recommendation):
+
+  > Usable as written, and its dependency discipline is correct: `api/deps.py:700`
+  > already declares `require_dashboard_read_access` and its siblings, so the
+  > shared dependency has a home rather than needing one invented. One ordering
+  > note the input omits — deleting the two inline blocks removes the admin
+  > check from those two list endpoints unless the new dependency reproduces it,
+  > so the replacement must be specified as "admin bypass included" before the
+  > old code is deleted, not after.
+
+  `DR-08-14` (verbatim, binding on every block):
+
+  > 1. **One suite at a time on `mkobi-test`.** If another agent is running a
+  > suite, wait — do not start one.
+  > 2. **A rotating failure is not a delta.** Re-run with no other suite active
+  > before recording anything. A failure that moves between runs is
+  > contamination, not a regression.
+  > 3. **Structural non-involvement is the strongest evidence.**
+  > 4. **The measured baseline is now `1 failed / 1417 passed`.**
+
+  And the baseline this block must delta against, per the phase's current
+  state: **`1 failed / 1427 passed`** (that baseline plus `CQLT-1`'s +10
+  passing). The single failure is
+  `tests/test_layouts.py::TestLayoutsAPI::test_create_layout_duplicate_name_returns_400`
+  — stale pre-RFC-7807, phase 09's `O-25` group 2. **Never report an absolute;
+  always report a delta against `1 failed / 1427 passed`.**
+
+# ── Verified state of the tree at `0370c61` (re-read, not assumed) ──
+verified_state:
+  head: "0370c61"
+  baselines:
+    - ".\\Makefile.ps1 test-up — run ONCE before any suite. `Invoke-TestSelect` does NOT start the services."
+    - "`1 failed / 1427 passed` — the single failure is the pre-existing stale `test_create_layout_duplicate_name_returns_400`."
+  drift_from_the_brief:
+    - >
+      `graphs.py`'s list handler has an explicit admin branch too
+      (`else: graphs = await graph_repo.get_all(db=db)`), which the brief did not
+      mention. It must be preserved.
+    - >
+      `graphs.py`'s `UserRole` import also becomes unused (two occurrences only).
+      The brief named only `layouts.py`'s module-level `AccessRepository`.
+    - >
+      `docs/02-dashboards/dashboards-api.md` §11 (List Graphs) documents a
+      `dashboard_id` **query parameter** that `get_graphs_endpoint` does not
+      accept. Pre-existing, not this finding, **not fixed here** — recorded in the
+      commit body for the documentation pass.
+    - >
+      `docs/08-security/access-control.md` has a `### Graph Endpoints` table with
+      a correct `GET /api/v1/graphs/` row and **no** row for `GET /api/v1/layouts`.
+      An absence, not a wrong statement — **not fixed here**, recorded.
+  confirmed_absences:
+    - >
+      **No shipped test names `GET /graphs/`.** `git grep "/graphs" -- tests/`
+      finds `/dashboards/{id}/graphs` (a different router), `POST /graphs/`,
+      `GET|PUT|DELETE /graphs/{id}`, and
+      `tests/test_slash_routing.py::TestSlashRouting::test_graphs_collection_no_slash_is_not_a_307`
+      which asserts `GET /graphs` (no trailing slash) is **404** — it never reaches
+      the handler.
+    - >
+      **Exactly one shipped test names `GET /layouts`**:
+      `tests/test_layouts.py::TestLayoutsAPI::test_get_layouts_list`.
+    - >
+      The one frontend consumer of either endpoint is
+      `frontend/src/features/admin/api/adminApi.ts::getLayouts`
+      (`GET /layouts`). Nothing in `frontend/src/**` calls `GET /graphs/`.
+      This is the R5 blast radius: the **admin** layout picker renders empty.
+  what_the_named_pin_already_proves:
+    - >
+      `test_get_layouts_list` creates an **unbound** layout, calls `GET /layouts`
+      as an **administrator** (`tests/conftest.py::test_user` is `role="admin"`),
+      and asserts `200` and `len(data) >= 1`. Because
+      `get_layouts_by_dashboard_ids` joins `Dashboard`, an empty accessible set
+      would return `[]` and the pin would fail. So it **does** already catch the
+      layouts half of R5, provided the admin keeps calling `get_all_layouts`.
+    - >
+      What it leaves unproven: the non-admin path entirely; the graphs endpoint
+      entirely; the empty-set case; and that the filter is *narrow enough* —
+      `len(data) >= 1` cannot distinguish "filtered by grant" from "returned
+      everything".
+  what_the_pin_does_not_license: >
+    Do not edit its assertions, do not add to `TestLayoutsAPI`, and do not add
+    tests to `tests/test_layouts.py` — that file carries the known-red pin and is
+    a concurrent-edit hazard. The new tests go in a **new module**.
+
+files:
+  - path: src/mkobi/api/deps.py
+    targets:
+      - type: function
+        name: get_accessible_dashboard_ids
+        note: "NEW — the one implementation of the set-shaped rule, admin bypass included"
+      - type: module_attribute
+        name: __all__
+        note: 'add "get_accessible_dashboard_ids" after "get_dashboard_permissions"'
+      - type: function
+        name: require_dashboard_admin_access
+        note: "read-only neighbour — insertion point is immediately after its `return user`"
+    semantic_anchors:
+      insert_before:
+        type: comment
+        value: "# --- Combined dependencies ---"
+
+  - path: src/mkobi/api/routes/graphs.py
+    targets:
+      - type: function
+        name: get_graphs_endpoint
+    semantic_anchors:
+      delete_block_containing:
+        type: comment
+        value: "# Admin bypass is handled inside check_dashboard_access"
+      remove_from_import:
+        type: import
+        value: "mkobi.models.enums"
+
+  - path: src/mkobi/api/routes/layouts.py
+    targets:
+      - type: function
+        name: get_layouts_endpoint
+      - type: import
+        name: "from mkobi.db.repositories.access_repo import AccessRepository"
+        note: "module-level; delete the whole statement"
+    semantic_anchors:
+      delete_block_containing:
+        type: comment
+        value: "# Non-admin users: get only layouts from accessible dashboards"
+
+  - path: tests/test_accessible_dashboard_filter.py
+    targets: []
+    note: "NEW module — three classes, eight tests; see `tests` below"
+
+# ── The three production edits, complete. Nothing here is left to judgement. ──
+changes:
+  - action: add_code
+    file: src/mkobi/api/deps.py
+    description: >
+      Add the set-shaped filter as a `Depends`-shaped dependency, immediately
+      after `require_dashboard_admin_access` returns and before the
+      `# --- Combined dependencies ---` comment.
+    code_hint: |
+      async def get_accessible_dashboard_ids(
+          user: UserRead = Depends(get_current_user_dependency),
+          db: AsyncSession = Depends(get_db_dependency),
+          dashboard_service: Any = Depends(get_dashboard_service),
+      ) -> list[UUID] | None:
+          """Resolve the dashboard filter a collection route must apply.
+
+          A collection route has no ``dashboard_id`` to bind, so it cannot
+          resolve ``require_dashboard_read_access`` or ``check_dashboard_access``:
+          both answer a per-dashboard question. This dependency answers the
+          set-shaped one, and it is the only place the collection rule is
+          written.
+
+          The admin bypass lives here rather than arriving through
+          ``check_dashboard_access``, because a collection route never reaches
+          ``_check_access_with_session``.
+
+          Args:
+              user: Current authenticated user.
+              db: Async database session.
+              dashboard_service: Injected dashboard service.
+
+          Returns:
+              ``None`` when no dashboard filter applies, meaning the caller
+              holds the ``admin`` role and is unrestricted. Otherwise the ids of
+              the dashboards the caller may see; an empty list means no grant,
+              which is an empty collection and not an error.
+          """
+          if user.role == UserRole.ADMIN:
+              logger.info(
+                  "Accessible dashboards unrestricted by admin bypass: user_id=%s",
+                  user.id,
+              )
+              return None
+
+          dashboards = await dashboard_service.get_user_dashboards(
+              user_id=user.id,
+              user_role=user.role,
+              db=db,
+          )
+          return [dashboard.id for dashboard in dashboards]
+
+    notes: |
+      Every symbol used is already imported in `deps.py`: `UserRead`, `Depends`,
+      `AsyncSession`, `UUID` (line 22), `Any`, `UserRole` (line 51), and
+      `get_dashboard_service` (defined at line 324, above the insertion point).
+      `Any` on `dashboard_service` matches the existing idiom at
+      `get_dashboard_permissions`, whose `access_repo` is annotated the same way.
+      Because `get_dashboard_service` is declared `-> Any`, the service call
+      inside this dependency is **documentation-grade, not checker-grade**: mypy
+      verifies the declared `list[UUID] | None` return and the two route call
+      sites, not `get_user_dashboards`' own members. State this in the commit
+      body. `CQLT-4` owns the factory annotations.
+
+  - action: add_code
+    file: src/mkobi/api/deps.py
+    description: "Export the new dependency."
+    code_hint: |
+      # in __all__, immediately after "get_dashboard_permissions",
+      "get_accessible_dashboard_ids",
+
+  - action: replace_function
+    file: src/mkobi/api/routes/graphs.py
+    target: get_graphs_endpoint
+    description: >
+      Add the shared filter as a fourth parameter and replace the inline
+      role test plus in-body `AccessRepository` construction with a single
+      selection on the sentinel. The comment
+      `# Admin bypass is handled inside check_dashboard_access` is **deleted**,
+      not rewritten. `UserRole` is removed from the `mkobi.models.enums` import.
+    code_hint: |
+      async def get_graphs_endpoint(
+          current_user: CurrentUser,
+          db: AsyncSession = Depends(get_db),
+          accessible_dashboards: list[UUID] | None = Depends(
+              get_accessible_dashboard_ids
+          ),
+      ) -> list[GraphRead]:
+          ...
+          logger.info("Getting graphs for user_id=%s", current_user.id)
+
+          try:
+              graph_repo = get_graph_repository()
+              # None means the caller holds the admin role and is unrestricted;
+              # an empty list means no grant and yields no graphs.
+              graphs = (
+                  await graph_repo.get_all(db=db)
+                  if accessible_dashboards is None
+                  else await graph_repo.get_by_dashboard_ids(accessible_dashboards, db)
+              )
+              return [GraphRead.model_validate(g) for g in graphs]
+          except Exception as e:
+              ...  # unchanged
+
+    imports: |
+      from mkobi.api.deps import (
+          get_db_dependency as get_db,
+          get_graph_repository,
+          get_accessible_dashboard_ids,
+          CurrentUser,
+          check_dashboard_access,
+      )
+      # and narrow the enums import:
+      from mkobi.models.enums import DashboardPermission, ErrorCode
+
+    unchanged: |
+      The `@router.get("/")` decorator, its `summary`, `description`,
+      `responses=auth_protected_responses`, the docstring and the
+      `except Exception` 500 handler are all untouched. `graph_repo = get_graph_repository()`
+      stays an in-body call — this block does not change how the repository is
+      obtained. `check_dashboard_access` stays imported for the four endpoints
+      that genuinely need it.
+
+  - action: replace_function
+    file: src/mkobi/api/routes/layouts.py
+    target: get_layouts_endpoint
+    description: >
+      Add the shared filter as a fourth parameter and replace the inline
+      `UserRole.ADMIN` branch plus `AccessRepository()` construction with a
+      selection on the sentinel. The admin branch stays
+      `layout_service.get_all_layouts(db=db)` — see decision 3, this is
+      load-bearing and `test_get_layouts_list` proves it. The module-level
+      `AccessRepository` import is deleted.
+    code_hint: |
+      async def get_layouts_endpoint(
+          current_user: CurrentUser,
+          db: AsyncSession = Depends(get_db_dependency),
+          layout_service: LayoutService = Depends(get_layout_service),
+          accessible_dashboards: list[UUID] | None = Depends(
+              get_accessible_dashboard_ids
+          ),
+      ) -> list[LayoutRead]:
+          ...
+          logger.info("Getting layout list for user_id=%s", current_user.id)
+
+          try:
+              # None means the caller holds the admin role and is unrestricted.
+              # The unrestricted branch must stay get_all_layouts: a layout bound
+              # to no dashboard is visible to an admin and to nobody else.
+              layouts: list[LayoutRead] = (
+                  await layout_service.get_all_layouts(db=db)
+                  if accessible_dashboards is None
+                  else await layout_service.get_layouts_by_dashboard_ids(
+                      dashboard_ids=accessible_dashboards, db=db
+                  )
+              )
+              logger.info("Retrieved layouts: count=%s", len(layouts))
+              return layouts
+          except Exception as e:
+              ...  # unchanged
+
+    imports: |
+      from mkobi.api.deps import (
+          get_db_dependency,
+          CurrentUser,
+          get_layout_service,
+          get_accessible_dashboard_ids,
+      )
+      # DELETE: from mkobi.db.repositories.access_repo import AccessRepository
+      # KEEP:   UserRole (five other uses), DashboardPermission, check_dashboard_access
+
+    unchanged: |
+      The `@router.get("")` decorator, `summary`, `description`,
+      `responses=auth_protected_responses`, the docstring and the 500 handler are
+      untouched. The docstring's "Admins see all layouts" remains true.
+
+# ── Tests: a new module, eight tests, three classes ──
+tests:
+  file: tests/test_accessible_dashboard_filter.py
+  why_a_new_module: |
+    `tests/test_layouts.py` is a named pin's file that currently carries the
+    known-red assertion, and other phases are appending to `tests/` right now; a
+    new module is isolated, reviewable, and mirrors `CQLT-2`'s precedent of one
+    module per access surface. Do not add tests to `tests/test_layouts.py` or
+    `tests/test_graphs.py`.
+  isolation_contract: |
+    Use `flush()`, never `commit()`. `tests/conftest.py::async_db_session` rolls
+    back its SAVEPOINT, so a flush-only test leaves nothing behind; a `commit()`
+    leaks rows into every later test. `tests/conftest.py::async_client` overrides
+    `get_db_dependency` with that same session, so rows a test flushes are visible
+    to the request it then issues. Authenticate the way
+    `tests/test_resource_access_control.py` does — `create_access_token({"user_id":
+    str(user.id), "email": user.email})` into
+    `async_client.headers["Authorization"]` — never by logging in.
+
+    Because the admin branch calls `get_all` / `get_all_layouts`, which return
+    every row in the table including rows committed by other tests, the
+    **admin tests assert superset** (`>=`), never equality. The non-admin tests
+    may assert **exact equality**, because the caller's grant set is exactly the
+    one dashboard the test granted and no leftover row can be on it.
+  tests_to_write:
+    - "TestAccessibleDashboardIdsDependency::test_admin_role_caller_yields_no_dashboard_filter"
+    - "TestAccessibleDashboardIdsDependency::test_non_admin_caller_yields_the_dashboards_the_service_reports"
+    - "TestGraphsListAccessScope::test_admin_role_caller_sees_every_graph"
+    - "TestGraphsListAccessScope::test_non_admin_sees_only_graphs_on_granted_dashboards"
+    - "TestGraphsListAccessScope::test_non_admin_without_grants_sees_empty_collection"
+    - "TestLayoutsListAccessScope::test_admin_role_caller_sees_every_layout_including_unbound"
+    - "TestLayoutsListAccessScope::test_non_admin_sees_only_layouts_bound_to_granted_dashboards"
+    - "TestLayoutsListAccessScope::test_non_admin_without_grants_sees_empty_collection"
+  per_test_contract:
+    - name: TestAccessibleDashboardIdsDependency::test_admin_role_caller_yields_no_dashboard_filter
+      setup: >
+        Build a `UserRead` with `role=UserRole.ADMIN` and a dashboard service that
+        would raise if called; call `get_accessible_dashboard_ids` directly.
+      assert: "The result is `None` — the admin role short-circuits before any query."
+      fails_if: "the bypass is removed (returns `[]` instead of `None`)"
+    - name: TestAccessibleDashboardIdsDependency::test_non_admin_caller_yields_the_dashboards_the_service_reports
+      setup: >
+        A `UserRead` with `role=UserRole.EDITOR` and a stub dashboard service whose
+        `get_user_dashboards` returns two `DashboardSummary`-shaped objects.
+      assert: "The result is exactly those two ids, in order, and the service was called once with `user_role`."
+    - name: TestGraphsListAccessScope::test_admin_role_caller_sees_every_graph
+      setup: >
+        An `admin` user with **no `dashboard_access` row at all**; two dashboards
+        owned by another user, each with one graph created via
+        `GraphRepository().create(db=..., name=..., type=GraphType.BAR, dashboard_id=...)`.
+      assert: "`200`, and the returned ids are a superset of both created graph ids."
+      why: >
+        The bypass discriminator is the **absence of any grant row**. With the
+        bypass removed, the resolved set is empty, `get_by_dashboard_ids([])`
+        returns `[]` (it short-circuits on an empty list), and the assertion fails.
+    - name: TestGraphsListAccessScope::test_non_admin_sees_only_graphs_on_granted_dashboards
+      setup: >
+        An `editor` user granted `DashboardPermission.VIEW` on dashboard A only;
+        dashboard A and dashboard B each carry one graph.
+      assert: >
+        `200`, and the returned ids are **exactly** the graph on dashboard A —
+        the graph on dashboard B is absent. This is the half that distinguishes
+        "the bypass was dropped" from "the filter is too narrow".
+    - name: TestGraphsListAccessScope::test_non_admin_without_grants_sees_empty_collection
+      setup: "An `editor` user with no grants; two dashboards each carrying one graph."
+      assert: "`200` with an empty JSON list — not 403, not 500."
+    - name: TestLayoutsListAccessScope::test_admin_role_caller_sees_every_layout_including_unbound
+      setup: >
+        An `admin` user with **no grant row**; layout L1 created via
+        `LayoutRepository().create(db=..., name=..., definition={"grid": []})` and
+        **left unbound**, layout L2 bound to dashboard A by creating
+        `DashboardRepository().create(db=..., name=..., created_by=..., layout_id=L2.id)`.
+      assert: "`200`, and the returned ids are a superset of `{L1, L2}`."
+      why: >
+        L1 is the discriminating row. `get_layouts_by_dashboard_ids` joins
+        `Dashboard`, so L1 is reachable **only** through `get_all_layouts`. If the
+        admin branch is ever routed through the filtered call, this test fails
+        even though the admin still sees L2.
+    - name: TestLayoutsListAccessScope::test_non_admin_sees_only_layouts_bound_to_granted_dashboards
+      setup: >
+        An `editor` user granted `VIEW` on dashboard A only; dashboard A bound to
+        layout L1, dashboard B bound to layout L2.
+      assert: "`200`, and the returned ids are exactly `[L1]`."
+    - name: TestLayoutsListAccessScope::test_non_admin_without_grants_sees_empty_collection
+      setup: >
+        An `editor` user with no grants; two dashboards, each bound to its own layout.
+      assert: "`200` with an empty JSON list — not 403, not 500."
+  assertion_discipline: >
+    Assert the returned set and the status code. Assert the set by `id`, not by
+    list index or ordering — neither call site promises an order. Do not assert
+    on SQL, on which repository method ran, on log lines, or on the dependency's
+    internals; the component interaction under test is "caller's role and grants
+    in, correct collection out".
+  pin_assertions_untouched: |
+    `tests/test_layouts.py::TestLayoutsAPI::test_get_layouts_list` and every other
+    named pin keep their assertions byte-for-byte.
+
+# ── The mutation proof. Required; not optional; not prose. ──
+mutation_proof:
+  target: "src/mkobi/api/deps.py::get_accessible_dashboard_ids — the `UserRole.ADMIN` short-circuit"
+  why_not_permissions_py: >
+    `core/permissions.py::_check_access_with_session` is **not** the mutation
+    target for this block, and the reason is the block's own design: a collection
+    route never reaches that function, because the set-shaped filter does not call
+    `check_dashboard_access`. Mutating it would leave both endpoints behaving
+    identically — which is the evidence that the rule is no longer per-dashboard,
+    but it produces **no test failure** and therefore no proof. Mutate the
+    bypass that these two endpoints actually use.
+  procedure:
+    - "`uv run ruff check src/mkobi/api/deps.py` green, then `Get-FileHash src/mkobi/api/deps.py -Algorithm SHA256` and record the digest."
+    - >
+      Delete the `if user.role == UserRole.ADMIN:` short-circuit (its `logger.info`
+      and `return None` go with it) from `get_accessible_dashboard_ids`. Change
+      nothing else in the file.
+    - >
+      Run the three admin-visibility tests and **observe each one fail**:
+      `TestGraphsListAccessScope::test_admin_role_caller_sees_every_graph`,
+      `TestLayoutsListAccessScope::test_admin_role_caller_sees_every_layout_including_unbound`,
+      `TestAccessibleDashboardIdsDependency::test_admin_role_caller_yields_no_dashboard_filter`.
+      Expected shape: `200` with an empty list where rows were expected, and `[]`
+      where `None` was expected. **Record the actual assertion text of each
+      failure** — the commit body quotes it.
+    - >
+      Restore the deleted lines **byte-for-byte with the editor**. Do **not** use
+      `git checkout`, `git restore`, `git reset` or `git stash` — all forbidden.
+    - >
+      Re-run `Get-FileHash src/mkobi/api/deps.py -Algorithm SHA256` and confirm the
+      digest is **identical** to the one recorded before the mutation.
+    - "`uv run ruff check src/mkobi/api/deps.py` green again, and the three tests pass again."
+  forbidden_file_standing_proof: |
+    `src/mkobi/core/permissions.py` is **not edited at all** by this block,
+    including for the mutation. Prove it: `git diff --stat src/mkobi/core/permissions.py`
+    returns **empty** at the end. Record that in the commit body.
+  structural_proof_replaces_a_second_db_run: |
+    `DR-08-14` rule 3 prefers structural evidence and the suite is single-tenant.
+    Instead of a second mutation run against `_check_access_with_session`, record
+    these free greps as the "exactly one implementation remains" evidence:
+      - `Select-String -Path src/mkobi/api/routes/graphs.py,src/mkobi/api/routes/layouts.py -Pattern "UserRole"` returns **only** `layouts.py`'s five pre-existing role tests on the create / get-by-id / update / delete endpoints — **zero** in `get_graphs_endpoint` and **zero** in `get_layouts_endpoint`.
+      - `Select-String -Path src/mkobi/api/routes/*.py -Pattern "AccessRepository"` returns **no hits**.
+      - `Select-String -Path src/mkobi/api/routes/*.py -Pattern "get_user_dashboards"` returns **no hits**.
+      - `Select-String -Path src/mkobi/api/routes/graphs.py,src/mkobi/api/routes/layouts.py -Pattern "get_accessible_dashboard_ids"` returns exactly two hits, one per file.
+
+# ── Verification ──
+verification:
+  preconditions:
+    - ".\\Makefile.ps1 test-up — ONCE, before any suite. `Invoke-TestSelect` does not start the services."
+    - "`uv run ruff check src/ tests/` green and `uv run mypy src/` green **before** the first edit. A green gate here is a precondition, never this block's evidence."
+    - "`uv run python -c \"import mkobi.api.deps\"` succeeds (the import-graph smoke check)."
+    - "No other agent is running a suite on `mkobi-test` (`DR-08-14`). If one is, wait."
+  run:
+    - "`.\\Makefile.ps1 test-select -k test_accessible_dashboard_filter -v` — all 8 pass."
+    - "`.\\Makefile.ps1 test-select -k test_get_layouts_list -v` — **green unmodified**. This is the shipped admin-bypass pin on the layouts endpoint."
+    - "`.\\Makefile.ps1 test-select -k \"TestGraphsAPI or TestGraphService or TestLayoutService\" -v` — the neighbouring modules must not move."
+    - "`.\\Makefile.ps1 test-select -k TestDashboardAccessDependencies -v` — the dependency family this block extends."
+    - "`.\\Makefile.ps1 test-select -k TestCheckDashboardAccess -v` — `CQLT-1`'s pin on the per-dashboard path, which this block does not touch."
+    - "`.\\Makefile.ps1 test-select -k TestResourceAccessControl -v` — all four classes green unmodified."
+    - "`.\\Makefile.ps1 test-select -k \"TestAdminBypass or TestAccessControl or TestCreateDashboard\" -v` — `test_dashboards_api.py`'s three named classes."
+    - "`.\\Makefile.ps1 test-select -k test_dashboards_access_api -v` — `CQLT-2`'s sixteen, unchanged."
+    - "`.\\Makefile.ps1 test-select -k \"test_access_grant_conflict or TestAllMappedEnumsConsistency or test_openapi\" -v`"
+    - "`.\\Makefile.ps1 test` — the full suite. Report a **delta** against `1 failed / 1427 passed`, never an absolute."
+  expected_delta: |
+    `1 failed / 1427 passed` → `1 failed / 1435 passed` (+8 new, 0 new failing).
+    The single failure remains
+    `tests/test_layouts.py::TestLayoutsAPI::test_create_layout_duplicate_name_returns_400`,
+    which is pre-existing and phase 09's (`O-25` group 2). **Do not repair it
+    here** — `tests/test_layouts.py` is a named pin's file.
+  openapi_check: |
+    `GET /api/v1/graphs/` and `GET /api/v1/layouts` must publish an **identical**
+    OpenAPI document before and after. Both endpoints' `summary`, `description`
+    and `responses` are untouched, and the new dependency contributes no query
+    parameter (every one of its parameters is a `Depends`), so
+    `test_openapi.py` stays green and the diff must contain no change to either
+    decorator.
+  contamination_rule: >
+    A failure that **moves between runs** is contamination, not a regression
+    (`DR-08-14` rule 2). Re-run with no other suite active before recording
+    anything.
+
+# ── Commit ──
+commit:
+  message_subject: "refactor(access): route both collection lists through the shared dashboard filter"
+  conventions: '`{type}({scope}): {description}`, lowercase imperative, no trailing period. One commit.'
+  body_must_state:
+    - >
+      **The ordering obligation:** the inline duplicate is deleted in the same
+      commit that adds the shared call, and the admin bypass is present in that
+      commit — named as `api/deps.py::get_accessible_dashboard_ids`.
+    - >
+      **The mutation proof:** which endpoint tests were observed failing when the
+      bypass was removed, quoting the actual assertion text of each, and that
+      `src/mkobi/api/deps.py` was restored byte-for-byte (SHA-256 before and after
+      identical). Also that `src/mkobi/core/permissions.py` was not edited at all
+      and `git diff --stat` on it is empty, and why
+      `_check_access_with_session` was not the mutation target.
+    - >
+      **How the bypass survives, per endpoint:** `accessible_dashboards is None`
+      ⇒ `graph_repo.get_all(db=db)` on `GET /graphs/`, and
+      ⇒ `layout_service.get_all_layouts(db=db)` on `GET /layouts`; that the
+      `UserRole.ADMIN` test lives only in the dependency, so neither route body
+      contains one.
+    - >
+      **That no new enforcement point was created:** the role test existed twice
+      and now exists once; the set query already existed in
+      `DashboardService.get_user_dashboards` with a production caller at
+      `GET /dashboards/my`, and its non-admin branch is the same query as
+      `AccessRepository.get_user_dashboards`, so the resolved set is unchanged.
+    - >
+      **That the two endpoints keep different data-access paths** and different
+      admin routes: `get_by_dashboard_ids` vs `get_layouts_by_dashboard_ids`, and
+      `get_all` vs `get_all_layouts`; and why the layouts admin branch must stay
+      `get_all_layouts` (it is the only path that returns layouts bound to no
+      dashboard, which `tests/test_layouts.py::TestLayoutsAPI::test_get_layouts_list`
+      depends on).
+    - >
+      **The fate of the `graphs.py` comment** — deleted, not rewritten, because
+      `get_graphs_endpoint` does not call `check_dashboard_access` and the comment
+      named a call that was never there — **and of `layouts.py`'s module-level
+      `AccessRepository` import**, plus `UserRole` in `graphs.py`.
+    - >
+      **The measured delta:** `1 failed / 1427 passed` → `1 failed / 1435 passed`
+      (+8), the single failure being the pre-existing stale
+      `test_create_layout_duplicate_name_returns_400`.
+    - >
+      **That no shipped test named either endpoint before this block** — `GET /graphs/`
+      had none at all and `GET /layouts` had exactly one — so this block is what
+      makes the behaviour observable for the first time. Name
+      `frontend/src/features/admin/api/adminApi.ts::getLayouts` as the only
+      affected consumer.
+    - >
+      **That `get_dashboard_service` is declared `-> Any`**, so the service call
+      inside the new dependency is documentation-grade rather than checker-grade;
+      `CQLT-4` owns the factory annotations.
+    - "**No `docs/` change and no `docs/SPEC.md` version row** — deferred to the phase documentation pass, whose table other phases append to concurrently."
+
+# ── Documentation ──
+documentation:
+  ruling: "**No `docs/` edit is warranted by this block.** State this explicitly; do not go looking for a sentence to fix."
+  why: >
+    `QLT-008` is a duplication of an implementation site, not a wrong contract.
+    The observable behaviour of both endpoints is unchanged, and both documents
+    describe that behaviour accurately as written.
+  checked_and_correct:
+    - >
+      `docs/08-security/access-control.md::### Graph Endpoints` — the
+      `GET /api/v1/graphs/` row reads "Graph definitions are filtered by dashboard
+      access". Correct; the bypass is a superset of that.
+    - >
+      `docs/08-security/access-control.md::## Access Check Function` — names
+      `check_dashboard_access` as the central mechanism. Correct: that is still
+      the per-dashboard mechanism. Only the number of implementations of the
+      *collection* rule drops, from two to one.
+    - >
+      `docs/02-dashboards/dashboards-api.md` §11 (List Graphs) — "Returns graphs
+      for dashboards the user has access to." True, including for an admin.
+    - >
+      `docs/02-dashboards/dashboards-api.md` §6 (List Layouts) — carries no
+      enforcement sentence at all, so there is nothing wrong to correct.
+  recorded_not_fixed:
+    - >
+      `docs/08-security/access-control.md` has **no row for
+      `GET /api/v1/layouts`** in any endpoint table — an absence, not a wrong
+      statement. Hand to the phase documentation pass.
+    - >
+      `docs/02-dashboards/dashboards-api.md` §11 documents a `dashboard_id`
+      **query parameter** on `GET /api/v1/graphs/` that
+      `get_graphs_endpoint` does not accept. Pre-existing, outside `QLT-008`, and
+      **not fixed here**. Hand to the phase documentation pass by name.
+  forbidden:
+    - "`docs/SPEC.md` — no edit, and **no version row**."
+    - "`docs/16-chart-presentation-contract/` — phase 16's (`C08-3`)."
+    - "`docs/11-guides/create-dashboard.md` — unowned, and it carries `O-26`'s 20 committed merge-conflict blocks. Do not touch."
+
+# ── Constraints ──
+constraints:
+  writable:
+    - "src/mkobi/api/deps.py — ONLY the new dependency and its `__all__` entry."
+    - "src/mkobi/api/routes/graphs.py — `get_graphs_endpoint`, the two imports."
+    - "src/mkobi/api/routes/layouts.py — `get_layouts_endpoint`, the two imports."
+    - "tests/test_accessible_dashboard_filter.py (new)."
+  forbidden:
+    - >
+      `src/mkobi/core/permissions.py` — **not edited at all**, including for the
+      mutation proof, which targets `deps.py` instead. Prove non-involvement with
+      `git diff --stat src/mkobi/core/permissions.py` (empty).
+    - "`src/mkobi/api/routes/dashboards_access.py` — `CQLT-2`'s."
+    - "`src/mkobi/db/repositories/*` and `src/mkobi/services/*` — **no edit is required by the chosen shape**: `DashboardService.get_user_dashboards` and `DashboardRepository.get_by_user` already implement the rule and are only *called*. If you conclude an edit is required, stop and report it; do not make one."
+    - "`pyproject.toml`, `Makefile.ps1`, `alembic/`, `.ai/**`."
+    - "Every named pin's assertions — `test_get_layouts_list`, the four `test_resource_access_control.py` classes, `test_dashboards_api.py::TestAdminBypass` / `::TestAccessControl` / `::TestCreateDashboard`, `test_dashboards_access_api.py`'s sixteen, `test_deps.py::TestDashboardAccessDependencies`, `test_permissions.py::TestCheckDashboardAccess`, `test_access_grant_conflict.py`, `test_enum_db_consistency.py::TestAllMappedEnumsConsistency`, `test_openapi.py`."
+  git:
+    - "Never `git reset`, `git checkout`, `git restore`, or rewrite history."
+    - "Stage only the files listed under `writable`. The working tree carries an unrelated tracked-deletion set under `.ai/**`; leave it alone."
+  gates:
+    - "`uv run ruff check src/ tests/` and `uv run mypy src/` are **preconditions, not evidence**."
+    - "Do **not** widen a gate: `alembic/env.py` stays named in both `Makefile.ps1::Invoke-Lint` and `::Invoke-Typecheck`."
+    - >
+      `[[tool.mypy.overrides]] module = ["mkobi.interfaces.*"] ignore_errors = true`
+      — an annotation drawn from that module is documentation-grade, not
+      checked-grade. The new dependency does not rely on one; it annotates
+      `dashboard_service: Any`, matching `get_dashboard_permissions`.
+  style:
+    - "English only (`.kilo/rules/project.md` rule 1)."
+    - "Production code is king (`AGENTS.md` rule 2) — never distort production code for a test."
+    - "Comments only where the logic is non-trivial; the two body comments specified above are the whole allowance."
+    - "Re-read each target by symbol before editing it. Report any material divergence from this task."
+
+acceptance_criteria:
+  - "`git grep -n AccessRepository -- src/mkobi/api/routes/` returns nothing."
+  - "`get_graphs_endpoint` and `get_layouts_endpoint` contain **no** `UserRole` comparison."
+  - >
+    `UserRole` removed from `graphs.py`'s enums import; `AccessRepository`'s
+    module-level import removed from `layouts.py`; `UserRole`, `DashboardPermission`
+    and `check_dashboard_access` retained in `layouts.py`.
+  - >
+    `src/mkobi/api/routes/graphs.py`, `src/mkobi/api/routes/layouts.py`,
+    `src/mkobi/api/deps.py`, `tests/test_accessible_dashboard_filter.py` — the
+    only files in the diff. No `docs/`.
+  - "`src/mkobi/core/permissions.py` untouched: `git diff --stat` empty."
+  - >
+    The 8 new tests pass; the 3 admin-visibility tests were **observed failing**
+    with the bypass removed and the failure text is quoted in the commit body;
+    `deps.py` SHA-256 identical before and after the mutation.
+  - "`tests/test_layouts.py::TestLayoutsAPI::test_get_layouts_list` green, assertions unmodified."
+  - "Full suite: `1 failed / 1435 passed` (+8, 0 new failing) — reported as a delta."
+  - "`uv run ruff check src/ tests/` and `uv run mypy src/` green; no gate widened."
+  - "OpenAPI for both endpoints byte-identical."
+  - >
+    The commit body contains every clause in `commit.body_must_state`, and it
+    states plainly that no shipped test named either endpoint before this block.

@@ -1,0 +1,757 @@
+id: CQLT-2
+title: Make the declared dashboard-access audience executable at the ruled shared dependency
+
+status: pending
+
+priority: high
+
+depends_on: []
+
+source_reference: C:\py_dev\mkobi\.ai\plans\08-code-quality-remediation-execution.md
+source_section: CQLT-2 — Make the declared audience executable (QLT-002)
+source_blocks:
+  - "Owner rulings applied — 2026-10-03 (D-08-4)"
+  - "Owner rulings recorded at Phase 0 — all four questions answered 2026-10-04 (DR-08-02)"
+  - "D-08-9 CORRECTED — the order is CQLT-2 → CQLT-1"
+  - "Block rulings from the Researcher evidence (four CQLT-2 rows)"
+  - "CQLT-2 — Make the declared audience executable (QLT-002)"
+  - "C08-2 · C08-11 · O-03 · DR-08-02 · O-12 (seam register)"
+source_file: .ai/audit/99-validation/08-code-quality-validated-findings.md
+findings_discharged:
+  - QLT-002
+  - VAL-08-005
+
+status_note: >
+  **This block is FIRST in the single-implementor queue** (corrected `D-08-9`, 2026-10-04), not
+  third. `CQLT-1` follows it. `depends_on` is empty deliberately: the plan's only hard gate,
+  `D-08-4`, is RULED and both halves are answered; `CQLT-0` is a soft predecessor whose deliverable
+  (the anchor register) ships with the plan itself.
+
+description: >
+  Wire the shared dependency `api/deps.py::require_dashboard_admin_access` into the three handlers of
+  `api/routes/dashboards_access.py` — grant, list, revoke dashboard access — by replacing each
+  `current_user: CurrentUser` parameter with `current_user: UserRead = Depends(require_dashboard_admin_access)`,
+  leaving all three handler bodies untouched, and reconcile every prose declaration of the audience in
+  the same commit (module docstring, the three OpenAPI `description` strings, the grant handler
+  docstring, `docs/02-dashboards/dashboards-api.md` §24–26, and the Access Management Endpoints table in
+  `docs/08-security/access-control.md`). Add the route-level tests that prove the gate is live
+  end-to-end, in the already-existing `tests/test_dashboards_access_api.py`.
+
+goals:
+  - Make the ruled audience executable at the one ruled enforcement point, with zero new enforcement sites
+  - Land the gate BEFORE `CQLT-1` makes the grant write path a real setter (closes the escalation window)
+  - Prove the gate is live with a test that fails if the admin bypass is removed — the suite is structurally blind to it today
+  - Reconcile every audience declaration in code and both `docs/` files inside the same commit
+  - Record the AZ-3 clause as satisfied vacuously, the 403-on-absent divergence as AZ-5's, and the list read/write tension as an open notice to DP-12-B/AZ-5
+  - Leave the create path at zero code, recorded as covered by the same rule rather than exempted
+
+# ── Rulings already decided. Implement exactly these. Do not re-derive, do not re-open. ──
+extra_context:
+  ruling_1_audience:
+    id: D-08-4 (Product Owner, 2026-10-03, register cluster 1 via DP-12-A)
+    ruled: >
+      Owner **or** administrator on all four write surfaces, **plus an explicit rule that an
+      administrator who is neither owner nor grantee may still manage access**. The fourth write
+      surface is dashboard creation (`POST /dashboards/`), already admin-only and out of this block's
+      code scope. **Never re-open the audience.**
+    what_the_code_actually_enforces: >
+      The gate admits a caller who holds an `admin`-level `dashboard_access` row on the target dashboard,
+      **or** who holds the `admin` **role** (the bypass in `core/permissions.py::_check_access_with_session`).
+      "Owner" enters only because `DashboardService.create_dashboard` writes an `ADMIN` grant to
+      `owner_id`; the gate never reads `dashboards.created_by`. `DashboardRepository.create` (used by
+      every existing test in this module) writes **no** grant, so a test that wants an owner admitted
+      must write the grant explicitly. An implementor who assumes the gate reads `created_by` will
+      write a wrong test.
+
+  ruling_2_enforcement_point:
+    id: C08-2 / D-08-4 collision resolution
+    ruled: >
+      The single enforcement point is the **shared dependency `api/deps.py::require_dashboard_admin_access`** —
+      chosen because it names one point, settles the two-owner collision, and is the only option a new
+      call site cannot bypass. **Plan 12 installs `AZ-3`; phase 08 co-signs and installs no second copy.**
+
+  ruling_3_shape:
+    id: "Block rulings from the Researcher evidence — CQLT-2 enforcement shape"
+    ruled: >
+      **RULED option A.** In each of the three handlers, **replace** `current_user: CurrentUser` with
+      `current_user: UserRead = Depends(require_dashboard_admin_access)`. **Handler bodies unchanged.**
+      Live in-repo precedent: `dashboards_filters.py::get_dashboard_filters_endpoint`, which *replaces*
+      rather than combines. **Do NOT combine `Depends` with a separate `current_user` parameter** — the
+      gate makes the whole owner-or-administrator decision, and a second identity parameter is a second
+      thing to get wrong. The precedent the plan cited (`graphs.py`) does not exist: `graphs.py` has
+      zero `require_dashboard_*` references.
+    no_deps_py_edit: >
+      **No edit to `api/deps.py`** (`C08-1` — the file is phase-04 co-owned). No new symbol, no new
+      read-shaped dependency, no per-route or per-service check. The helper is a pure passthrough to
+      `check_dashboard_access(..., required_permission="admin")` and needs nothing.
+
+  ruling_4_no_404_branch:
+    id: "Block rulings — CQLT-2 the 404 branch"
+    ruled: >
+      **No 404 branch in the dependency.** Adding one would be wrong. The 403/404 dual-signal does not
+      exist on these three routes to be preserved: grant's `DASHBOARD_NOT_FOUND` branch is **unreachable**
+      (`DashboardService.grant_access` raises `ValueError` for an absent dashboard, never returns
+      `False`, so an absent dashboard renders **422**); list returns `200 []`; revoke's only 404 is a
+      missing *access record*. The dual-signal is implemented on `GET /dashboards/{id}` alone. A probe
+      would break `tests/test_dashboards_access_api.py::TestGrantDashboardAccessEndpoint::test_unknown_dashboard_still_returns_422`
+      and pre-empt `AZ-5`.
+
+  ruling_5_create_path:
+    id: "Block rulings — CQLT-2 create path / VAL-08-005"
+    ruled: >
+      **Zero code.** `DashboardService.create_dashboard` already writes a `DashboardPermission.ADMIN`
+      grant to `owner_id`, which is always an `AdminUser`, so the ruled rule holds over it **by
+      construction**. Record it in the commit body as **covered by the same rule, not exempted**. Add
+      no check and no test there — a check would be a second enforcement point, forbidden by `C08-2`.
+
+  ruling_6_list_audience:
+    id: "Block rulings — CQLT-2 list audience"
+    ruled: >
+      **Admin gate** on `GET …/access`, per the audience ruling, **with the read/write tension recorded
+      as an open notice to `DP-12-B`/`AZ-5` and not resolved here**: `DP-12-A` counts four *write*
+      surfaces and `GET …/access` is a read. `require_dashboard_read_access` is **not** an improvement —
+      it admits any `view` grantee, and the ACL list *is* the membership map. Two of the three code
+      declarations said admin and none said viewer. **Do not open a new read-shaped dependency.**
+
+  ruling_7_ownership:
+    id: C08-2 / DR-08-02
+    ruled: >
+      Plan 12 installs `AZ-3`; phase 08 **co-signs** and installs no second copy.
+
+  dr_08_02_vacuous:
+    id: DR-08-02 (Phase-0 ruling, option (a))
+    ruled: >
+      The `AZ-3` clause requiring the `require_dashboard_admin_access` / `check_dashboard_access`
+      asymmetry to be "corrected or explicitly accounted for" **rests on an asymmetry that does not
+      exist** — `_check_access_with_session` carries the admin bypass *before* the grant read, so an
+      administrator who is neither owner nor grantee **is** granted. The clause is **satisfied
+      vacuously**. No code change depends on it. The real divergence is the **absence of an existence
+      probe** against `docs/SPEC.md`'s 403/404 dual-signal, and that is a live item owned by `AZ-5` —
+      state it, do not invent a clause for it.
+
+  verified_state_at_head:
+    head: b95ba52
+    worktree: "`git status --porcelain -- src tests docs` → empty. Re-verify before editing."
+    route_module: >
+      `src/mkobi/api/routes/dashboards_access.py`, 227 lines. `router = APIRouter(tags=["dashboards"])`.
+      Imports today: `from mkobi.api.deps import (CurrentUser, get_db_dependency, get_dashboard_service)`.
+      `CurrentUser` is referenced on exactly three lines — the three signatures — so replacing all
+      three leaves the import unused and **ruff `F401` will fire**; the import must be edited.
+      There is **no** `from mkobi.models.user import UserRead` in the module today.
+    helper: >
+      `src/mkobi/api/deps.py::require_dashboard_admin_access(dashboard_id, user=Depends(get_current_user_dependency), db=Depends(get_db_dependency)) -> UserRead`
+      — a pure passthrough to `check_dashboard_access(..., required_permission="admin")` raising
+      `AppException(code=ErrorCode.PERMISSION_DENIED, detail="You do not have admin access to this dashboard")`.
+      `ErrorCode.PERMISSION_DENIED` maps to `HTTP_403_FORBIDDEN` in `src/mkobi/utils/exceptions.py`.
+      **Zero production references** until this block lands.
+    bypass: >
+      `src/mkobi/core/permissions.py::_check_access_with_session` returns `True` for `UserRole.ADMIN`
+      before reading any `dashboard_access` row. **Read-only for this block — no edit.**
+    test_module: >
+      `tests/test_dashboards_access_api.py` **already exists** (208 lines, 4 tests, class
+      `TestGrantDashboardAccessEndpoint`). Both plans claimed no test module exists; that claim is
+      refuted. It pins idempotent-200-on-duplicate (×2), path/body mismatch → 422, and
+      **unknown dashboard → 422**. **Add the new tests here, not in a new module.**
+    suite_blind_spot: >
+      **`tests/` contains ZERO references to `require_dashboard_admin_access`** — nothing in the suite
+      exercises the helper end-to-end today. Worse, the suite is **structurally blind to an audience
+      mistake**: `tests/conftest.py::test_user` creates `role="admin"`, so every existing access test
+      calls as an administrator whose bypass short-circuits before any grant is read. **All four
+      existing tests stay green under any audience, including a wrong one.** Any new test that also
+      calls through `authenticated_client` inherits the same blindness.
+    dependency_override_reaches_the_gate: >
+      `tests/conftest.py::async_client` replaces `get_db_dependency` in `app.dependency_overrides`,
+      and FastAPI resolves overrides at **every** dependency level — so the gate's own `db` parameter
+      receives the test session and reads **real rows**. A route-level test through `async_client`
+      genuinely exercises the gate. Use plain `async_client` (or `authenticated_client` with the
+      header overwritten) — **never** override or monkeypatch the dependency itself.
+    second_session_is_mandatory: >
+      `conftest.py` sets `expire_on_commit=False`, so a read-back on the test's own session is cached
+      and **cannot** distinguish "the handler never wrote" from "it wrote and the session already
+      knows". Every "row exists" / "no row was created" assertion **must** open a second session from
+      `async_session_maker()`. That pattern already exists at
+      `tests/test_dashboards_access_api.py:82-94`. Copy that shape; do not reason about why it works.
+    impersonation_pattern: >
+      `tests/test_resource_access_control.py` is the in-repo precedent: `UserRepository().create(...)`
+      for the caller, `create_access_token({"user_id": str(u.id), "email": u.email})`, then
+      `async_client.headers.update({"Authorization": f"Bearer {token}"})`. It uses
+      `await async_db_session.flush()` (not `commit()`) after setup, because the same session is what
+      the app sees through the override.
+    wire_deltas_non_admin_callers_only:
+      - "grant on an **absent** dashboard: `422` → `403` (the gate runs before the handler body)"
+      - "list on an **absent** dashboard: `200 []` → `403`"
+      - "path/body `dashboard_id` mismatch: `422` becomes **role-dependent** — admin still `422`, non-admin now `403`"
+      - "revoke: `403` for a caller who is neither owner nor administrator; an admitted caller is unchanged (`200`, or `404` for an absent access record)"
+      - "**Admin and owner callers see no change at all.**"
+    oracles_closed: >
+      The gate **closes** two live existence oracles rather than opening one: list used to
+      distinguish an absent dashboard (`200 []`) from a present one (`200 [rows]`), and revoke used to
+      distinguish a present grant (`200`) from an absent one (`404`). Say so in the commit body.
+
+# ── Files. This is the complete writable set. Nothing else may be modified. ──
+files:
+  - path: src/mkobi/api/routes/dashboards_access.py
+    writable: true
+    targets:
+      - type: module_docstring
+        name: "dashboards_access"
+      - type: function
+        name: grant_dashboard_access_endpoint
+      - type: function
+        name: get_dashboard_access_endpoint
+      - type: function
+        name: revoke_dashboard_access_endpoint
+      - type: import
+        name: "mkobi.api.deps (CurrentUser → require_dashboard_admin_access)"
+      - type: import
+        name: "mkobi.models.user.UserRead (new import)"
+    semantic_anchors:
+      replace_in_signature:
+        - function: grant_dashboard_access_endpoint
+          old: "current_user: CurrentUser"
+          new: "current_user: UserRead = Depends(require_dashboard_admin_access)"
+        - function: get_dashboard_access_endpoint
+          old: "current_user: CurrentUser"
+          new: "current_user: UserRead = Depends(require_dashboard_admin_access)"
+        - function: revoke_dashboard_access_endpoint
+          old: "current_user: CurrentUser"
+          new: "current_user: UserRead = Depends(require_dashboard_admin_access)"
+      unchanged_by_contract:
+        - "all three handler bodies, statement for statement"
+        - "router = APIRouter(tags=[\"dashboards\"]) — untouched"
+        - "grant's unreachable DASHBOARD_NOT_FOUND branch — untouched"
+
+  - path: tests/test_dashboards_access_api.py
+    writable: true
+    targets:
+      - type: class
+        name: TestGrantAccessAudience        # new
+      - type: class
+        name: TestListAccessAudience         # new
+      - type: class
+        name: TestRevokeAccessAudience       # new
+      - type: class
+        name: TestGrantDashboardAccessEndpoint  # existing — do not modify its four tests
+      - type: function
+        name: _cleanup                      # existing helper — reuse as-is, do not modify
+    semantic_anchors:
+      insert_after:
+        type: class
+        value: TestGrantDashboardAccessEndpoint
+
+  - path: docs/02-dashboards/dashboards-api.md
+    writable: true
+    targets:
+      - type: section
+        name: "Dashboard Access Management"
+      - type: section
+        name: "24. Grant Dashboard Access"
+      - type: section
+        name: "25. List Dashboard Access"
+      - type: section
+        name: "26. Revoke Dashboard Access"
+    semantic_anchors: []
+
+  - path: docs/08-security/access-control.md
+    writable: true
+    targets:
+      - type: section
+        name: "Access Management Endpoints"
+      - type: section
+        name: "Access Check Function"
+    semantic_anchors: []
+
+# ── NOT writable. Named so an implementor does not "helpfully" edit them. ──
+files_forbidden:
+  - path: src/mkobi/api/deps.py
+    reason: "C08-1 — phase-04 co-owned. The helper is already correct; a new call site must not require editing it."
+  - path: src/mkobi/core/permissions.py
+    reason: "Read-only, and phase 12's decision surface. The admin bypass must survive untouched."
+  - path: src/mkobi/services/dashboard_service.py
+    reason: "No service-layer change. grant_access and create_dashboard are read for behaviour only."
+  - path: src/mkobi/db/repositories/access_repo.py
+    reason: "Belongs to CQLT-1, which lands next and reads a settled file."
+  - path: src/mkobi/models/access.py
+    reason: "Belongs to CQLT-1 (DashboardPermission typing)."
+  - path: docs/SPEC.md
+    reason: >
+      Its admin-bypass row and its 403/404 dual-signal row are read-only for this block, and the file
+      is not in this block's writable set. The phase-08 version row is owned by `CQLT-0`
+      ("One docs/SPEC.md version row naming this plan"); record that hand-off in the commit body.
+  - path: pyproject.toml
+    reason: "Out of scope; phase 01/09 own the manifest."
+  - path: Makefile.ps1
+    reason: "Out of scope; phase 09 TST-002 owns the aggregate gate."
+  - path: alembic/
+    reason: "No migration is involved — this block changes no stored row."
+  - path: .ai/audit/**, .ai/plans/**, .ai/tasks/**
+    reason: "The audit corpus is not an implementation target (phase-03 B0 convention)."
+
+changes:
+
+  - action: edit_imports
+    file: src/mkobi/api/routes/dashboards_access.py
+    description: >
+      Two import edits, both forced by the signature change.
+    code_hint: |
+      # from mkobi.api.deps
+      from mkobi.api.deps import (
+          get_db_dependency,
+          get_dashboard_service,
+          require_dashboard_admin_access,      # added
+      )                                        # CurrentUser removed — all three uses replaced,
+                                                # so leaving it trips ruff F401
+
+      from mkobi.models.enums import ErrorCode
+      from mkobi.models.user import UserRead    # added; matches dashboards_filters.py's ordering
+    ordering_note: >
+      Match `dashboards_filters.py` exactly: `mkobi.api.deps` names alphabetically, and
+      `from mkobi.models.user import UserRead` immediately after `from mkobi.models.enums import ErrorCode`.
+      `ruff check --fix` resolves import sorting (I001) if you get it wrong; `ruff format` does not.
+
+  - action: edit_code
+    file: src/mkobi/api/routes/dashboards_access.py
+    description: >
+      **Ruled option A.** In each of the three handlers replace the parameter declaration
+      `current_user: CurrentUser` with
+      `current_user: UserRead = Depends(require_dashboard_admin_access)`.
+      **Nothing else in any signature changes** — `dashboard_id`, `access_grant`, `db` and
+      `dashboard_service` keep their positions, defaults and annotations. **All three handler bodies are
+      unchanged, statement for statement.** No `if` on the caller, no role comparison, no
+      `dashboard_service` guard, no new import from `core.permissions`.
+    code_hint: |
+      async def grant_dashboard_access_endpoint(
+          dashboard_id: UUID,
+          access_grant: AccessGrant,
+          current_user: UserRead = Depends(require_dashboard_admin_access),
+          db: AsyncSession = Depends(get_db_dependency),
+          dashboard_service: DashboardService = Depends(get_dashboard_service),
+      ) -> dict[str, Any]:
+
+  - action: edit_docs
+    file: src/mkobi/api/routes/dashboards_access.py
+    description: >
+      **One rule, one sentence, four surfaces in this file.** The route whose prose disagrees with its
+      behaviour *is* the finding, so prose and code land in the same commit.
+      Use this sentence **byte-identical** everywhere it is required:
+
+        RULE = "Managing access to a dashboard requires an `admin` permission on that dashboard — held by the dashboard's owner — or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access."
+
+      1. **Module docstring.** Replace the line `All operations require admin role.` with RULE.
+      2. **Each of the three `description=` strings.** Keep the operation clause, append RULE verbatim:
+         - grant: `description="Grants a user access to dashboard. <RULE>"`
+         - list:   `description="Returns all access records for a dashboard. <RULE>"`
+         - revoke: `description="Revokes user's access to a dashboard. <RULE>"`
+         The `summary=` values already carry the verb and stay unchanged. Do **not** fold the rule into
+         `summary` — the three descriptions must each be self-contained, because OpenAPI renders them
+         independently.
+      3. **`grant_dashboard_access_endpoint`'s docstring.** Replace
+         `Available only to dashboard owner (user with admin permission).` with RULE. This line is one
+         of the three contradictory declarations the finding names and it must not survive.
+      4. **All three `Args:` entries for `current_user`.** Change
+         `current_user: Current authenticated user.` to
+         `current_user: Current authenticated user who passed the dashboard admin-access gate.`
+         (one line × three docstrings).
+
+  - action: no_change_recorded
+    file: src/mkobi/api/routes/dashboards_access.py
+    description: >
+      Two things this block deliberately does **not** touch. Record both in the commit body:
+      - **The `Raises:` block of `grant_dashboard_access_endpoint`'s docstring still lists
+        `AppException 404: If dashboard not found.`** while the branch is unreachable
+        (`DashboardService.grant_access` raises `ValueError` → 422). The `Raises:` list is not an
+        audience declaration and the branch is `CQLT-1`'s neighbouring work in this same file; changing
+        either here would make the next block read a moving file. **Record the divergence in the commit
+        body as a documentation defect owned by `AZ-5`; change neither the branch nor the line.**
+      - The module's missing `response_model` (one of the few routers returning bare `dict[str, Any]`)
+        stays missing — no finding files it and adding one changes the published schema.
+
+  - action: add_tests
+    file: tests/test_dashboards_access_api.py
+    description: >
+      **Add the tests here — the module exists; both plans' claim that it does not is refuted.**
+      Three new classes, eight tests. Every assertion about stored state goes through a **second session**
+      from `async_session_maker()`. Reuse the module's existing `_cleanup(session, dashboard_id, user_id)`
+      helper unchanged — call it once per created user, since its deletes are idempotent. **Do not
+      modify `_cleanup` or any of the four existing tests.**
+    code_hint: |
+      # Header note to add to the module docstring, so the next reader knows why these exist:
+      #   The admin gate is structurally invisible to every test that calls through
+      #   `authenticated_client`: `conftest.py::test_user` is role="admin", so the bypass in
+      #   `core/permissions.py::_check_access_with_session` short-circuits before any grant is read.
+      #   These tests impersonate an explicit caller per test, so the gate is genuinely exercised.
+
+      class TestGrantAccessAudience:
+          async def test_administrator_who_is_neither_owner_nor_grantee_is_admitted(...)
+          async def test_owner_with_admin_grant_is_admitted(...)
+          async def test_grantee_with_view_only_grant_is_refused_and_writes_no_row(...)
+          async def test_user_with_no_grant_is_refused_and_writes_no_row(...)
+
+      class TestListAccessAudience:
+          async def test_administrator_who_is_neither_owner_nor_grantee_may_list(...)
+          async def test_user_with_no_grant_is_refused(...)
+
+      class TestRevokeAccessAudience:
+          async def test_administrator_who_is_neither_owner_nor_grantee_may_revoke(...)
+          async def test_user_with_no_grant_is_refused_and_the_row_survives(...)
+
+  - action: add_tests_specification
+    file: tests/test_dashboards_access_api.py
+    description: >
+      **Fixtures and mechanics, identical across all eight:**
+      - Use plain **`async_client`**, never `authenticated_client`'s inherited header. Impersonate with
+        `create_access_token({"user_id": str(u.id), "email": u.email})` and
+        `async_client.headers.update({"Authorization": f"Bearer {token}"})`, copying
+        `tests/test_resource_access_control.py`.
+      - **Use the real gate.** No `app.dependency_overrides` entry for `require_dashboard_admin_access`,
+        no monkeypatching of `check_dashboard_access`, no stub of the dependency. The gate must run.
+      - After setup, `await async_db_session.flush()` (not `commit()`) — the app reads through the
+        overridden session.
+      - For "row exists" / "no row": open a second session, `verify = async_session_maker()`, `try/finally: await verify.close()`,
+        exactly as the existing test does.
+      - Create the dashboard with `DashboardRepository().create(db=..., name=..., created_by=<owner.id>)`.
+        **This writes no `dashboard_access` row**, so a test that needs an admitted non-admin caller
+        must insert that row itself (`AccessRepository().grant_access(...)`).
+      - Assert `logic and component interaction`: the HTTP status, the RFC 7807 `code` field where it
+        is meaningful (`PERMISSION_DENIED`), and the observable database consequence. **Do not assert
+        implementation trivia** — no assertion on log text, on which dependency ran, or on
+        `check_dashboard_access` having been called.
+    per_test_contract:
+      TestGrantAccessAudience::test_administrator_who_is_neither_owner_nor_grantee_is_admitted:
+        why: >
+          **The block's only real proof, and mandatory.** An `ADMIN`-role user with **no**
+          `dashboard_access` row on a dashboard owned by someone else calls
+          `POST /dashboards/{id}/access`. Assert **200** and assert the row exists via an independent
+          session. **Delete the bypass at `core/permissions.py::_check_access_with_session` and this
+          returns 403 — and nothing else in the entire suite catches that.**
+        must_not_be_substituted: >
+          The four `TestResourceAccessControl*` classes are **not** proof of the bypass: they pin the
+          **route-level** `role != ADMIN` short-circuit inside `dashboards_crud.py` and never reach the
+          helper. Do not point at them as evidence.
+      TestGrantAccessAudience::test_owner_with_admin_grant_is_admitted:
+        why: >
+          A non-admin caller holding an `admin` grant row is admitted. This is the only case that proves
+          the gate **reads `dashboard_access` at all** — every other admitted path short-circuits on the
+          bypass.
+      TestGrantAccessAudience::test_grantee_with_view_only_grant_is_refused_and_writes_no_row:
+        why: >
+          The strongest non-admin negative: the caller **does** hold a row, and `view` is refused
+          because the gate requires `admin`. Proves `required_permission="admin"` is enforced and not
+          merely "has a row → admit". Assert 403 and absence via a second session.
+      TestGrantAccessAudience::test_user_with_no_grant_is_refused_and_writes_no_row:
+        why: >
+          The acceptance criterion. A non-admin with no grant gets **403** and `dashboard_access` gains
+          **no** row, asserted through a **second** session.
+      TestListAccessAudience::test_administrator_who_is_neither_owner_nor_grantee_may_list:
+        why: "The gate is on the read surface too (ruling 6). 200, with the records returned."
+      TestListAccessAudience::test_user_with_no_grant_is_refused:
+        why: >
+          403, and — the oracle the gate closes — the response is **not** `200 []`. Do not assert the
+          absence of an empty list as a separate case; the 403 is the assertion.
+      TestRevokeAccessAudience::test_administrator_who_is_neither_owner_nor_grantee_may_revoke:
+        why: "200, and the target row is gone when read through a second session."
+      TestRevokeAccessAudience::test_user_with_no_grant_is_refused_and_the_row_survives:
+        why: >
+          403, and the pre-existing grant row is still present in a second session — proving the
+          handler body never ran. This is the second closed oracle.
+
+  - action: edit_docs
+    file: docs/02-dashboards/dashboards-api.md
+    description: >
+      Governed by `docs/00-overview/doc-maintenance-rules.md` (read it first). Frontmatter is already
+      valid (`id: dashboards-api`, `domain: dashboards`) — **leave it untouched**; `related` needs no new
+      entry because both documents already cross-reference the domain. English only. Tables for
+      structured data.
+    concrete_edits:
+      section_intro:
+        - >
+          Replace `Admins can grant, list, and revoke user access to a dashboard through dedicated
+          endpoints.` with a sentence carrying **RULE verbatim** as the SSOT for this document's
+          statement of the audience.
+      section_24_grant:
+        - "`**Auth level**` row: `Admin` → `Owner or administrator`."
+        - >
+          **Do NOT re-add a `403` row** — one already exists. Edit its **Condition** from
+          `Caller is not admin` to `Caller is neither the owner nor an administrator`.
+        - >
+          **Trap (a).** The existing `404 | Dashboard not found` row documents a status **the code
+          cannot produce** — the branch is unreachable. **Do not copy it.** Replace that single row with
+          the statuses each caller actually receives:
+            - `422` — admitted caller (owner or administrator), dashboard does not exist
+              (`DashboardService.grant_access` raises and the handler renders `VALIDATION_ERROR`)
+            - `403` — caller is neither owner nor administrator, dashboard exists **or does not**
+              (the gate runs before the handler body and never reaches the existence check)
+          State in the table's own wording that the absent-dashboard case is role-dependent. This is the
+          documented form of the existence oracle the gate closes.
+        - >
+          **Add** the missing out-of-vocabulary row: `422` | `permission` outside `view` / `edit` /
+          `admin`. Keep the **Detail** cell generic (`permission validation error`) and the **Status**
+          and **Condition** cells precise: `CQLT-1` renames that validation layer and moves the
+          rejection, so a quoted detail string here would be invalidated by the very next block.
+        - "Leave the `200` idempotent row and both JSON examples **exactly as they are** — `CQLT-1` owns the enum example."
+      section_25_list:
+        - "`**Auth level**` row: `Admin` → `Owner or administrator`."
+        - >
+          **Add an error table** — the section has none today. One `403` row:
+          `Caller is neither the owner nor an administrator`.
+        - >
+          In the response paragraph, state that an admitted caller receives `200` with an empty list
+          when the dashboard has no access records, and that a caller outside the audience receives
+          `403` **whether or not** the dashboard exists.
+      section_26_revoke:
+        - "`**Auth level**` row: `Admin` → `Owner or administrator`."
+        - >
+          **Trap (b).** The `200 OK` example is a **layout** body (`grid` / `graphs` / `filters` /
+          `bindings`), copy-pasted from the layout endpoint. **Replace it** with the body the handler
+          actually returns:
+          `{ "message": "Access revoked successfully" }`
+        - "Keep the existing `404 | Access record not found` row and scope its Condition to `No access record exists for this (user_id, dashboard_id)`."
+        - "**Add** the `403` row: `Caller is neither the owner nor an administrator`."
+    line_count_note: >
+      `dashboards-api.md` is **1014 lines**, already over `doc-maintenance-rules.md`'s 1000-line hard
+      split threshold **before** this block. **Do not split it.** A split would create a new file,
+      which is outside this block's writable set, and would touch 30+ unrelated sections and their
+      cross-links. Keep this block's growth to a few lines and **record the over-threshold state in the
+      commit body** so the documentation owner sees it.
+
+  - action: edit_docs
+    file: docs/08-security/access-control.md
+    description: >
+      **Correction to the block brief, verified at `b95ba52`:** this document **does** already carry an
+      `### Access Management Endpoints` table with three rows (Auth Level `Admin only`, Access Check
+      describing no enforcement). **Update those rows in place. Do not add a second table.**
+      What is genuinely missing is the **enforcement point** — the `## Access Check Function` section
+      names `check_dashboard_access` but never names the shared dependency the three routes resolve.
+    concrete_edits:
+      access_management_endpoints_table:
+        - "All three `Auth Level` cells: `Admin only` → `Owner or administrator`."
+        - >
+          All three `Access Check` cells: state that the route resolves the shared dependency
+          `require_dashboard_admin_access`, which requires an `admin` permission on that dashboard and
+          is short-circuited for callers holding the `admin` role. Keep each cell to one sentence and
+          do not repeat RULE verbatim here — this document's SSOT statement is the Access Check
+          Function paragraph below.
+      access_check_function_section:
+        - >
+          Add **one sentence** naming `require_dashboard_admin_access` (in `src/mkobi/api/deps.py`) as
+          the single shared dependency the three dashboard access-management routes resolve, and noting
+          that it delegates to `check_dashboard_access` with `required_permission="admin"`.
+      explicitly_not_edited:
+        - >
+          The `## Admin Bypass` section and the `## 403/404 Dual-Signal for Dashboard Access` section
+          are **correct as written and are not edited**. The bypass section's "All other
+          dashboard-related endpoints" line is exactly what this block makes true. The dual-signal
+          section is scoped to `GET /api/v1/dashboards/:id`, which this block does not touch.
+
+# ── Verification ──────────────────────────────────────────────────────────────
+verification:
+  baseline:
+    statement: >
+      **The suite is RED at `b95ba52`.** Always state a **delta against this baseline**, never an
+      absolute. Baseline: **`9 failed / 1401 passed`**.
+    known_failures_not_in_this_block:
+      - "5 × tests/test_auth.py::TestRateLimiting"
+      - "3 × tests/test_layouts.py::TestLayoutsAPI (create-layout, stale pre-RFC-7807 assertions)"
+      - "1 × tests/test_pydantic_models.py::TestUserModels::test_user_db_valid"
+    expected_result: "`9 failed / 1409 passed` — i.e. 9 failed, and passed = baseline + 8 new passing tests."
+    interpretation:
+      - "`10 failed` → something in this block broke. Stop and report."
+      - "`8 failed` → something this block claims to fix was already fixed. Declare it explicitly."
+      - "`9 failed` with a passed count other than 1409 → a test was silently skipped or deselected."
+
+  startup:
+    - step: '.\Makefile.ps1 test-up'
+      note: >
+        **Run this once first.** `Invoke-TestSelect` does **not** start the test services — it only runs
+        `docker compose … pytest @Rest` with `--no-deps`. Without `test-up` every selection fails on
+        connection refused, which reads like a code failure and is not one.
+    - step: '.\Makefile.ps1 test-select tests/test_dashboards_access_api.py -v'
+      note: "`test-select` forwards every argument after the target name to `pytest` verbatim."
+
+  new_tests:
+    - '.\Makefile.ps1 test-select -k "TestGrantAccessAudience" -v'
+    - '.\Makefile.ps1 test-select -k "TestListAccessAudience" -v'
+    - '.\Makefile.ps1 test-select -k "TestRevokeAccessAudience" -v'
+    - '.\Makefile.ps1 test-select tests/test_dashboards_access_api.py -v'
+  note: >
+    All four pre-existing tests in this module must still pass **unmodified** — they call as an
+    administrator and see no wire change.
+
+  mutation_proof:
+    required: true
+    instruction: >
+      **Prove the mandatory test can fail.** Temporarily delete the admin bypass in
+      `core/permissions.py::_check_access_with_session`, run
+      `TestGrantAccessAudience::test_administrator_who_is_neither_owner_nor_grantee_is_admitted`,
+      observe **403 / assertion failure**, then **restore the file byte-for-byte** and re-run to green.
+      Report the observed failure in the commit body. A test that has never been observed failing is
+      not evidence — this is the whole reason the test is mandatory. **The restore is not optional:
+      `git diff --stat src/mkobi/core/permissions.py` must be empty before you commit.**
+
+  pins_must_stay_green_unmodified:
+    - "tests/test_resource_access_control.py::TestResourceAccessControlUpdate"
+    - "tests/test_resource_access_control.py::TestResourceAccessControlDelete"
+    - "tests/test_resource_access_control.py::TestDashboardOwnerAccess"
+    - "tests/test_resource_access_control.py::TestAccessControlListChecked"
+    - "tests/test_dashboards_api.py::TestAdminBypass"
+    - "tests/test_dashboards_api.py::TestAccessControl"
+    - "tests/test_dashboards_api.py::TestCreateDashboard"
+    - "tests/test_dashboard_access.py::TestDashboardAccessCascadeDelete"
+    - "tests/test_services_integration.py::TestDashboardServiceIntegration"
+  note: >
+    These are the only shipped proof that the admin bypass survives this change. **Do not modify any
+    of them.** Run each with `.\Makefile.ps1 test-select -k "<ClassName>" -v`.
+    `TestDashboardServiceIntegration` is additionally the create-path check: `create_dashboard`'s
+    owner-grant must still write.
+
+  full_suite:
+    - '.\Makefile.ps1 test'
+  note: >
+    `Invoke-Test` starts the services itself, then runs bare `pytest`. Record the exact
+    failed/passed counts and quote them in the commit body as a **delta against 9 failed / 1401 passed**.
+
+  gates_precondition_not_evidence:
+    - "uv run ruff check src/ tests/"
+    - "uv run mypy src/"
+  note: >
+    **A green gate is a precondition of this block, never its evidence.** None of this finding is
+    visible to `ruff` or `mypy` — a missing authorization check is invisible to both. Do not widen
+    either gate to make the defect visible. The evidence is the eight new tests and the mutation proof.
+
+  documentation_checks:
+    - "`docs/02-dashboards/dashboards-api.md` frontmatter unchanged and valid (`id`, `domain`, `tags`, `related`)."
+    - "`docs/08-security/access-control.md` frontmatter unchanged and valid."
+    - "Both files: English only; tables used for structured data; relative links only; no new dead link."
+    - "`docs/SPEC.md` appears in `git diff --stat` **nowhere**."
+    - "`src/mkobi/api/deps.py`, `src/mkobi/core/permissions.py`, `src/mkobi/services/dashboard_service.py` appear in `git diff --stat` **nowhere**."
+
+acceptance_criteria:
+  - "`git diff --stat` touches exactly four files: `src/mkobi/api/routes/dashboards_access.py`, `tests/test_dashboards_access_api.py`, `docs/02-dashboards/dashboards-api.md`, `docs/08-security/access-control.md`."
+  - "All three handlers carry `current_user: UserRead = Depends(require_dashboard_admin_access)` and **no** handler carries `CurrentUser` any more."
+  - "All three handler bodies are byte-identical to `b95ba52` apart from the docstring lines this block names."
+  - "`CurrentUser` is no longer imported; `ruff` reports no `F401`."
+  - "There is **no** second enforcement point: no `if` on `current_user` in any body, no role comparison, no `core.permissions` import, no new dependency."
+  - "RULE appears byte-identical in the module docstring, all three `description=` strings, and the grant handler docstring; and once in `docs/02-dashboards/dashboards-api.md`'s Dashboard Access Management intro."
+  - "All three **Auth level** rows in `docs/02-dashboards/dashboards-api.md` read `Owner or administrator`."
+  - "§25 has an error table with a 403 row; §26's 200 example is `{\"message\": \"Access revoked successfully\"}`; §24's out-of-vocabulary 422 row exists and its unreachable 404 row is gone."
+  - "`docs/08-security/access-control.md` has no duplicate Access Management table, its three Auth Level cells read `Owner or administrator`, and the Access Check Function section names the shared dependency."
+  - "Eight new tests exist, named `tests/test_dashboards_access_api.py::<Class>::<test>`, covering grant, list and revoke."
+  - "Every stored-state assertion goes through a second `async_session_maker()` session; no `dependency_overrides` on the dependency; no monkeypatch of `check_dashboard_access`."
+  - "The mandatory test was observed **failing** when the admin bypass was removed, and `core/permissions.py` is byte-identical to `b95ba52` afterwards (`git diff --stat` empty for that file)."
+  - "All nine named pins stayed green **unmodified**."
+  - "Full suite: `9 failed`, passed = `1401 + 8 = 1409`."
+  - "`uv run ruff check src/ tests/` and `uv run mypy src/` green."
+  - "English only. No production code distorted for a test (`AGENTS.md` rule 2)."
+
+# ── Commit ────────────────────────────────────────────────────────────────────
+commit:
+  message: "fix(api): enforce the declared dashboard access audience"
+  format: >
+    `{type}({scope}): {description}` — lowercase imperative, no trailing period, matching this repo's
+    history (`fix(routing): disable slash redirects so the served shape is the declared shape`,
+    `fix(redis): declare the transport bound and pin the retry policy`,
+    `fix(health): report a degraded redis dependency on the detailed probe`).
+  stage_only:
+    - src/mkobi/api/routes/dashboards_access.py
+    - tests/test_dashboards_access_api.py
+    - docs/02-dashboards/dashboards-api.md
+    - docs/08-security/access-control.md
+  never:
+    - "`git reset`, `git checkout`, `git restore` — never rewrite history."
+    - "`git add -A` / `git commit -a` — stage only the four files above."
+  body_must_state:
+    - >
+      **The ruling.** `D-08-4` (Product Owner, 2026-10-03, register cluster 1) — the audience is owner
+      **or** administrator, with an explicit rule that an administrator who is neither owner nor grantee
+      may still manage access. The **enforcement point** is the shared dependency
+      `api/deps.py::require_dashboard_admin_access`, and it is the only enforcement point.
+    - >
+      **Install ownership.** **Plan 12 installs `AZ-3`; this block co-signs and installs no second copy**
+      (`C08-2`). The two-owner collision resolves in favour of plan 12.
+    - >
+      **The wire change, in one sentence:** `200` becomes `403` on three documented endpoints
+      (`POST`, `GET` and `DELETE /api/v1/dashboards/{id}/access`) — **for callers who are neither the
+      owner nor an administrator only**; owner and administrator callers see no change. State the three
+      concrete deltas: grant on an absent dashboard `422 → 403`; list on an absent dashboard
+      `200 [] → 403`; the path/body mismatch `422` becomes role-dependent (admin `422`, non-admin `403`).
+    - >
+      **The operator consequence, stated plainly:** **wrongly-created `dashboard_access` rows and filter
+      bindings persist and require operator reconciliation, because this fix rewrites no stored row.**
+      Any working client flow that relied on the unenforced rule is a defect to fix, not a client to
+      accommodate.
+    - >
+      **The AZ-3 clause is satisfied vacuously.** Its premise — an asymmetry between
+      `require_dashboard_admin_access` and `check_dashboard_access` — does not exist:
+      `_check_access_with_session` carries the admin bypass *before* the grant read, so an administrator
+      who is neither owner nor grantee is already granted (`DR-08-02`). No code change depends on it.
+    - >
+      **The 403-on-absent divergence is a live item owned by `AZ-5`** and is stated, not fixed here. The
+      gate **closes** two live existence oracles (list no longer distinguishes an absent dashboard from
+      a present one; revoke no longer distinguishes a present grant from an absent one). **No 404 branch
+      was added** — doing so would pre-empt `AZ-5` and break
+      `test_unknown_dashboard_still_returns_422`.
+    - >
+      **Open notice to `DP-12-B` / `AZ-5`, unresolved here by design:** `DP-12-A` counts four *write*
+      surfaces, and `GET …/access` is a read. It is gated as admin per `D-08-4`, but the read/write
+      tension is real and is not resolved by this block. `require_dashboard_read_access` was rejected as
+      the gate because it admits any `view` grantee and the ACL list is the membership map.
+    - >
+      **The create path is covered by the same rule, not exempted.** `DashboardService.create_dashboard`
+      already writes an `ADMIN`-level grant to `owner_id`, which is always an `AdminUser`, so the ruled
+      rule holds over it **by construction**. **Zero code and no test were added there** — a second check
+      would be a second enforcement point (`VAL-08-005`, `C08-11`).
+    - >
+      **`api/deps.py` was not edited.** The helper was already a correct pure passthrough; the block
+      changed only its call sites. `core/permissions.py`, the service layer, `docs/SPEC.md`,
+      `pyproject.toml` and `Makefile.ps1` are untouched.
+    - >
+      **The measured delta:** the suite was red at `9 failed / 1401 passed` on `b95ba52` (5 ×
+      `test_auth.py::TestRateLimiting`, 3 × `test_layouts.py::TestLayoutsAPI` create-layout, 1 ×
+      `test_pydantic_models.py::TestUserModels::test_user_db_valid` — all pre-existing and unrelated).
+      After this block: **`9 failed / 1409 passed`**, i.e. **+8 new passing, 0 new failing, 0 fixed**.
+    - >
+      **Why the new tests were mandatory:** `tests/` had **zero** references to
+      `require_dashboard_admin_access`, and `conftest.py::test_user` is `role="admin"`, so every
+      pre-existing access test short-circuits on the bypass and stays green under **any** audience
+      including a wrong one. `test_administrator_who_is_neither_owner_nor_grantee_is_admitted` was
+      observed failing (403) with the admin bypass temporarily removed, then the file was restored
+      byte-for-byte.
+    - >
+      **The `docs/SPEC.md` version row is not in this commit** — `CQLT-0` owns the phase-08 row.
+    - >
+      **`docs/02-dashboards/dashboards-api.md` is 1014 lines**, already over the 1000-line hard split
+      threshold in `doc-maintenance-rules.md` before this block; a split is out of this block's writable
+      set and is recorded for the documentation owner.
+
+failure_action: >
+  Do not work around a red pin. Report the exact failure, the failing test id, and the full
+  `failed / passed` counts against the `9 failed / 1401 passed` baseline. If the count reads 10 failed,
+  the block has broken something — most likely an audience assertion that a non-admin caller now
+  receives 403 where a shipped test expected 200. If it reads 8 failed, something this block claims to
+  fix was already fixed and must be declared rather than absorbed.
+
+# ── Absolute constraints ──────────────────────────────────────────────────────
+constraints:
+  - "Resolve every target **by symbol**. Re-read before editing and report any material divergence."
+  - "Never re-open `D-08-4`'s audience, the enforcement point, or the install ownership."
+  - "No edit to `api/deps.py` (`C08-1`, phase-04 co-owned)."
+  - "No change to `core/permissions.py`, no service-layer change, no migration."
+  - "No new enforcement point. No change to any named pin. No change to `pyproject.toml` or `Makefile.ps1`."
+  - "Never run `git reset`, `git checkout`, or rewrite history. Stage only the four writable files."
+  - "English only (`.kilo/rules/project.md` rule 1 — comments, logs, docstrings, messages, docs)."
+  - "Never distort production code for a test (`AGENTS.md` rule 2 — production code is king)."
+  - "Do not create a plan-spec file, a report entry, or a sibling task. This block's writable set is four files."
+
+divergences_found_by_the_planner:
+  - finding: >
+      **`docs/08-security/access-control.md` already carries an `### Access Management Endpoints` table**
+      with three rows (Auth Level `Admin only`). The block brief said the file has "no row for the
+      access-management endpoints"; it does. **Update the three rows in place; do not add a second
+      table.** What is genuinely absent is the enforcement point.
+  - finding: >
+      **The 403/404 dual-signal is scoped to `GET /api/v1/dashboards/:id` only**, both in
+      `docs/SPEC.md`'s decision row and in `access-control.md`. It is not implemented on these three
+      routes and this block does not add it.
+  - finding: >
+      **`docs/02-dashboards/dashboards-api.md` is 1014 lines**, already over the doc rules' 1000-line
+      hard threshold before this block. Recorded, not split.

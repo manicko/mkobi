@@ -1,0 +1,819 @@
+id: CQLT-4
+title: Type the ten "-> Any" repository factory providers in api/deps.py, and the consumers that keep them Any
+status: pending
+priority: medium
+depends_on: []
+source_reference: C:\py_dev\mkobi\.ai\plans\08-code-quality-remediation-execution.md
+source_section: CQLT-4 — Typed repository providers (QLT-006)
+source_blocks:
+  - CQLT-4
+source_file: .ai/audit/99-validation/08-code-quality-validated-findings.md
+findings_discharged:
+  - QLT-006
+
+status_note: >
+  **One commit, no repair work, measured green.** `D-08-2` was ruled by probe, not by argument, and the
+  probes REFUTED the Phase-0 auditor's position. The Planner measured the full narrowing with
+  `mypy --shadow-file` across all five affected files: **0 new diagnostics** over the 119-file build,
+  with a negative control proving the shadows bound. The block is typing-only; no behaviour changes and
+  no existing test needs editing. Priority is `medium` rather than `high` precisely because the risk is
+  measured at zero — the value is that the hole is finally closed.
+  **Single-tenant test DB:** run ONE suite, `.\\Makefile.ps1 test-up` first (`Invoke-TestSelect` does not
+  start the services). A failure that MOVES between runs is contamination, not a regression.
+
+description: >
+  `api/deps.py` exposes ten repository factory providers annotated `-> Any`. Each provider therefore
+  hands the route layer an untyped object, and every repository call made through it is unchecked.
+  `get_user_repository()` is already `-> UserRepository` and `get_dashboard_filter_values_repository()`
+  is already `-> IDashboardFilterValuesRepository`; this block brings the other ten to the same
+  standard, annotating each with its **concrete** `mkobi.db.repositories.*` class per the `D-08-2`
+  ruling below. Narrowing a provider is not sufficient on its own: all twenty-five `Depends()` consumer
+  parameters are *themselves* annotated `Any`, so the block also narrows those, plus
+  `get_dashboard_service() -> DashboardService`. Finally it adds `get_registration_request_repository`
+  to `deps.__all__`, which is currently absent from the export surface.
+
+goals:
+  - Close QLT-006: no `-> Any` repository factory provider remains in api/deps.py
+  - Narrow the consumer parameters too, or the route layer still gets zero member checking (measured)
+  - Settle `D-08-2` on recorded probe evidence, not on the disputed Phase-0 audit assertion
+  - Re-specify the plan's substitute-evidence clause against what the probe actually found
+  - Repair the `deps.__all__` export surface gap for get_registration_request_repository
+  - Leave production behaviour, every wire response, and every existing assertion byte-identical
+
+# ── Rulings. Settled by measurement at HEAD ef7650d. Do not re-derive, do not re-open. ──
+extra_context:
+  decision_D_08_2:
+    id: "D-08-2 (settled by probe, Planner, 2026-10-04, HEAD ef7650d)"
+    ruled: >
+      **OPTION (b) — annotate each provider with its CONCRETE `mkobi.db.repositories.*` class.** The
+      Phase-0 auditor's position ("concrete classes are suppressed too") is **REFUTED by measurement**;
+      the Planner's refutation of it is **confirmed by measurement**. `follow_imports = "skip"` does not
+      degrade `src/` modules, because `mypy src/` places every file under `src/` in the build, so
+      `skip` never applies to them. And `ignore_errors = true` on `mkobi.db.models.*` suppresses only
+      diagnostics REPORTED INSIDE that module — it does not degrade the types it exports.
+    why_not_a:
+      - "Probe 2 shows (a) and (b) are EQUAL on argument checking, so (a)'s usual advantage does not exist here."
+      - "Probe 1 shows (b) is STRICTLY BETTER on return precision: element type `Dashboard` under (b), `Any` under (a)."
+      - >
+        **`DashboardFilterRepository` has NO interface at all** (`class DashboardFilterRepository:` — a
+        plain class, no base). Option (a) cannot type `get_dashboard_filter_repository` without authoring
+        a brand-new `abc.ABC`. Option (b) covers all ten providers with no new abstraction anywhere.
+      - >
+        The ABCs sit under `ignore_errors = true`, and `repository_interfaces.py::IAccessRepository.grant_access`
+        already self-documents that "the type checker does not verify this declaration". Under (a) an
+        ABC/implementation drift is unverifiable BY CONSTRUCTION; under (b) the concrete declaration is
+        exactly what gets checked.
+    soundness_at_the_service_boundary:
+      - >
+        Every concrete repository subclasses its ABC (`DashboardRepository(IDashboardRepository)`,
+        `AccessRepository(IAccessRepository)`, and so on for all nine), and every service `__init__`
+        declares the ABC (`DashboardService(dashboard_repo: IDashboardRepository, ...)`). Passing the
+        concrete class where the interface is declared is therefore assignment-compatible. Measured: 0 errors.
+    in_repo_precedent:
+      - >
+        Ten route sites ALREADY do exactly what (b) prescribes for repositories:
+        `dashboard_service: DashboardService = Depends(get_dashboard_service)` with a real runtime import
+        at `dashboards_crud.py` and `dashboards_access.py`. Option (b) is the file's existing convention,
+        not a new one.
+
+  probe_evidence:
+    method: >
+      Probes were run under the project's own configuration (`uv run mypy src/`) with the probe file
+      placed TEMPORARILY inside `src/mkobi/` and deleted afterwards, because a probe file outside the
+      tree would not join the build and would measure a different configuration. Baseline at `ef7650d`:
+      `Success: no issues found in 119 source files`, and `uv run ruff check src/ tests/` `All checks passed!`.
+    probe_1_non_existent_member:
+      - 'concrete: reveal_type -> "mkobi.db.repositories.dashboard_repo.DashboardRepository"; `.no_such_member_zzz` -> error [attr-defined]'
+      - 'interface: reveal_type -> "mkobi.interfaces.repository_interfaces.IDashboardRepository"; `.no_such_member_zzz` -> error [attr-defined]'
+      - 'model: reveal_type(dashboard_model.Dashboard) -> "mkobi.db.models.dashboard.Dashboard"  (NOT Any, despite ignore_errors = true)'
+      - 'no-interface class: reveal_type(DashboardFilterRepository) -> "mkobi.db.repositories.dashboard_filter_repo.DashboardFilterRepository"'
+      - 'return precision, `await repo.get_by_user(...)`: concrete -> "list[tuple[mkobi.db.models.dashboard.Dashboard, str | None]]", element "Dashboard"; interface -> "list[tuple[Any, str | None]]", element "Any"'
+      - '**`rows[0][0].no_such_column_zzz` produced NO error on EITHER path** — see `gap_model_attributes` below.'
+    probe_2_mistyped_argument:
+      - 'concrete, misspelled kwarg `get_by_name(nmae="x", db=db)` -> error [call-arg]'
+      - 'concrete, wrong arg type `get_by_name(name=123, db=db)` -> error [arg-type] "int"; expected "str"'
+      - 'interface, misspelled kwarg -> error [call-arg]'
+      - 'interface, wrong arg type -> error [arg-type] "int"; expected "str"'
+      - "=> TIE. Both options catch both defects. (a) buys nothing here that (b) does not."
+    blast_radius_measurement:
+      method: >
+        `uv run mypy src/ --shadow-file <real> <shadow>` for all five affected files — the exact
+        narrowing, applied without editing a single repository file.
+      result_1_deps_only: >
+        Ten providers + nine in-file consumer parameters + `get_dashboard_service() -> DashboardService`:
+        `Success: no issues found in 119 source files`. **Zero new diagnostics.**
+      result_2_full: >
+        The above PLUS all ten route-module consumer parameters: `Success: no issues found in 119 source files`.
+        **Zero new diagnostics.**
+      negative_control: >
+        A deliberately bogus member on the narrowed annotations fires
+        `error: "DashboardRepository" has no attribute "no_such_member_control" [attr-defined]` and
+        `error: "RegistrationRequestRepository" has no attribute ...` — one per shadowed file. The
+        greens above are therefore real, not a silently-unbound shadow.
+
+  clause_respecification_substitute_evidence:
+    original_wording_problem: >
+      The plan's clause assumed the member checker would be **lost under one option**, so it asked for a
+      substitute in that case. Measurement says the premise is void: under (b) the checker is retained
+      AND strengthened. **No substitute evidence is owed for the provider annotations.**
+    what_the_probe_actually_found_instead: >
+      The gap that survives this block is different and narrower: **attribute access on SQLAlchemy model
+      instances is unchecked**. The probe's `rows[0][0].no_such_column_zzz` produced no diagnostic even
+      though `rows[0][0]` reveals as the concrete `Dashboard`, because no
+      `sqlalchemy.ext.mypy.plugin` is registered under `[tool.mypy] plugins`. Under option (a) the same
+      expression is unchecked for a second, independent reason (the element is `Any`).
+    re_specified_clause: >
+      `tests/test_repositories.py` (36 passing) REMAINS the evidence for ORM column and attribute
+      correctness. Enabling `sqlalchemy.ext.mypy.plugin` is a **configuration finding for phase 09** —
+      `pyproject.toml` is FORBIDDEN to this block, and adding an override or a plugin to make a defect
+      invisible is expressly prohibited. Record it; do not action it.
+  open_finding_config_owner_not_actioned:
+    - >
+      `pyproject.toml` sets `ignore_errors = true` for `mkobi.db.models.*` and `mkobi.interfaces.*`.
+      Measured: this does NOT degrade the types those modules export (both still reveal concretely), so
+      it does not defeat this block. But it DOES mean no diagnostic is ever reported inside either
+      module, which is why `IAccessRepository.grant_access` carries a hand-written note saying the
+      checker does not verify it. Flag for a phase-09 config owner; out of scope here.
+
+  divergence_the_finding_gets_wrong:
+    finding_provider_names: >
+      The finding names ten providers as `user_repository, dashboard_repository,
+      dashboard_access_repository, dashboard_graph_repository, layout_repository,
+      processing_config_repository, upload_repository, audit_log_repository, user_session_repository,
+      filter_value_repository`. **Six of those ten names do not exist in this tree.** Resolved by symbol,
+      the ten `-> Any` providers are: `get_dashboard_repository`, `get_access_repository`,
+      `get_aggregated_data_repository`, `get_layout_repository`, `get_filter_repository`,
+      `get_dashboard_filter_repository`, `get_processing_config_repository`, `get_processing_log_repository`,
+      `get_registration_request_repository`, `get_graph_repository`. There is no `upload_repository`,
+      no `audit_log_repository`, no `user_session_repository`, and no `dashboard_access_repository`.
+      The count of ten is correct; only the labels are stale.
+  divergence_the_finding_premise_is_incomplete:
+    premise: >
+      The finding says "Ten `Any` returns mean the route layer gets no member checking on every
+      repository call." The route layer's missing checking is real, but the **fix is not only the
+      provider return type**.
+    measured: >
+      All **twenty-five** `Depends()` consumer parameters are annotated `Any` — thirteen inside
+      `deps.py`'s own service providers and ten across four route modules. Narrowing the ten providers
+      alone changes **zero** diagnostics and **zero** route behaviour (measured green either way),
+      because the value is immediately re-widened to `Any` at the consumer. QLT-006 is only closed when
+      the consumers are narrowed too. `get_dashboard_service() -> Any` is the same defect one layer up:
+      ten route sites already annotate the parameter `DashboardService`, so the `Any` return actively
+      *discards* an annotation the routes already write.
+
+  call_site_census_measured:
+    note: "Every figure below is a `Depends(<provider>` census over `src/mkobi` (recursive). Total = 25."
+    get_dashboard_repository: "2 in deps.py (get_dashboard_service, get_data_service)"
+    get_access_repository: "2 in deps.py (get_dashboard_service, get_dashboard_permissions) + 0 routes"
+    get_aggregated_data_repository: "1 in deps.py (get_data_service) + 0 routes"
+    get_layout_repository: "1 in deps.py (get_layout_service) + 0 routes"
+    get_filter_repository: "1 in deps.py (get_filter_service) + 1 in dashboards_filters.py"
+    get_dashboard_filter_repository: "0 in deps.py + 3 in dashboards_filters.py"
+    get_processing_config_repository: "1 in deps.py (get_processing_config_service) + 0 routes"
+    get_processing_log_repository: "2 in deps.py (get_processing_log_service, get_data_service) + 0 routes"
+    get_registration_request_repository: "1 in deps.py (get_auth_service) + 3 in admin.py"
+    get_graph_repository: "2 in deps.py (get_graph_service, get_data_service) + 3 routes (dashboards_graphs.py x2, data.py x1)"
+
+  circular_import_verified_not_assumed:
+    finding: >
+      **No cycle exists.** `src/mkobi/db/repositories/**` and `src/mkobi/services/**` contain ZERO
+      references to `mkobi.api` (measured). No module outside `api/routes/` imports `mkobi.api.deps`
+      at all. `DashboardService`, `LayoutService` and every other service named here are therefore
+      reachable from `deps.py` without a cycle.
+    consequence_for_deps_py: >
+      `deps.py` has `from __future__ import annotations`, so its annotations are lazy strings. Import the
+      concrete classes and `DashboardService` under the EXISTING `if TYPE_CHECKING:` block. This adds
+      **zero** runtime imports and **zero** import-time cost.
+    consequence_for_route_modules_CRITICAL: >
+      **`admin.py`, `dashboards_filters.py`, `dashboards_graphs.py` and `data.py` do NOT have
+      `from __future__ import annotations`** (measured: zero occurrences in all four). FastAPI resolves
+      `Depends` parameter annotations at runtime, and without the future import the annotation expression
+      is evaluated at `def` time. A `TYPE_CHECKING`-only import in these four modules is therefore a
+      **hard `NameError` at import time — the app fails to start.** These four modules need a REAL
+      runtime import. The precedent already exists in the tree: `dashboards_crud.py` and
+      `dashboards_access.py` both import their concrete service class at module level.
+
+  concrete_classes_all_typed:
+    finding: >
+      **No concrete repository class is itself untyped or `Any`-returning.** A scan of
+      `src/mkobi/db/repositories/**` for `-> Any` returns **zero hits**, and Probe 1 revealed all probed
+      classes as concrete types. Annotating with them is therefore NOT cosmetic — each annotation buys
+      real `return-value` checking under `warn_return_any = true`.
+
+# ── Files. Writable set is exactly these five. ──
+files:
+  - path: src/mkobi/api/deps.py
+    writable: true
+    targets:
+      - type: block
+        name: "if TYPE_CHECKING: — add the ten concrete repository classes and DashboardService"
+      - type: function
+        name: get_dashboard_repository
+      - type: function
+        name: get_access_repository
+      - type: function
+        name: get_aggregated_data_repository
+      - type: function
+        name: get_layout_repository
+      - type: function
+        name: get_filter_repository
+      - type: function
+        name: get_dashboard_filter_repository
+      - type: function
+        name: get_processing_config_repository
+      - type: function
+        name: get_processing_log_repository
+      - type: function
+        name: get_registration_request_repository
+      - type: function
+        name: get_graph_repository
+      - type: function
+        name: get_dashboard_service
+      - type: function
+        name: get_auth_service
+      - type: function
+        name: get_filter_service
+      - type: function
+        name: get_layout_service
+      - type: function
+        name: get_graph_service
+      - type: function
+        name: get_processing_config_service
+      - type: function
+        name: get_processing_log_service
+      - type: function
+        name: get_data_service
+      - type: function
+        name: get_accessible_dashboard_ids
+      - type: assignment
+        name: "__all__ — add get_registration_request_repository"
+    semantic_anchors:
+      return_type_replacements:
+        - "def get_dashboard_repository() -> Any:        -> def get_dashboard_repository() -> DashboardRepository:"
+        - "def get_access_repository() -> Any:           -> def get_access_repository() -> AccessRepository:"
+        - "def get_aggregated_data_repository() -> Any:  -> def get_aggregated_data_repository() -> AggregatedDataRepository:"
+        - "def get_layout_repository() -> Any:           -> def get_layout_repository() -> LayoutRepository:"
+        - "def get_filter_repository() -> Any:           -> def get_filter_repository() -> FilterRepository:"
+        - "def get_dashboard_filter_repository() -> Any: -> def get_dashboard_filter_repository() -> DashboardFilterRepository:"
+        - "def get_processing_config_repository() -> Any:-> def get_processing_config_repository() -> ProcessingConfigRepository:"
+        - "def get_processing_log_repository() -> Any:   -> def get_processing_log_repository() -> ProcessingLogRepository:"
+        - "def get_registration_request_repository() -> Any: -> def get_registration_request_repository() -> RegistrationRequestRepository:"
+        - "def get_graph_repository() -> Any:            -> def get_graph_repository() -> GraphRepository:"
+        - "def get_dashboard_service(...) -> Any:        -> def get_dashboard_service(...) -> DashboardService:"
+      consumer_parameter_replacements:
+        - "get_auth_service::reg_request_repo: Any          -> RegistrationRequestRepository"
+        - "get_dashboard_service::dashboard_repo: Any        -> DashboardRepository"
+        - "get_dashboard_service::access_repo: Any           -> AccessRepository"
+        - "get_filter_service::filter_repo: Any              -> FilterRepository"
+        - "get_layout_service::layout_repo: Any              -> LayoutRepository"
+        - "get_graph_service::graph_repo: Any                -> GraphRepository"
+        - "get_processing_config_service::config_repo: Any   -> ProcessingConfigRepository"
+        - "get_processing_log_service::log_repo: Any         -> ProcessingLogRepository"
+        - "get_data_service::agg_repo: Any                   -> AggregatedDataRepository"
+        - "get_data_service::log_repo: Any                   -> ProcessingLogRepository"
+        - "get_data_service::graph_repo: Any                 -> GraphRepository"
+        - "get_data_service::dashboard_repo: Any             -> DashboardRepository"
+        - "get_data_service::config_service: Any             -> ProcessingConfigService  (in-scope by co-edit; provider already typed; zero extra risk)"
+        - "get_accessible_dashboard_ids::dashboard_service: Any -> DashboardService  (annotation only; CQLT-3 co-owns the body)"
+      unchanged_by_contract:
+        - "get_user_repository() -> UserRepository — already correct, and now consistent with the ruling"
+        - "get_dashboard_filter_values_repository() -> IDashboardFilterValuesRepository — already typed; deliberate exception, see acceptance_criteria"
+        - "get_dashboard_permissions::access_repo: Any — FORBIDDEN to touch, CQLT-3 wrote this function"
+        - "get_redis_client_dependency() -> Any — not part of QLT-006"
+        - "every provider BODY, statement for statement (still `return XRepository()`)"
+        - "every service-provider body — the constructor calls stay positional and unchanged"
+        - "get_accessible_dashboard_ids BODY — admin bypass and set-shaped rule unchanged"
+
+  - path: src/mkobi/api/routes/admin.py
+    writable: true
+    targets:
+      - type: import
+        name: "mkobi.db.repositories.registration_request_repo.RegistrationRequestRepository (new RUNTIME import)"
+      - type: function
+        name: get_registration_requests_endpoint
+      - type: function
+        name: approve_registration_request_endpoint
+      - type: function
+        name: retrieve_registration_request_endpoint
+    semantic_anchors:
+      replace_all_occurrences:
+        - "repo: Any = Depends(get_registration_request_repository) -> repo: RegistrationRequestRepository = Depends(get_registration_request_repository)"
+      constraint: >
+        THREE occurrences, all the same line shape. This module has NO `from __future__ import
+        annotations`, so the import MUST be a real module-level runtime import (see
+        `consequence_for_route_modules_CRITICAL`). Handler bodies unchanged.
+
+  - path: src/mkobi/api/routes/dashboards_filters.py
+    writable: true
+    targets:
+      - type: import
+        name: "mkobi.db.repositories.dashboard_filter_repo.DashboardFilterRepository (new RUNTIME import)"
+      - type: import
+        name: "mkobi.db.repositories.filter_repo.FilterRepository (new RUNTIME import)"
+      - type: function
+        name: get_dashboard_filters_endpoint
+      - type: function
+        name: bind_dashboard_filter_endpoint
+      - type: function
+        name: unbind_dashboard_filter_endpoint
+    semantic_anchors:
+      replace_all_occurrences:
+        - "filter_repo: Any = Depends(get_filter_repository) -> filter_repo: FilterRepository = Depends(get_filter_repository)"
+        - "dashboard_filter_repo: Any = Depends(get_dashboard_filter_repository) -> dashboard_filter_repo: DashboardFilterRepository = Depends(get_dashboard_filter_repository)"
+      note: >
+        `DashboardFilterRepository` has no interface at all — this is the site that decided D-08-2.
+        Four occurrences. No `from __future__ import annotations`; real runtime imports required.
+
+  - path: src/mkobi/api/routes/dashboards_graphs.py
+    writable: true
+    targets:
+      - type: import
+        name: "mkobi.db.repositories.graph_repo.GraphRepository (new RUNTIME import)"
+      - type: function
+        name: get_dashboard_graphs_endpoint
+      - type: function
+        name: delete_graph_endpoint
+    semantic_anchors:
+      replace_all_occurrences:
+        - "graph_repo: Any = Depends(get_graph_repository) -> graph_repo: GraphRepository = Depends(get_graph_repository)"
+      constraint: "TWO occurrences. Real runtime import; no `from __future__ import annotations` in this module."
+
+  - path: src/mkobi/api/routes/data.py
+    writable: true
+    targets:
+      - type: import
+        name: "mkobi.db.repositories.graph_repo.GraphRepository (new RUNTIME import)"
+      - type: function
+        name: get_data_endpoint
+    semantic_anchors:
+      replace_all_occurrences:
+        - "graph_repo: Any = Depends(get_graph_repository) -> graph_repo: GraphRepository = Depends(get_graph_repository)"
+      constraint: "ONE occurrence. Real runtime import; no `from __future__ import annotations` in this module."
+
+  - path: tests/test_deps.py
+    writable: true
+    targets:
+      - type: class
+        name: TestRepositoryProviderAnnotations     # NEW — exactly one test
+      - type: class
+        name: TestRepositoryFactories                # existing — READ ONLY, do not modify its three tests
+      - type: class
+        name: TestResourceAccessControlRead          # FORBIDDEN
+      - type: class
+        name: TestResourceAccessControlWrite         # FORBIDDEN
+      - type: class
+        name: TestResourceAccessControlAdmin         # FORBIDDEN
+      - type: class
+        name: TestResourceAccessControlCollection    # FORBIDDEN
+    semantic_anchors:
+      insert_after:
+        type: class
+        value: TestDIFactories
+      rationale: >
+        Placed next to the DI-factory tests it guards. `tests/` is NOT in the mypy target
+        (`mypy src/`), so this file cannot affect the static gate in either direction.
+
+files_forbidden:
+  - path: pyproject.toml
+    reason: >
+      Two hard rules. Do NOT widen a gate and do NOT add an override or plugin to make a defect
+      invisible. Measured: the configuration does NOT defeat the fix, so no config change is needed
+      at all. `sqlalchemy.ext.mypy.plugin` and the `ignore_errors` overrides are recorded as
+      phase-09 findings and MUST NOT be touched here.
+  - path: src/mkobi/core/permissions.py
+    reason: "Read-only. Forbidden by the block brief."
+  - path: Makefile.ps1
+    reason: >
+      Out of scope. `alembic/env.py` must stay named in BOTH the mypy and the lint target — this
+      block changes neither and must not touch the script.
+  - path: alembic/
+    reason: "No schema change; this block changes no stored row."
+  - path: src/mkobi/db/repositories/**
+    reason: >
+      READ ONLY. Every concrete class is already correctly typed and already subclasses its ABC. The
+      block only names them. Editing a repository here would change the contracts the probes measured.
+  - path: src/mkobi/interfaces/**
+    reason: >
+      READ ONLY. `mkobi.interfaces.*` carries `ignore_errors = true`, so nothing here is type-checked
+      anyway, and option (b) deliberately introduces no new ABC. Authoring an
+      `IDashboardFilterRepository` would be the rejected path.
+  - path: src/mkobi/services/**
+    reason: >
+      READ ONLY. The service constructors already declare the ABCs and already receive the concrete
+      classes correctly (measured 0 errors). Only `deps.py`'s call sites are edited.
+  - path: "src/mkobi/api/deps.py :: get_dashboard_permissions"
+    reason: >
+      FORBIDDEN SYMBOL within a writable file. `get_dashboard_permissions` (including its
+      `access_repo: Any` parameter) was written by `CQLT-3`'s block and is not part of QLT-006. Narrow
+      `get_access_repository()`; leave this parameter `Any`.
+  - path: "src/mkobi/api/deps.py :: get_redis_client_dependency"
+    reason: "`-> Any`, but not part of QLT-006. Out of scope by the block brief."
+  - path: docs/**
+    reason: >
+      No documentation change (see `documentation.no_change`). In particular NO `docs/SPEC.md` version
+      row — one phase-level row is owed to the phase documentation pass and other phases append to that
+      table concurrently.
+  - path: "tests/test_layouts.py :: TestLayoutsAPI::test_create_layout_duplicate_name_returns_400"
+    reason: "Pre-existing stale assertion. Explicitly NOT to be repaired by this block."
+  - path: ".ai/audit/**, .ai/plans/**"
+    reason: "The audit corpus and the plan are not implementation targets (phase-03 B0 convention)."
+
+# ── The edits, in order. One commit. ──
+changes:
+  order_of_operations:
+    ruling: >
+      **ONE COMMIT, and the order inside it is fixed only where it matters.** The measured blast radius
+      is **zero new diagnostics** at every prefix of this sequence (verified by `--shadow-file` at two
+      prefixes: providers-plus-in-file-consumers, and the full set including all route modules). So the
+      block does not need to be split to keep `mypy src/` green, and splitting it would be strictly
+      worse: the intermediate commit would be the defect with extra steps — providers typed, consumers
+      still `Any`, which is provably indistinguishable from the starting state.
+    why_the_brief_predicted_a_split_was_wrong: >
+      The brief warned that "narrowing a provider's return type surfaces `arg-type` errors at every call
+      site", so the provider and its callers would need to be one commit. Measurement refines this:
+      the errors would arise at the **consumer parameter annotations**, and only once THOSE are
+      narrowed — and when they are, no error is produced, because every route's existing repository
+      usage already agrees with the concrete classes' signatures. The prediction was directionally right
+      (one commit) for the wrong reason (the call sites are conformant, not broken).
+    steps:
+      - step: 1
+        action: >
+          In `deps.py`, add to the EXISTING `if TYPE_CHECKING:` block: the nine concrete repository
+          classes not already imported (`DashboardRepository`, `AccessRepository`,
+          `AggregatedDataRepository`, `LayoutRepository`, `FilterRepository`,
+          `DashboardFilterRepository`, `ProcessingConfigRepository`, `ProcessingLogRepository`,
+          `RegistrationRequestRepository`, `GraphRepository`) and `DashboardService`.
+          `UserRepository` is ALREADY imported at module scope — do not duplicate it.
+        gate: "uv run mypy src/ — still Success, no issues found in 119 source files"
+      - step: 2
+        action: >
+          In `deps.py`, replace the ten `-> Any` provider return types with their concrete classes, and
+          `get_dashboard_service`'s `-> Any` with `-> DashboardService`. Bodies untouched.
+        gate: "uv run mypy src/ — still Success (a lazy annotation with no consumer change cannot error)"
+      - step: 3
+        action: >
+          In `deps.py`, narrow the fourteen `Any`-annotated consumer parameters listed in
+          `consumer_parameter_replacements`. This is the step that actually closes the hole.
+        gate: "uv run mypy src/ — still Success; this is the step the measurement covers as prefix 1"
+      - step: 4
+        action: >
+          In `deps.py.__all__`, add `"get_registration_request_repository"`. Place it adjacent to
+          `get_user_repository` so the export surface groups the repository providers.
+        gate: "uv run mypy src/ — unchanged. Also assert no duplicate entries are introduced."
+      - step: 5
+        action: >
+          In the FOUR route modules, add the REAL runtime import FIRST, then replace the ten `Any`
+          consumer annotations. Import before annotation: these modules lack
+          `from __future__ import annotations`, so the annotation expression is evaluated at `def` time
+          and a missing name is an import-time `NameError`.
+        gate: "uv run mypy src/ — still Success; this is the step the measurement covers as prefix 2"
+      - step: 6
+        action: >
+          Run the runtime resolution test (see `verification.new_tests`) BEFORE committing. It is the
+          only check that can see a startup failure; mypy cannot, because mypy never evaluates a
+          runtime annotation.
+        gate: "the new test passes"
+      - step: 7
+        action: "Re-run the two probes (see `verification.probes_mandatory`) as the implementation-time proof."
+        gate: "both probes produce their diagnostics; the scratch file is deleted; mypy is green again"
+
+  what_does_NOT_change:
+    - "No provider body. Each still constructs its repository and returns it."
+    - "No route handler body in the four route modules."
+    - "No service, repository, interface or model file."
+    - "No runtime behaviour, no wire response, no status code, no log line."
+    - "No new import at runtime in `deps.py` (TYPE_CHECKING only)."
+    - "No `# type: ignore` anywhere. If mypy demands one, that is a finding to report, not to silence."
+
+  deliberate_non_changes:
+    - symbol: get_dashboard_filter_values_repository
+      decision: "Left as `-> IDashboardFilterValuesRepository`."
+      reason: >
+        It is already typed, `QLT-006` does not name it, and its three public methods exactly match the
+        ABC. It becomes the file's single interface-annotated provider. Record it as an intentional
+        exception rather than normalising it — changing it would widen the block for no gate gain.
+    - symbol: get_user_repository
+      decision: "Left as `-> UserRepository`."
+      reason: "Already correct, and now the file's reference example for the ruling."
+    - symbol: "get_user_repository's redundant local re-import of UserRepository in its body"
+      decision: "Left alone."
+      reason: "Harmless, out of the finding's scope, and removing it is an unrelated tidy."
+    - symbol: "__all__'s duplicate get_dashboard_service entry"
+      decision: >
+        Left alone. It is pre-existing and deduplicating it is a cosmetic edit unrelated to QLT-006.
+        Recorded below as an observation for a future owner.
+    - symbol: other names absent from __all__
+      decision: "Left alone."
+      reason: >
+        `require_role_dependency`, `require_dashboard_read_access`, `require_dashboard_write_access`,
+        `require_dashboard_admin_access` and `get_graph_service` are also absent from `deps.__all__`.
+        The block brief names ONLY `get_registration_request_repository`; adding the rest would be an
+        unrelated export-surface change. Recorded as an observation.
+
+# ── Verification. The static checks ARE the proof; the runtime suite cannot prove this block. ──
+verification:
+  baseline_measured_at_head_ef7650d:
+    - "uv run mypy src/            -> Success: no issues found in 119 source files"
+    - "uv run ruff check src/ tests/ -> All checks passed!"
+    - "Probe shadow method          -> uv run mypy src/ with 5 --shadow-file pairs: 0 new diagnostics at both prefixes"
+  note_on_the_test_baseline: >
+    The block brief states `1 failed / 1435 passed`, with the single failure the pre-existing stale
+    `tests/test_layouts.py::TestLayoutsAPI::test_create_layout_duplicate_name_returns_400`. Board history
+    records other baselines at the same suite (1401, then 1417, passed) as blocks landed. **Re-derive the
+    baseline at your own HEAD and report a DELTA against it, never an absolute.** Do not repair that stale
+    assertion; if it is your only failure, the block is clean.
+
+  static_check_MANDATORY:
+    before: >
+      Run `uv run mypy src/` and RECORD the exact diagnostic count and the "checked N source files"
+      figure BEFORE the first edit. Baseline is `Success: no issues found in 119 source files`.
+    after: >
+      Run `uv run mypy src/` and RECORD the same two numbers after the last edit. Requirements:
+      (a) zero errors; (b) the file count must be UNCHANGED at 119 — a changed count means a stray file
+      was left behind, which is exactly the probe-artefact failure mode; (c) the gate is NOT widened,
+      which is why the before/after counts must both be recorded and compared, not assumed.
+    report_both_numbers_in_the_commit_body: true
+
+  probes_mandatory:
+    rationale: >
+      The `D-08-2` ruling was settled by probe at planning time. **The same two probes are re-run at
+      implementation time** so the claim is proven against the shipped tree rather than inherited from the
+      Planner's session. Both must pass. Method constraint: the probe file goes TEMPORARILY inside
+      `src/mkobi/` — a probe outside the tree never joins the `mypy src/` build and would measure a
+      different configuration, which is the whole subtlety this block turns on.
+    probe_1_exact_shape:
+      setup: >
+        A temporary module in `src/mkobi/` that takes one parameter annotated with a concrete repository
+        class and one annotated with its `mkobi.interfaces.*` ABC, calls `reveal_type` on each, and
+        references a non-existent member on each.
+      expected:
+        - "Two `note: Revealed type is ...` lines, both naming a CONCRETE class (not `Any`)."
+        - 'Two `error: ... has no attribute "no_such_member_zzz"  [attr-defined]` diagnostics.'
+      meaning: "Proves the concrete annotation buys member checking, i.e. that the Phase-0 auditor was wrong."
+    probe_2_exact_shape:
+      setup: >
+        Same temporary module, now calling a REAL repository method through a provider-returned variable,
+        once with a misspelled keyword argument and once with a wrong argument type.
+      expected:
+        - '`error: Unexpected keyword argument "nmae" for "get_by_name" ...  [call-arg]`'
+        - '`error: Argument "name" ... has incompatible type "int"; expected "str"  [arg-type]`'
+      meaning: "Proves argument checking survives the narrowing at a real call site."
+    probe_3_route_annotation_negative_control:
+      setup: >
+        In ONE of the four route modules, add a statement referencing a non-existent member on a
+        narrowed repository parameter.
+      expected: '`error: "<Class>" has no attribute "<bogus>"  [attr-defined]` — then REMOVE it.'
+      meaning: >
+        Proves the route-module annotations are live under mypy. Without it, a silent shadow or a
+        mis-scoped annotation would make the whole gate vacuous.
+    cleanup_MANDATORY:
+      - "Delete the probe module."
+      - "Re-run `uv run mypy src/` and confirm the file count is back to exactly 119."
+      - "Confirm `git status --porcelain` shows no untracked file under `src/`."
+
+  new_tests:
+    decision: >
+      **Exactly ONE new test, and it is not an annotation-existence test.** A runtime test asserting that
+      an annotation exists is trivia: `tests/test_deps.py::TestRepositoryFactories` already holds three
+      `isinstance` assertions and they pass under ANY annotation, including `-> Any` — which is precisely
+      why they cannot prove this block. A test that asserts `get_type_hints` returns a class would be the
+      same trivia wearing a hat. **Do not write one.**
+    the_one_warranted_test:
+      name: "tests/test_deps.py::TestRepositoryProviderAnnotations::test_narrowed_dependency_annotations_resolve_at_runtime"
+      what_it_does: >
+        Component-interaction verification of the one failure mode this block introduces and mypy cannot
+        see. `mypy` never evaluates a runtime annotation, but FastAPI does: it resolves every `Depends`
+        parameter annotation while building the dependency graph. The four route modules have no
+        `from __future__ import annotations`, so a `TYPE_CHECKING`-only import there is an import-time
+        `NameError` and the application fails to start — with mypy reporting nothing at all.
+      three_assertions:
+        - "Import each of the four changed route modules; the import itself must succeed."
+        - >
+          For one handler in each, resolve the handler signature's annotation for the narrowed repository
+          parameter with `typing.get_type_hints` and assert it resolves to the concrete class. This is the
+          exact call FastAPI makes, and it is the assertion that fails on a `TYPE_CHECKING`-only import.
+        - "Build the FastAPI application so the full dependency graph is constructed; a `NameError` or unresolvable forward reference raises at startup here."
+      why_this_and_not_identity: >
+        The brief offered instance-identity as the alternative. Rejected on measurement: the provider
+        BODIES are unchanged by this block, so instance identity is not a property this block puts at
+        risk, and a test for it would be pure regression trivia for an untouched line. The runtime
+        resolution risk, by contrast, is created here and only here.
+    not_required_but_cheap:
+      - >
+        `TestRepositoryFactories` covers only 3 of the 10 providers (user, dashboard, access); the other
+        eight have no construction test. Extending it would be genuine coverage — but mypy already proves
+        annotation/body agreement (a mis-annotated provider is an immediate `return-value` error under
+        `warn_return_any`), so the added tests would prove nothing this block claims. **Not required.**
+
+  pins_must_stay_green_unmodified:
+    - "tests/test_deps.py::TestRepositoryFactories — its three tests, unmodified (and they cannot detect this block; that is accepted)"
+    - "tests/test_deps.py::TestDIFactories — unmodified"
+    - "tests/test_deps.py::TestDashboardAccessDependencies — unmodified (CQLT-2's pin)"
+    - "The four TestResourceAccessControl* classes in tests/test_resource_access_control.py — FORBIDDEN, assertions untouched"
+    - "tests/test_repositories.py — 36 passing, and now the designated evidence for ORM attribute correctness"
+    - "tests/test_openapi.py — narrows nothing that reaches a schema, but confirm the app still builds"
+
+  mutation_proof:
+    step: "Narrow `get_graph_repository()` to a deliberately wrong class (e.g. `-> LayoutRepository`)."
+    expect: "`uv run mypy src/` reports a `return-value` error in `deps.py`."
+    restore: "Revert the annotation; `uv run mypy src/` is green again."
+    why: "Proves the gate is live rather than vacuously satisfied — the same discipline CQLT-2 used."
+
+  full_suite:
+    command: ".\\Makefile.ps1 test"
+    startup: ".\\Makefile.ps1 test-up   # ONCE per session — Invoke-TestSelect does NOT start the services"
+    single_tenant_warning: >
+      `tests/conftest.py::setup_test_database` runs `DatabaseStarter.recreate_test_database()` (DROP /
+      CREATE DATABASE) every session. **At most one suite at a time.** If another agent is running one,
+      WAIT. A failure that moves between runs is contamination, not a regression — re-run it with no
+      other suite active before calling it a delta.
+    expectation: >
+      Same failure count as the baseline you measured; passed count grows by exactly 1 (the one new test).
+      The only acceptable failure is the pre-existing stale
+      `test_layouts.py::TestLayoutsAPI::test_create_layout_duplicate_name_returns_400`.
+
+  gates_precondition_not_evidence:
+    note: >
+      `ruff` and `mypy` being green is a PRECONDITION of this block, not evidence for it: they were
+      already green at HEAD, and they stay green whether or not the annotations are correct. The evidence
+      is the before/after counts, the two probes, the negative control, and the mutation proof.
+
+  documentation:
+    no_change: true
+    searched: "Every `docs/**/*.md`, for `deps.py`, the ten provider names, `repository_interfaces`, `IDashboardRepository` and `-> Any`."
+    finding: >
+      **NOTHING in `docs/` documents these repository factory providers or `deps.py`'s typing.** Every hit
+      concerns a different dependency: `get_current_user_dependency` (auth-api.md, access-control.md),
+      `require_admin_role` (health-api.md), `require_dashboard_admin_access` (access-control.md),
+      `get_db_dependency` (architecture.md), and one unrelated code sample in task-queue-migration.md. No
+      document describes a provider's return type, so no document becomes stale.
+    ruling: >
+      **Default to no documentation change, and that default stands.** A document describing `-> Any`
+      would be unusual, and none exists.
+    spec_md_version_row: >
+      **NO row is added.** One phase-level `docs/SPEC.md` version row is owed to the phase documentation
+      pass, and other phases append to that table concurrently. Record the hand-off in the commit body and
+      add nothing.
+
+acceptance_criteria:
+  - id: AC-1
+    text: "No repository factory provider in src/mkobi/api/deps.py is annotated `-> Any`."
+    falsify_by: "grep the file for `-> Any` and show only get_redis_client_dependency remains"
+  - id: AC-2
+    text: "All ten providers are annotated with their CONCRETE mkobi.db.repositories.* class per the D-08-2 ruling."
+    falsify_by: "any provider annotated with an mkobi.interfaces.* ABC, or left unannotated"
+  - id: AC-3
+    text: "get_dashboard_service is annotated `-> DashboardService`."
+    falsify_by: "`get_dashboard_service` still returning `-> Any`"
+  - id: AC-4
+    text: "All twenty-five Depends() consumer parameters for the ten providers are narrowed; zero remain `Any`."
+    falsify_by: >
+      grep the four route modules and deps.py for `Any = Depends(get_`; only
+      `get_dashboard_permissions::access_repo` (forbidden, CQLT-3) may remain.
+  - id: AC-5
+    text: "The four route modules carry REAL module-level runtime imports for the concrete classes, not TYPE_CHECKING-only imports."
+    falsify_by: "any `if TYPE_CHECKING:` block in admin.py, dashboards_filters.py, dashboards_graphs.py or data.py"
+  - id: AC-6
+    text: "`get_registration_request_repository` is present in deps.__all__ exactly once, and no duplicate entry was introduced."
+    falsify_by: "count occurrences in __all__; the pre-existing duplicate get_dashboard_service is unchanged"
+  - id: AC-7
+    text: "`uv run mypy src/` is green after the change, with the checked-file count UNCHANGED from the recorded before-value."
+    falsify_by: "any error, or any file-count change (which means a probe artefact survived)"
+  - id: AC-8
+    text: "`uv run ruff check src/ tests/` is green and NOT widened — no new ignore, no noqa added."
+    falsify_by: "diff of pyproject.toml, or any new noqa/ignore in the five files"
+  - id: AC-9
+    text: "Probe 1 and Probe 2 both produced their expected diagnostics against the shipped tree, and the route-annotation negative control fired."
+    falsify_by: "either probe producing no diagnostic, i.e. the gate is vacuous"
+  - id: AC-10
+    text: "The mutation proof fired: mis-annotating one provider produced a return-value error, and reverting restored green."
+    falsify_by: "mypy staying green through a deliberately wrong annotation"
+  - id: AC-11
+    text: "The one new runtime resolution test passes, and it fails if a route-module import is moved under TYPE_CHECKING."
+    falsify_by: "moving an import under TYPE_CHECKING and watching the test still pass"
+  - id: AC-12
+    text: "Zero files outside the five writable paths are modified."
+    falsify_by: "`git status --porcelain` showing any other path"
+  - id: AC-13
+    text: "No documentation file changed, and no docs/SPEC.md version row was added."
+    falsify_by: "`git status --porcelain -- docs/` returning anything"
+  - id: AC-14
+    text: "No behavioural change: the only diffs are annotations, the TYPE_CHECKING/runtime imports they require, and one __all__ entry."
+    falsify_by: "`git diff` touching any statement inside a function body"
+
+commit:
+  message: "refactor(api): type the repository factory providers in deps.py"
+  format: >
+    Conventional-commit subject. One commit for the whole block — see
+    `changes.order_of_operations.ruling` for why splitting is strictly worse.
+  stage_only:
+    - src/mkobi/api/deps.py
+    - src/mkobi/api/routes/admin.py
+    - src/mkobi/api/routes/dashboards_filters.py
+    - src/mkobi/api/routes/dashboards_graphs.py
+    - src/mkobi/api/routes/data.py
+    - tests/test_deps.py
+  never:
+    - "pyproject.toml — a widened gate would make this block unprovable"
+    - "Makefile.ps1 — `alembic/env.py` must stay named in BOTH targets"
+    - "alembic/ — no migration exists in this block"
+    - "src/mkobi/core/permissions.py"
+    - "tests/test_resource_access_control.py — the four TestResourceAccessControl* classes"
+    - "tests/test_layouts.py — the stale assertion stays stale"
+    - ".ai/audit/**, .ai/plans/**"
+  body_must_state:
+    - "D-08-2 is ruled OPTION (b), concrete classes, on probe evidence — and that the Phase-0 auditor's contrary assertion is refuted by measurement."
+    - "The two probe results, verbatim enough to be re-checked, and the negative control."
+    - "mypy src/ BEFORE and AFTER, with the checked-file count in both."
+    - "The blast radius measured as zero new diagnostics at every prefix of the sequence."
+    - "That the finding's ten provider NAMES are wrong (six do not exist) and the ten real names were resolved by symbol."
+    - "That narrowing the providers alone would have changed nothing, because all twenty-five consumer parameters were `Any`; both halves shipped together."
+    - "The residual gap the probes DID find: SQLAlchemy model attribute access is unchecked (no mypy plugin), so tests/test_repositories.py remains the evidence; plugin enablement is a phase-09 config finding, NOT actioned here."
+    - "get_registration_request_repository added to deps.__all__; the other __all__ omissions observed and deliberately left."
+    - "get_dashboard_permissions::access_repo, get_redis_client_dependency, get_dashboard_filter_values_repository and get_user_repository deliberately untouched, with reasons."
+    - "No documentation change, and the docs/SPEC.md version row hand-off to the phase documentation pass."
+    - "The suite result as a DELTA against the re-derived baseline, plus the note that the test DB is single-tenant."
+
+failure_action: >
+  If `mypy src/` cannot be made green WITHOUT a `pyproject.toml` change, STOP and report it as a
+  finding. Do not add an override, do not add a plugin, do not add a `# type: ignore`. The measurement
+  says the configuration does not defeat the fix, so a config change being necessary would mean the tree
+  moved under the task — report the drift instead of forcing it through. If a route module cannot take a
+  runtime import without creating a cycle, that is also a finding, not a licence to leave the annotation
+  `Any`.
+
+constraints:
+  - "English only — code, comments, docstrings, commit message, commit body."
+  - "Resolve every target BY SYMBOL. Never edit by line number; this block has five files and one of them is 1014 lines."
+  - "Production code is king (AGENTS.md rule 2). Never distort production code to make a test pass, and never weaken an annotation to silence mypy."
+  - "Small, focused edits: annotations, the imports they require, and one __all__ entry. No refactoring, no reformatting, no import reordering beyond what the new imports need."
+  - "Never run `git reset`, `git checkout`, `git restore`, or rewrite history."
+  - "At most one test suite at a time; `.\\Makefile.ps1 test-up` once per session first."
+  - "No `# type: ignore`, no `@ts-ignore`, no new noqa, no pyproject edit — under any circumstance."
+  - "deps.py is phase-04 co-owned: keep the change additive and surgical so it merges cleanly."
+
+divergences_found_by_the_planner:
+  - id: DV-1
+    severity: high
+    about: "The finding's ten provider names are largely fictional."
+    detail: >
+      Six of the ten names in `QLT-006` do not exist in this tree: `dashboard_access_repository`,
+      `dashboard_graph_repository`, `upload_repository`, `audit_log_repository`, `user_session_repository`,
+      `filter_value_repository`. The COUNT of ten `-> Any` providers is correct; the labels are stale
+      from an older tree. An implementor trusting the names would edit nothing.
+  - id: DV-2
+    severity: high
+    about: "The finding's stated mechanism is incomplete."
+    detail: >
+      Narrowing the ten provider returns changes ZERO diagnostics and ZERO route behaviour, because all
+      twenty-five consumer parameters are `Any` and re-widen the value immediately. QLT-006 is only
+      closed if the consumers are narrowed too. The block was widened to 25 consumer sites in 5 files on
+      this basis.
+  - id: DV-3
+    severity: high
+    about: "The four route modules cannot use TYPE_CHECKING imports."
+    detail: >
+      None of `admin.py`, `dashboards_filters.py`, `dashboards_graphs.py`, `data.py` has
+      `from __future__ import annotations`, so a `TYPE_CHECKING`-only import would be an import-time
+      `NameError` — a startup crash that mypy reports nothing about. This is the one genuinely new risk
+      the block creates, and it is why exactly one runtime test is warranted.
+  - id: DV-4
+    severity: medium
+    about: "TestRepositoryFactories has three tests, not twelve, and covers 3 of the 10 providers."
+    detail: >
+      The brief's "twelve isinstance assertions" does not match HEAD: the class holds three tests with
+      three assertions (user, dashboard, access). Eight providers have no construction test at all. Not
+      required to extend — mypy proves annotation/body agreement — but recorded so the next owner is not
+      surprised.
+  - id: DV-5
+    severity: medium
+    about: "The phase-0 audit contradicted itself on D-08-2 and both positions were unevidenced."
+    detail: >
+      The auditor asserted the concrete option is also suppressed; the Planner refuted it. Measurement
+      settles it in the Planner's favour: `follow_imports = "skip"` does not apply to modules inside the
+      `mypy src/` build, and `ignore_errors` suppresses in-module diagnostics without degrading exported
+      types (`Dashboard` reveals concretely). The original clause demanding "substitute evidence" for a
+      lost checker is therefore void and has been re-specified against the gap that actually survives.
+  - id: DV-6
+    severity: low
+    about: "get_dashboard_service() -> Any is an eleventh route-visible `-> Any` the finding does not name."
+    detail: >
+      Ten route sites already annotate `dashboard_service: DashboardService`, so the `Any` return actively
+      discards an annotation the routes already write. Included in the block; the one remaining `Any`
+      consumer, `get_accessible_dashboard_ids::dashboard_service`, is annotation-only and its body is
+      CQLT-3's.
+  - id: DV-7
+    severity: low
+    about: "deps.__all__ has more omissions than the one the brief names, plus a duplicate."
+    detail: >
+      `get_graph_service`, `require_role_dependency`, `require_dashboard_read_access`,
+      `require_dashboard_write_access` and `require_dashboard_admin_access` are also absent, and
+      `get_dashboard_service` is listed TWICE. Only the brief's named gap is fixed; the rest are recorded
+      for a future owner rather than swept into a typing block.
+  - id: DV-8
+    severity: low
+    about: "No documentation change, confirmed by search rather than assumed."
+    detail: >
+      No `docs/**/*.md` file mentions the ten providers, the interfaces module, or `deps.py`'s typing.
+      The rule requires naming a file if one exists; none does, so the no-change default stands.
+

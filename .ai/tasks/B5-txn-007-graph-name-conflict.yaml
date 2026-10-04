@@ -1,0 +1,899 @@
+id: task_b5_txn_007_graph_name_conflict
+
+title: >
+  B5 / TXN-007 — A duplicate graph name is a 409 on both create routes (global route gains the
+  IntegrityError clause)
+
+status: pending
+priority: medium
+depends_on: []
+
+source_reference: C:\py_dev\mkobi\.ai\plans\03-db-concurrency-remediation.md
+source_section: B5 — Settle the graph-create contract (TXN-007) + D-3 ruling + B5 design ruling
+source_blocks:
+  - "B5 — Settle the graph-create contract (TXN-007)"
+  - "B5 design ruling (Planner) — settled 2026-10-02"
+  - "D-3 — RULING: Alternative A — handle `IntegrityError` in the global graph route"
+
+description: >
+  One unique index on `(dashboard_id, name)` — `Graph.__table_args__`'s
+  `Index("idx_graphs_dashboard_name", …, unique=True)` — is reached by **two** mounted routes.
+  `api/routes/dashboards_graphs.py::create_dashboard_graph_endpoint` maps `IntegrityError` to
+  `ErrorCode.DUPLICATE_RESOURCE` (409) and documents 409. `api/routes/graphs.py::
+  create_graph_endpoint` declares 409 in its own OpenAPI `responses` block, has no such clause,
+  falls into its terminal `except Exception` and answers **500** — while
+  `docs/02-dashboards/dashboards-api.md` §13's error table for that same endpoint says **422**.
+
+
+  **D-3 is ruled: Alternative A.** The global route gains the sibling's `IntegrityError` clause.
+  The repository is **not** changed for correctness: its `except SQLAlchemyError` handler is a
+  **bare `raise`**, so the driver's `IntegrityError` already reaches the route intact and a
+  route-level clause fires today. Only a one-line logging symmetry fix
+  (`exc_info=True`) is taken in the repository, and it is explicitly **not** a prerequisite.
+
+
+  **There is no name pre-check anywhere on this path**, so the 500 is the **ordinary** outcome of a
+  sequential duplicate, not a race: the new tests post the same `(dashboard_id, name)` twice over
+  HTTP and assert 409 on the second. No repository double, no two-session race, no timing.
+
+
+  Scope: one `except` clause plus one import in one route module, one optional logging line in one
+  repository method, three test cases added to `tests/test_graphs.py::TestGraphsAPI`, and **one
+  documentation row**.
+
+goals:
+  - >-
+    Deliver **one** reportable outcome for a duplicate graph name across **both** surviving create
+    surfaces: **409** with `code == DUPLICATE_RESOURCE`, making the global route's own already
+    declared OpenAPI contract true.
+  - >-
+    Make the fix as small as the finding: a route-level classifier, no new error taxonomy, no new
+    enum member, no status-mapping change, no schema change, no service-layer rewiring.
+  - >-
+    Pin **both** surfaces with tests so they cannot drift apart again — the surviving sibling route
+    is a test target, not just the code being changed.
+  - >-
+    Leave every row the tests create **deleted**. On this harness a production `commit()` is durable
+    and the fixture's SAVEPOINT rollback cannot undo it.
+  - >-
+    Leave the two routes' other differences exactly as they are. The dashboard-scoped route is
+    **not** a drop-in equivalent of the global one, and this block does not make it one.
+
+extra_context: |
+  ## Correction 1 — the repository does not collapse the exception
+
+  The plan's B5 block and its D-3 ruling both say `GraphRepository.create` "wraps every
+  `SQLAlchemyError` identically, so a constraint violation is indistinguishable from a connection
+  failure by the time it reaches either route". **That is false**, and the correction is what makes
+  this block a one-clause change.
+
+  The handler is a **bare `raise`**:
+
+      except SQLAlchemyError as e:
+          logger.error("Error creating graph: %s", e)
+          raise
+
+  A bare `raise` re-raises the *same* exception object (PEP 3134), so `sqlalchemy.exc.IntegrityError`
+  arrives at the route intact. Confirmed three ways: statically, by an executed probe, and
+  empirically by the shipped user-write fix (`2174895`), whose classifier in
+  `services/user_service.py::UserService.create_user` catches `IntegrityError` raised from
+  `UserRepository.create` and whose tests drive a real unique-index violation through the
+  repository.
+
+  **Consequence: a route-level `except IntegrityError` fires today with no repository change.**
+  Do not invent a re-raise wrapper, a custom repository exception, or a
+  "constraint violation vs connection failure" discriminator — the code does not need one, and
+  adding it would widen the block.
+
+  ## Correction 2 — the 500 is the ordinary path, not a race
+
+  **There is no name pre-check anywhere on the graph-create path.** `GraphRepository.create` goes
+  straight to `Graph(**kwargs)` → `db.add` → `db.flush`. `GraphRepository.get_by_name_and_dashboard`
+  exists and **has no caller in `src/`** — neither route calls it. Nothing in the request path looks
+  for an existing graph with that name before inserting.
+
+  Therefore a **sequential** duplicate name always reaches the unique index and always produces the
+  **500** today. The documentation's `422` row was never met by anything; the validation error it
+  describes does not exist on this path.
+
+  **Consequence: the test is trivially deterministic** — post the same `(dashboard_id, name)` twice
+  over HTTP and assert 409 on the second. No repository double, no defeated pre-check, no
+  two-session race, no timing, no flakiness. This is materially cheaper *and* stronger than what
+  the plan assumed, because the pre-fix behaviour it asserts against is not a race but a
+  single-threaded fact.
+
+  ## Consumer inventory — the "delete the global route" option is closed
+
+  The global route has **one** HTTP consumer in the repository
+  (`tests/test_graphs.py::TestGraphsAPI::test_create_graph_admin_success`), **zero** frontend
+  consumers (the frontend never creates, updates or deletes graphs through either route — the
+  dashboard API module and the admin API module make no graph calls at all; graphs reach the SPA
+  only as read-only `AggregatedDataResponse.graphs`), **zero** in-process consumers, and **four**
+  documentation statements. Nothing anywhere relies on the current 500 or on the documented 422 —
+  the audit corpus's probes of it are auditor-authored, not consumers.
+
+  Had the delete option been chosen, it would have **silently removed graph creation for a non-admin
+  holding an `admin` dashboard grant**, because the dashboard-scoped route refuses exactly that
+  caller (its `require_admin_role` dependency admits only global admins). **The scoped route is not
+  a drop-in equivalent** — not of the caller set, and not of the URL surface. The mounted paths are
+  disjoint: `POST /api/v1/graphs/` (with a trailing slash; the slash-less form still answers `307`
+  because the application router re-registers the path with `redirect_slashes` unset — a phase-07
+  `X-07`/`EXT-006` finding) versus `POST /api/v1/dashboards/{dashboard_id}/graphs`.
+
+  ## The two handlers differ in more than the conflict clause — do not "converge" them
+
+  | | global `create_graph_endpoint` | scoped `create_dashboard_graph_endpoint` |
+  | - | - | - |
+  | Permission gate | in-body `check_dashboard_access(..., required_permission="admin")` — admits **any** authenticated user holding an admin grant, plus global admins via the bypass | `require_admin_role` decorator; consults **no** ACL, so a grant-admin non-admin is **refused** |
+  | Conflict clause | **being added** (409) | already present (409) |
+  | `ValueError` branch | rolls back | does **not** roll back |
+  | 403 payload | `PERMISSION_DENIED` | `INSUFFICIENT_PERMISSIONS` (same status, different `code`) |
+  | OpenAPI `responses` | declares 429 and an unreachable 404 | no 429; also declares an unreachable 404 |
+  | Docstring `Raises:` | does not list its own 409 | does not list its own 409 |
+
+  None of those is this block's. **Do not reorder the existing clauses, do not align the two
+  handlers, do not add the missing docstring rows, do not add or remove a declared status.** The
+  global route is *looser* than the scoped one for a grant-admin non-admin, so the documentation's
+  "Admin only" wording is wrong **in that direction** — a pre-existing inaccuracy that belongs to the
+  authorization phase, not here.
+
+  ## The layering divergence from the user-write block, stated so it is not read as a contradiction
+
+  The user-write block (B1) explicitly **rejected** a route-level `except IntegrityError` for users
+  because it "would put a driver exception type into the HTTP layer against the API → Service →
+  Repository rule". **This block does exactly that for graphs.** The two rulings are coherent
+  because B1's premise does not hold here: **there is no service in the graph-create path at all.**
+  Both routes call `GraphRepository.create` **directly**; `GraphService.create` exists and has
+  **zero** route callers (the service is reachable only through the DI factory
+  `api/deps.py::get_graph_service`, which no route depends on). The layer that would own the
+  classifier is unwired, so wiring it would be a *larger* change than the route clause and would
+  touch a second module for no behavioural gain.
+
+  **Put this in the commit body**, in these terms, so the next reader does not read B5 as
+  contradicting B1:
+
+  - *Why* a driver exception type appears in an HTTP handler here and not there: the service layer
+    is not in this path, and it is not in the user path either — the user path's classifier exists
+    because a duplicate email had to be distinguished from every other `IntegrityError`, which
+    needed a `get_by_email` re-read inside a method that already owned the transaction's outcome.
+    A duplicate graph name needs no verification: the conflicting row is the caller's own first
+    create, on the same dashboard, in the same request session.
+  - *That* the semantic divergence is deliberate and rule-based, not accidental: duplicate **email**
+    is settled at **422** because a **published** contract already asserts it (a shipped test and a
+    documentation table), and preserving a published contract outranks semantic purity. Duplicate
+    **graph name** has **no** published contract to preserve for the global route (the docs say
+    422, which nothing implements), and the surviving sibling route **already publishes 409** with
+    the same error code. Rule: *preserve an already-published contract; use 409 where none exists
+    and a sibling already establishes it.*
+
+  ## The repository change: one line, and why it is in scope
+
+  **Decision: include `exc_info=True` in `GraphRepository.create`'s handler, and nothing else.**
+
+      except SQLAlchemyError as e:
+          logger.error("Error creating graph: %s", e, exc_info=True)
+          raise
+
+  Rationale, in order of weight:
+
+  1. **It is the one line of this block's diff that makes the conflict diagnosable.** This block
+     deliberately routes a constraint violation into an expected, documented outcome instead of a
+     500. The only remaining trace of *why* the insert failed is that log line, and without
+     `exc_info=True` it carries only the driver's message with no traceback and no constraint
+     name — while the sibling route's equivalent clause passes `exc_info=True`. Making the
+     repository's line match the route it feeds is the minimum that keeps the two consistent.
+  2. **Zero behavioural risk.** No control flow, no exception identity, no signature, no return
+     value changes. A logging call cannot change a status code, and the test suite's only
+     observation of this handler is that the exception still propagates.
+  3. **It is scoped to `create` on purpose.** The file has seven handlers with the same shape.
+     Touching all seven would make this block a repository-wide logging sweep and would widen its
+     review surface for no gain. Only `create` is on the path this block changes. The remaining
+     six are untouched and stay untouched; if a future block wants the sweep, it is that block's
+     decision.
+
+  **What must NOT happen:** do not add a re-raise wrapper, a custom exception type, a
+  `raise … from e` chain, or any classification inside the repository. The repository's
+  responsibility ends at "log it and let it propagate". Deciding what a constraint violation *means*
+  to a client is the HTTP layer's, and it is now a one-clause decision.
+
+  ## Mandatory implementation details (non-negotiable)
+
+  - The new `except IntegrityError` clause is placed **before `except Exception`**. Placing it after
+    would be dead code — the terminal handler would have caught it first.
+  - It **must `await db.rollback()`**. After a flush-time `IntegrityError` the transaction is
+    aborted; without the rollback the next statement on that session raises `PendingRollbackError`.
+    `tests/conftest.py::async_client` overrides `get_db_dependency` with the **shared** test
+    session, so an un-rolled-back session poisons every later test in the run. The sibling route
+    rolls back for exactly this reason, and the shipped user-write classifier carries a comment
+    recording the same hazard.
+  - **No name pre-check is added.** Do not "helpfully" call `get_by_name_and_dashboard` first and
+    return 409 from a read: that reintroduces the TOCTOU window this finding class exists to close,
+    and it would make the test pass without the `IntegrityError` clause ever firing — which would
+    make the test **vacuous**.
+  - The committed graph row is **durable** on this harness: a production `Session.commit()` commits
+    to the root and releases the fixture's SAVEPOINT, so the fixture's teardown rollback cannot undo
+    it. Every new test **must** delete what it created, in a `finally`.
+
+  ## Documentation decisions (settled; do not widen)
+
+  - `docs/02-dashboards/dashboards-api.md` §13 "Create Graph" — the
+    `422 | Duplicate name in dashboard | Validation error` row becomes `409`, **matching the scoped
+    route's existing row verbatim** (`409 | Duplicate name in dashboard |
+    `Conflict: graph creation failed``). **Only that row.** The neighbouring
+    `422 | Invalid graph type` row stays. The section's "Admin only" wording is a separate,
+    pre-existing inaccuracy and correcting it would widen this block's contract surface.
+  - `docs/08-security/error-format.md` and `docs/99-reference/error-handling-guide.md` already map
+    `DUPLICATE_RESOURCE → 409`. **No edit.**
+  - `docs/SPEC.md`'s "dashboard-specific graph endpoints" row presents the two surfaces as parallel.
+    Under the ruled option **both routes still exist**, so that sentence remains **true**. **No
+    edit, and no version row** — the other blocks in this phase declined one and the phase close
+    records a single row for the whole phase.
+  - `docs/11-guides/create-dashboard.md` carries **unresolved merge-conflict regions** (23 of them)
+    and cannot be edited cleanly. It does **not** need editing — it already recommends the
+    dashboard-scoped route. Recorded as coordination item **C-8** for the documentation phase; the
+    conflict-marker cleanup is a **separate authoring task**, not a phase-03 deliverable.
+
+  ## Why the tests live in `TestGraphsAPI`
+
+  `tests/test_graphs.py::TestGraphsAPI` is **pinned by phases 07, 08, 12, 15 and 16** — each of
+  those plans already records "phase 03's B5 may have added assertions to this class; read the
+  file, do not assume its shape", and phase 15's plan additionally names
+  `TestGraphCreateContract` as a class this block may have added and tells phase 15 to look for it.
+  The test therefore goes **in that existing class**, and the addition is recorded as coordination
+  item **C-8** so those phases read rather than assume.
+
+files:
+  - path: src/mkobi/api/routes/graphs.py
+    change: modify
+    targets:
+      - type: function
+        name: create_graph_endpoint
+    semantic_anchors:
+      - "module imports — add `IntegrityError` from `sqlalchemy.exc`, alongside the existing `AsyncSession` import from `sqlalchemy.ext.asyncio`"
+      - "create_graph_endpoint — the `try:` block: `check_dashboard_access`, `get_graph_repository()`, `graph_repo.create(...)`, `await db.commit()`, `GraphRead.model_validate(result)`"
+      - "create_graph_endpoint — the handler chain: `except AppException: raise`, `except ValueError`, `except Exception`"
+    instructions: |
+      **The only production file this block changes for correctness.**
+
+      1. Add `from sqlalchemy.exc import IntegrityError` to the module imports, next to the
+         existing `from sqlalchemy.ext.asyncio import AsyncSession`. Import order is fixed by
+         `ruff`'s isort rule — run the lint fixer rather than guessing.
+      2. Insert one new clause into `create_graph_endpoint`'s handler chain, **between
+         `except ValueError` and `except Exception`** (i.e. after the `ValueError` mapping, before
+         the terminal handler). Mirror `dashboards_graphs.py::create_dashboard_graph_endpoint`'s
+         clause as closely as the local style allows:
+
+             except IntegrityError:
+                 await db.rollback()
+                 logger.error(
+                     "Integrity error creating graph name=%s dashboard_id=%s",
+                     graph.name,
+                     graph.dashboard_id,
+                     exc_info=True,
+                 )
+                 raise AppException(
+                     code=ErrorCode.DUPLICATE_RESOURCE,
+                     detail="Conflict: graph creation failed",
+                 ) from None
+
+         Binding points on the clause:
+         - **`ErrorCode.DUPLICATE_RESOURCE`** — an existing `StrEnum` member in
+           `src/mkobi/models/enums.py` that already maps to **409** in
+           `utils/exceptions.py`'s code→status map. **No new enum member, no mapping change, no
+           hardcoded code string.**
+         - **`detail="Conflict: graph creation failed"`** — byte-identical to the sibling route's
+           detail and to the documentation row this block writes. The two surfaces must be
+           indistinguishable to a client.
+         - **`await db.rollback()` first.** Mandatory, not defensive (see the correction notes).
+           Add a short comment stating *why*: a flush-time integrity error leaves the transaction
+           aborted, so the next statement on this session would raise `PendingRollbackError`.
+           Keep it to the two sentences that stop a future reader from deleting the rollback as
+           redundant.
+         - **`exc_info=True`** in the log call, matching the sibling.
+         - **`from None`,** matching the sibling: the `AppException` is the whole story for the
+           client, and the traceback is in the log line above. (`ruff`'s `B904` is satisfied by an
+           explicit `from` either way.)
+      3. **Everything else in the file is untouched.** Specifically: the `except AppException:
+         raise` clause stays first; the `except ValueError` → `VALIDATION_ERROR` (422) clause stays
+         exactly as it is, **including its rollback**; the terminal `except Exception` →
+         `INTERNAL_ERROR` (500) clause stays exactly as it is; the `update_graph_endpoint`,
+         `get_graphs_endpoint`, `get_graph_endpoint` and `delete_graph_endpoint` handlers are
+         **not** edited (the update path's own rename-into-a-duplicate-name behaviour is a
+         separate question and is **not** this block's); the router's `responses` block is
+         unchanged (it already declares 409, which this change makes true); the module docstring,
+         the endpoint `description`, the `Raises:` block and the leading log line are unchanged.
+
+      **No other clause is added.** Do **not** add `except DatabaseError`, `except
+      SQLAlchemyError`, `except OperationalError` or a catch-all for driver exceptions: a genuine
+      connection failure must keep answering 500, and that is what the terminal handler is for.
+
+  - path: src/mkobi/db/repositories/graph_repo.py
+    change: modify
+    targets:
+      - type: class
+        name: GraphRepository
+      - type: method
+        name: create
+    semantic_anchors:
+      - "GraphRepository.create — the `try:` block: `Graph(**kwargs)`, `db.add`, `db.flush`, `db.refresh`, `logger.info`"
+      - "GraphRepository.create — the `except SQLAlchemyError as e:` handler that logs and re-raises"
+    instructions: |
+      **One line, logging only, and NOT a correctness prerequisite.** The bare `raise` already
+      propagates the driver's `IntegrityError` intact, so nothing about the route's new clause
+      depends on this change. Review and scope it accordingly: if it were to fail, the block's
+      behaviour would be unchanged.
+
+      Add `exc_info=True` to the `logger.error(...)` call inside `create`'s `except SQLAlchemyError`
+      handler. Nothing else in the file changes — **not** the other six handlers' log lines, **not**
+      the handler's structure, **not** the bare `raise`, **not** the docstring.
+
+      **No `AppException` import:** no module under `src/mkobi/db/repositories/` raises it and this
+      block does not start one.
+
+  - path: src/mkobi/api/routes/dashboards_graphs.py
+    change: none
+    targets:
+      - type: function
+        name: create_dashboard_graph_endpoint
+    instructions: |
+      **Read-only. This block must not edit this file.** Recorded so the decision is not
+      re-litigated and so nobody "converges" the two handlers:
+
+      - Its `except IntegrityError` → `DUPLICATE_RESOURCE` clause is the **template** this block
+        copies, not something to change.
+      - Its `ValueError` branch does **not** roll back while the global route's does; its 403
+        payload is `INSUFFICIENT_PERMISSIONS` while the global route's is `PERMISSION_DENIED`; it
+        declares no 429; its docstring omits its own 409. All pre-existing, all **not** this
+        block's.
+      - The tests added by this block **assert** its current behaviour, so any later change to it
+        breaks a test on purpose.
+
+  - path: src/mkobi/db/models/graphs.py
+    change: none
+    targets:
+      - type: class
+        name: Graph
+      - type: attribute
+        name: __table_args__
+    instructions: |
+      **Read-only — this is the anchor, not a target.** `Graph.__table_args__` declares the unique
+      `Index` over `(dashboard_id, name)` that both routes reach. **No model change, no Alembic
+      revision, no migration.** Confirm the index name and columns by reading the symbol; do not
+      match on a remembered name.
+
+  - path: src/mkobi/services/graph_service.py
+    change: none
+    targets:
+      - type: class
+        name: GraphService
+      - type: method
+        name: create
+    instructions: |
+      **Read-only, and read for one reason:** confirm that `GraphService.create` still has **zero
+      route callers**, which is the fact that makes a route-level classifier correct here and
+      wrong in the user path. `api/deps.py::get_graph_service` builds it; no route depends on it.
+      **Do not** wire the routes through the service and **do not** move the classifier into it —
+      that is a second production file and a contract change this finding does not ask for, and
+      phase-08's dependency typing work touches the same service.
+
+  - path: tests/test_graphs.py
+    change: modify
+    targets:
+      - type: class
+        name: TestGraphsAPI
+    semantic_anchors:
+      - "TestGraphsAPI::test_create_graph_admin_success — the one existing consumer of the global create route"
+      - "TestGraphsAPI module scope — where the cleanup helper is added, beside the existing `_create_admin_user` / `_create_viewer_user` helpers"
+    instructions: |
+      Add **three** cases to `TestGraphsAPI` and one module-level cleanup helper. **No existing test
+      in this file is modified** — the whole class must stay green unmodified, and phase 12
+      (`AZ-6`/`AZ-7`/`AZ-8`), phase 15 and phase 16 all pin it.
+
+      **Cleanup helper (mandatory, and the durability trap is real).** `create_graph_endpoint` calls
+      `await db.commit()`, and on this harness a production commit reaches the root and releases the
+      fixture's SAVEPOINT — the fixture's teardown rollback **cannot** undo it. Add one module-level
+      async helper next to the existing user helpers, following the shipped precedent for exactly
+      this problem (the `_delete_committed_email` helper in `tests/test_admin_user_management.py`):
+
+          async def _delete_committed_graph(
+              async_session_maker, dashboard_id: uuid.UUID, name: str
+          ) -> None:
+              """Delete rows a create request in this suite committed.
+
+              A production commit in this harness is durable and the fixture's teardown rollback
+              cannot undo it, so any test that creates a graph must delete it afterwards.
+              """
+              async with async_session_maker() as session:
+                  await session.execute(
+                      delete(graph_model.Graph).where(
+                          graph_model.Graph.dashboard_id == dashboard_id,
+                          graph_model.Graph.name == name,
+                      )
+                  )
+                  await session.execute(
+                      delete(dashboard_model.Dashboard).where(
+                          dashboard_model.Dashboard.id == dashboard_id
+                      )
+                  )
+                  await session.commit()
+
+      - It runs on an **independent** session from the session-maker fixture and **commits** — a
+        delete that is only flushed is undone by the teardown, which would leave the original row
+        behind. This is the trap the helper exists to close.
+      - The dashboard is deleted too: it is created through `DashboardRepository.create` (not
+        through the API, so no owner-grant row is created) and the graph route commits it forward.
+      - Every new test wraps its body in `try: … finally: await _delete_committed_graph(...)`, and
+        takes the `async_session_maker` fixture in addition to the ones it already needs.
+
+      **Shared setup for the three cases.** Create a `Dashboard` through `DashboardRepository.create`
+      + `await async_db_session.flush()` (the same shape as `test_create_graph_admin_success`).
+      Use `authenticated_client` — its token is an **admin**, and `check_dashboard_access` carries the
+      admin bypass, so the global route's in-body permission gate admits it with **no grant row**,
+      exactly as the existing test shows. Build the request body with a `uuid4()`-derived graph
+      `name` (never a hard-coded one: the existing tests in this file already commit
+      durable rows with fixed names, and a shared name would collide on the unique index across
+      runs).
+      Assert the RFC 7807 `code` field against `ErrorCode.DUPLICATE_RESOURCE.value` — `ErrorResponse.code`
+      is a `StrEnum`, so `model_dump()` emits its string value.
+
+      **Case 1 — `test_create_graph_duplicate_name_returns_409`** (the global route, the fix):
+      - POST the identical body to `/graphs/` **twice**.
+      - First response: `201`, and the body carries `name`, `type` and `dashboard_id` as sent, plus
+        an `id`. This is the "the first create still returns 201 with the same body" assertion — the
+        success path is pinned so the classifier cannot be bought by breaking creation.
+      - Second response: **`409`**, `body["code"] == ErrorCode.DUPLICATE_RESOURCE.value`,
+        `body["detail"] == "Conflict: graph creation failed"`.
+      - Assert explicitly, on the conflict response: `status_code != 500` **and**
+        `status_code != 422`. The negative assertions are the point — 500 is the pre-fix behaviour
+        and 422 is the documented behaviour that never existed, and a test that only asserts 409
+        would let either creep back.
+      - Re-read from an **independent session** (`async_session_maker`) and assert **exactly one**
+        graph row exists for that `(dashboard_id, name)` — the loser wrote nothing.
+
+      **Case 2 — `test_create_dashboard_graph_duplicate_name_returns_409`** (the scoped route, the
+      pin):
+      - The same three assertions against `POST /dashboards/{dashboard_id}/graphs`.
+      - Its purpose is **anti-drift**: it pins the surviving sibling's contract with the *same* status,
+        `code` and `detail` as case 1, so the two surfaces cannot diverge again silently. State that
+        in the test docstring — it is not a duplicate of case 1 by accident.
+      - **Say in the docstring that this case does not discriminate the fix.** It passes before and
+        after the change by design; it is a regression pin on untouched code. Only case 1 and case
+        3 must fail pre-fix.
+
+      **Case 3 — `test_graph_name_conflict_is_not_500_on_any_create_route`** (the block's headline
+      assertion):
+      - `@pytest.mark.parametrize` over the **two mounted paths** (`"/graphs/"` and
+        `"/dashboards/{dashboard_id}/graphs"`), posting the same `(dashboard_id, name)` twice.
+      - Assert the conflict response is **409** and explicitly **not 500**, and that its `code` is
+        `DUPLICATE_RESOURCE`.
+      - This is the plan's "a name conflict does not surface as 500 on any route" requirement, and it
+        is the one test that fails if anyone later removes the clause from **either** handler.
+      - Both parametrised cases need their own dashboard (the unique index is per
+        `(dashboard_id, name)`), so build a fresh one per parameter value and clean up per case.
+
+  - path: docs/02-dashboards/dashboards-api.md
+    change: modify
+    targets:
+      - "§ \"13. Create Graph\" (the global route) → \"Error responses:\" table"
+    instructions: |
+      **Exactly one row changes**, in the global create-graph section's error table:
+
+      | Status | Condition                    | Detail                             |
+      | ------ | ---------------------------- | ---------------------------------- |
+      | `409`  | Duplicate name in dashboard  | `Conflict: graph creation failed`  |
+
+      - **Copy the dashboard-scoped section's row verbatim** — same status, same condition wording,
+        same detail text. The two tables becoming byte-identical on this row *is* the deliverable;
+        the route handlers are now byte-identical on this clause too.
+      - Match the table's existing three-column shape. Do not add a `500` row, do not touch the
+        neighbouring `422 | Invalid graph type` row, do not touch the `403` row.
+      - **No other section of this file is edited** — not §"Update Graph", not the dashboard-scoped
+        create-graph section, not the request-body example (phases 15 and 16 have already filed
+        separate findings against that example's `config` keys, and they record their own deltas).
+
+acceptance_criteria:
+  - >-
+    `api/routes/graphs.py::create_graph_endpoint` contains an `except IntegrityError` clause placed
+    **after** `except ValueError` and **before** `except Exception`, which awaits
+    `db.rollback()`, logs with `exc_info=True`, and raises `AppException` with
+    `code=ErrorCode.DUPLICATE_RESOURCE` and `detail="Conflict: graph creation failed"`
+  - >-
+    A **sequential** duplicate `(dashboard_id, name)` answered by the global route is `409` with
+    `code == "DUPLICATE_RESOURCE"` — verified over HTTP with no repository double, no mocked
+    session, no two-session race and no timing
+  - >-
+    The conflict response is asserted to be **neither 500 nor 422**, on **both** create routes
+  - >-
+    The first create still answers `201` with its body intact (`name`, `type`, `dashboard_id`, `id`),
+    and an independent-session re-read shows **exactly one** row for the pair
+  - >-
+    No name pre-check exists anywhere in the diff: `GraphRepository.get_by_name_and_dashboard` is
+    still uncalled from `src/`, so the conflict is detected by the database, not by a read
+  - >-
+    `GraphRepository.create`'s handler gained `exc_info=True` and **nothing else** — the bare
+    `raise`, the handler's structure, the other six handlers in the file and the docstring are all
+    unchanged
+  - >-
+    `api/routes/dashboards_graphs.py`, `db/models/graphs.py`, `services/graph_service.py` and every
+    other route handler in `api/routes/graphs.py` are byte-identical to HEAD
+  - >-
+    No new `ErrorCode` member, no change to the `ErrorCode` → HTTP status mapping, no new exception
+    class, no schema change, no Alembic revision, no Pydantic or OpenAPI schema change (the route
+    already declares 409), no frontend change, no `docs/SPEC.md` version row
+  - >-
+    Three cases added to `tests/test_graphs.py::TestGraphsAPI`, each deleting the graph row **and**
+    the dashboard row it created, in a `finally`, through an independent session that **commits**;
+    every graph name is `uuid4()`-derived
+  - >-
+    Every existing test in `TestGraphsAPI` passes **unmodified** — the file's diff is purely
+    additive
+  - >-
+    **Discrimination demonstrated, not asserted:** with the new clause temporarily reverted, case 1
+    and case 3 fail (conflict answers 500) while case 2 and every pre-existing test in the class stay
+    green. The fix is restored and the class re-run green. The result is recorded in the commit body
+  - >-
+    `docs/02-dashboards/dashboards-api.md` changed by exactly one row; the global and
+    dashboard-scoped duplicate-name rows are byte-identical afterwards
+  - >-
+    `ruff check` and `mypy` pass on every touched path; no `print()`, no pandas, no non-English
+    comment, docstring or log message; type hints on the new helper and the new tests
+
+out_of_scope: |
+  Everything below is another phase's, another block's, or a pre-existing defect this finding does
+  not name. Do not touch it, and do not "improve" it while passing through. Widening the block to
+  fix any of these is a scope failure, not diligence.
+
+  - **The permission-gate asymmetry.** The global route admits any authenticated user holding an
+    `admin` dashboard grant (in-body `check_dashboard_access`); the scoped route requires a global
+    admin (`require_admin_role`) and consults no ACL. This is why the documentation's "Admin only"
+    wording is wrong, and why the scoped route is **not** a drop-in equivalent. It belongs to the
+    authorization phase. This block changes neither gate and asserts neither.
+  - **The `ValueError`-branch rollback asymmetry.** The global route rolls back; the scoped route
+    does not. Phases 08 and 16 own it. Do not "align" it here.
+  - **The 403 payload asymmetry** (`PERMISSION_DENIED` versus `INSUFFICIENT_PERMISSIONS`, same
+    status). Not this block's.
+  - **The 429 declaration gap.** The global create route declares 429; the scoped one does not.
+    Neither emits it. Not this block's.
+  - **The unreachable 404s** declared by both create routes. Not this block's.
+  - **The missing 409 in both docstrings' `Raises:` blocks** — including the global route's, whose
+    409 this block makes real. Deliberately unchanged: the **published OpenAPI `responses` block** is
+    the contract surface this block makes true, and the `Raises:` blocks are corrected in one pass
+    by the phases that own the graph-route error vocabulary (the security baseline's detail-string
+    sweep and the authorization phase). Do not add a docstring row in either handler.
+  - **`update_graph_endpoint`'s rename-into-a-duplicate-name behaviour.** A `PUT` that renames a
+    graph onto an existing name in the same dashboard also hits the unique index and also answers
+    500. **That is a real defect and it is not TXN-007's** — the finding is about *creation*. Do not
+    extend the fix to the update path; **record it as an observation in the commit body** so the
+    finding is surfaced rather than silently discovered.
+  - **The frontend's nonexistent graph UI.** The SPA never creates, updates or deletes a graph
+    through either route (graphs arrive as read-only aggregated data), and there is no graph editor
+    in `frontend/src`. **No frontend change**, and none is possible to break.
+  - **`docs/11-guides/create-dashboard.md`'s merge-conflict markers.** 23 unresolved regions make it
+    uneditable, and it does not need editing. The marker cleanup is a **separate authoring task**,
+    filed as coordination item `C-8`.
+  - **`docs/11-guides/extend-graphs.md`** — checked for a statement about the global create route's
+    duplicate-name outcome. If it names one, it is **not** edited here (the documentation phase
+    reconciles the guide set as a whole); record what it says in the commit body.
+  - **`docs/SPEC.md`** — the "dashboard-specific graph endpoints" row stays true (both routes
+    survive) and no version row is added; the phase close records one for the whole phase.
+  - **Deleting, merging or deprecating either create route.** Ruled out. The global route has a
+    real caller class the scoped route refuses, and removing an endpoint is a deprecation-cycle
+    change, not a remediation commit.
+  - **`GraphService`** — not wired into either route, and not modified. Its interface and
+    `create` are read-only evidence for the layering rationale.
+  - **B1 (user writes, `2174895`/`cea2d06`), B2 (advisory lock, `ab76989`/`863b81b`), B3 (worker
+    transitions, `907e052`/`a215a40`), B6 (`ba2687b`, the seeder)** — landed; B5 shares **no file**
+    with any of them. **B4 (the access-grant contract) is in flight and uncommitted** — its changes
+    to `access_repo.py`, `repository_interfaces.py` and one row of `dashboards-api.md` are already
+    in the working tree. **Do not edit, revert, stage or commit those**, and do not let the shared
+    documentation file's foreign row be lost when you edit yours.
+  - **`tests/test_layouts.py`, `tests/test_dashboards_api.py`, `tests/test_graph_service.py`,
+    `tests/test_openapi.py`** — read-only. The last one must stay green unmodified; it is the
+    proof that this block changed no published schema.
+  - **`.ai/audit/**` and every other audit artefact** — never edited, per B0's convention. This
+    block writes production code, tests, one documentation row, and the coordination entry.
+
+sequence:
+  - step: 1
+    action: >-
+      Read the B5 block, the D-3 ruling **and** the B5 design ruling in
+      `.ai/plans/03-db-concurrency-remediation.md`, then this task's `extra_context` in full. Then
+      read, by symbol: `create_graph_endpoint` and its whole handler chain,
+      `create_dashboard_graph_endpoint`'s handler chain (the template),
+      `GraphRepository.create` and its `except SQLAlchemyError` handler,
+      `Graph.__table_args__`, `GraphService.create` plus its caller census,
+      `ErrorCode.DUPLICATE_RESOURCE` and the code→status map in `utils/exceptions.py`,
+      `ErrorResponse`, and `docs/02-dashboards/dashboards-api.md` §13 **and** the
+      dashboard-scoped create-graph section whose 409 row is the copy source.
+    verify: >-
+      You can state, without re-reading, the two claims of the plan you are overriding (the
+      repository collapses nothing; the 500 needs no race), and you have the sibling clause's exact
+      wording in front of you.
+  - step: 2
+    action: >-
+      Re-read `git status --porcelain` and `git log --oneline -3`. **Expect uncommitted work from the
+      neighbouring block to be present** — at hand-off the tree already carries modified
+      `src/mkobi/db/repositories/access_repo.py`,
+      `src/mkobi/interfaces/repository_interfaces.py` and
+      `docs/02-dashboards/dashboards-api.md` (the access-grant contract's changes, including one
+      added row in the access-grant error table), plus pre-existing uncommitted deletions under
+      `.ai/` and `frontend/coverage/`. **None of that is yours and none of it is to be reverted.**
+      Confirm `src/mkobi/api/routes/graphs.py`, `src/mkobi/db/repositories/graph_repo.py` and
+      `tests/test_graphs.py` carry **no** uncommitted changes of their own; if any does, re-read it
+      and work with it rather than replacing it. Expected HEAD is `ba2687b` or later.
+    verify: >-
+      You can state which modifications predate your block, and you have re-read any file you are
+      about to edit. The documentation file you will touch already has a foreign row in a different
+      section — that is expected, and your row goes in §13.
+  - step: 3
+    action: >-
+      **Regression gate before any edit:** run `.\Makefile.ps1 test-select -k "TestGraphsAPI" -v`
+      and record the baseline (it must be green). Then run
+      `.\Makefile.ps1 test-select -k "TestOpenAPIErrorSchemas" -v` as the second baseline pin.
+    verify: >-
+      Both green. These are the two gates the block is measured against, so the baseline is evidence
+      rather than a formality.
+  - step: 4
+    action: >-
+      Add `from sqlalchemy.exc import IntegrityError` and the `except IntegrityError` clause to
+      `create_graph_endpoint`. Run `.\Makefile.ps1 format` afterwards so the import lands in
+      isort order.
+    verify: >-
+      `uv run mypy src/mkobi/api/routes/graphs.py` is clean, the clause sits between the
+      `ValueError` and `Exception` handlers, and the handler chain still reads
+      `AppException → ValueError → IntegrityError → Exception`.
+  - step: 5
+    action: >-
+      Add the single `exc_info=True` to `GraphRepository.create`'s error log. Touch nothing else in
+      that file.
+    verify: >-
+      `git diff src/mkobi/db/repositories/graph_repo.py` is one line, and
+      `uv run mypy src/mkobi/db/repositories/graph_repo.py` is clean.
+  - step: 6
+    action: >-
+      Add the cleanup helper and the three cases to `tests/test_graphs.py::TestGraphsAPI`, then run
+      the class alone.
+    verify: >-
+      All three new cases pass, every pre-existing case in the class passes **unmodified**, and the
+      conflict assertions include the negative `!= 500` and `!= 422` checks.
+  - step: 7
+    action: >-
+      **Prove the tests discriminate.** Temporarily remove the new `except IntegrityError` clause,
+      re-run the class, and confirm that case 1 and case 3 (both parametrised values) **fail with
+      500** while case 2 and every pre-existing test stay green. Then restore the clause and re-run
+      to green. Record the observed pre-fix status in the commit body.
+    verify: >-
+      You watched the fix's own tests fail against the pre-fix route. If they pass either way, they
+      prove nothing and must be strengthened before you continue.
+  - step: 8
+    action: >-
+      Change the single row in `docs/02-dashboards/dashboards-api.md` §13, copying the scoped
+      section's row verbatim.
+    verify: "One row changed; `git diff` on that file shows one removed line and one added line."
+  - step: 9
+    action: >-
+      Run the full verification list below, then `.\Makefile.ps1 test`. Write the commit body with
+      the layering rationale, the deliberate 422-versus-409 divergence, the discrimination result,
+      the `update_graph_endpoint` observation, and the `docs/11-guides/extend-graphs.md` finding (or
+      its absence).
+    verify: "Every command in `verification_steps` is green and the commit body carries those five items."
+
+constraints:
+  architecture:
+    - >-
+      `AppException` + `ErrorCode` is the only error-raising mechanism. **Never raise
+      `HTTPException`**, never return a hand-built error body, never hardcode an error-code string —
+      `ErrorCode.DUPLICATE_RESOURCE` is referenced as the enum member.
+    - >-
+      **No new `ErrorCode` member and no change to the `ErrorCode` → HTTP status map.** The code
+      this block needs already exists and already maps to 409. A new member would also require the
+      enum/database consistency the project enforces.
+    - >-
+      **The layering divergence is deliberate and must be recorded, not hidden.** A driver exception
+      type appears in an HTTP handler here, against the API → Service → Repository rule, because
+      **there is no service in this path**: both routes call `GraphRepository.create` directly and
+      `GraphService.create` has zero route callers. The layer that would own the classifier is
+      unwired. Say this in the commit body so the next reader does not read this block as
+      contradicting the user-write ruling, and say why the 422-versus-409 divergence is a rule
+      (preserve a published contract; prefer an existing sibling's published contract otherwise)
+      rather than an inconsistency.
+    - >-
+      **The repository never raises `AppException`** and never classifies an error's meaning. Its
+      job on this path is: log it, re-raise it unchanged. Do not add a wrapper, a custom exception,
+      or a `raise … from e` chain.
+    - >-
+      `StrEnum` for constants; no new literal status codes, no magic strings in log messages, no
+      raw SQL of any kind (this block writes no SQL at all — the only statements are ORM/Core calls
+      the repository already makes).
+  correctness:
+    - >-
+      **No name pre-check.** Correctness comes from the unique index, detected by
+      `IntegrityError`. Adding a read-then-write pre-check would reintroduce the TOCTOU window this
+      finding class exists to close **and would make the new tests vacuous** — they would pass with
+      the clause deleted.
+    - >-
+      **`await db.rollback()` in the new clause is mandatory.** Without it the aborted transaction
+      makes the next statement on the shared test session raise `PendingRollbackError`, and because
+      the request's session *is* the test's session, that leaks into unrelated later tests. Leave a
+      comment saying so, or the next reader will remove it.
+    - >-
+      **A genuine database failure must still answer 500.** Add no clause broader than
+      `IntegrityError`, and do not reorder or weaken the terminal handler.
+    - >-
+      Graph names and the created dashboards are per-test and `uuid4()`-derived. The class already
+      commits rows with fixed names through the routes; adding a fixed name here would collide on
+      the unique index against those rows on a second run.
+    - >-
+      **Every test that reaches a create route deletes what it created, in a `finally`, through an
+      independent session that commits.** A flushed-but-uncommitted delete is rolled back by the
+      fixture teardown and leaves the original row behind, which then fails the next run.
+    - >-
+      **Assertions state the negative.** The conflict must be asserted as 409 **and** as
+      `!= 500` **and** as `!= 422`. A test that only asserts 409 lets either pre-fix behaviour
+      creep back unnoticed.
+  process:
+    - "English only — docstrings, comments and log messages."
+    - "No `print()`; use `logger = logging.getLogger(__name__)`."
+    - "No pandas. Polars only for data processing; this block touches none."
+    - "Type hints on the new cleanup helper and on every new test signature, including `-> None`."
+    - >-
+      **No audit or plan identifiers in committed code, tests, comments, docstrings, log messages or
+      the documentation row.** No block IDs, no finding IDs, no decision IDs, no phase references.
+      An earlier commit in this phase had to be amended for exactly that, so write the reasoning
+      without the label — "a unique-index conflict on a name is a conflict, not a validation error"
+      reads correctly on its own.
+    - >-
+      Comments only where non-obvious: why the rollback is mandatory, and (if you add one) why the
+      status is a conflict rather than a validation error. No narration of the next line.
+    - >-
+      Run `.\Makefile.ps1 format` before committing — it runs `ruff check --fix`, which is what
+      sorts imports.
+    - >-
+      One commit for the whole block (production + tests + the documentation row), so the contract
+      change and its evidence land together.
+
+verification_steps:
+  - command: "git status --porcelain; git log --oneline -3"
+    expect: >-
+      HEAD at or after `ba2687b`; the four in-scope files clean. Pre-existing uncommitted deletions
+      under `.ai/` and `frontend/coverage/` are baseline drift, not yours.
+  - command: ".\\Makefile.ps1 test-select -k \"TestGraphsAPI\" -v"
+    expect: >-
+      The whole class green: the three new cases pass and every pre-existing case passes
+      **unmodified**. This is the block's primary gate and the pin phases 07/08/12/15/16 rely on.
+  - command: ".\\Makefile.ps1 test-select -k test_graph_duplicate_name -v"
+    expect: >-
+      Both duplicate-name cases pass. (If the class-name filter does not match a method selector,
+      select the methods by their full names instead — do not skip the run.)
+  - command: ".\\Makefile.ps1 test-select -k test_graph_name_conflict_is_not_500_on_any_create_route -v"
+    expect: >-
+      **Both** parametrised values pass — the global path and the dashboard-scoped path — each
+      asserting 409 and explicitly not 500.
+  - command: ".\\Makefile.ps1 test-select -k \"TestOpenAPIErrorSchemas\" -v"
+    expect: >-
+      Green **unmodified**. This is the proof that this block changed no published schema and no
+      declared status code: the global route already declared 409 before the change.
+  - command: ".\\Makefile.ps1 test-select -k test_openapi -v"
+    expect: "Unchanged — no response-model, Pydantic or `responses`-block edit."
+  - command: ".\\Makefile.ps1 test-select -k test_dashboards -v"
+    expect: >-
+      Green. The dashboard-scoped route's behaviour is asserted by a new test and changed by none.
+  - command: ".\\Makefile.ps1 test-select -k test_graph_service -v"
+    expect: "Green unmodified — `GraphService` is read-only evidence in this block, not a target."
+  - command: "uv run ruff check src/mkobi/api/routes/graphs.py src/mkobi/db/repositories/graph_repo.py tests/test_graphs.py"
+    expect: "Clean, including import ordering (I001) on the route module."
+  - command: "uv run mypy src/mkobi/api/routes/graphs.py src/mkobi/db/repositories/graph_repo.py"
+    expect: >-
+      No errors. Remember mypy passing is a **precondition, not the evidence** — the evidence is
+      the discrimination check in step 7 and the committed test results.
+  - command: ".\\Makefile.ps1 test"
+    expect: >-
+      Full suite green. This is the release gate: other suites reach the global create route and the
+      dashboard-scoped one, and the rollback the new clause performs must not leak.
+  - command: "git diff --stat"
+    expect: >-
+      **Your** changes are confined to four files: `src/mkobi/api/routes/graphs.py`,
+      `src/mkobi/db/repositories/graph_repo.py`, `tests/test_graphs.py` and
+      `docs/02-dashboards/dashboards-api.md`. The working tree additionally carries the
+      neighbouring block's modifications to `src/mkobi/db/repositories/access_repo.py` and
+      `src/mkobi/interfaces/repository_interfaces.py`, plus the baseline deletions — **carried, not
+      reverted, and not yours**. In the documentation file specifically, `git diff` must show
+      **exactly two added rows and nothing else**: the access-grant idempotency row that predates
+      you, and your duplicate-name row. If `src/mkobi/api/routes/dashboards_graphs.py`,
+      `src/mkobi/db/models/graphs.py`, `src/mkobi/services/graph_service.py`, any file under
+      `.ai/audit/`, or any `frontend/` file appears **as your edit**, the block has gone wrong.
+
+notes:
+  - >-
+    Repository state at hand-off: HEAD is `ba2687b` — the seeder commit, on top of the user-write,
+    advisory-lock and worker blocks' commits. B5 shares **no production file** with any of them.
+    **The working tree is not clean**: the access-grant block's changes to
+    `src/mkobi/db/repositories/access_repo.py`, `src/mkobi/interfaces/repository_interfaces.py` and
+    `docs/02-dashboards/dashboards-api.md` are uncommitted and in flight. The documentation file is
+    the **only** file B5 shares with that block, the two edits are in different sections, and the
+    neighbouring row must survive verbatim.
+  - >-
+    Tests run through the Docker test stack (`.\Makefile.ps1 test-select`); local
+    `uv run pytest` has no test database.
+  - >-
+    Two claims of the plan's B5 block are **overridden** by this task, deliberately: the repository
+    collapses nothing, and the 500 needs no race to occur. Both corrections are recorded in
+    `extra_context` and in the plan's B5 design ruling.
+  - >-
+    The finding's own evidence is a static proof plus the input report's admission that its
+    four-request HTTP transcript was not re-run against the shared stack. That is no longer a
+    limitation: correction 2 makes the defect reproducible with two sequential requests, which is
+    why this block's test is an ordinary HTTP test rather than a concurrency harness.
+  - >-
+    The report's line numbers are not binding (B0). Every target above is a symbol, a module, a
+    contract or a table. If a named symbol does not exist, stop and report it rather than
+    substituting the nearest match.
+  - >-
+    The one thing to carry into the commit body: **the contract was chosen, not inherited** — 409 on
+    both surfaces — with the two reasons (the sibling route already publishes it and the global
+    route's own OpenAPI block already declares it), plus the layering rationale and the explicit
+    record that the sibling route is **not** a superset of the global one.
+
+---
+
+id: task_b5_txn_007_graph_name_conflict_verify
+mode: verify
+status: pending
+title: >
+  B5 / TXN-007 verification — one duplicate-name outcome (409) on both graph create routes
+
+description: >
+  Independent verification that a duplicate graph name is reported as `409` with
+  `DUPLICATE_RESOURCE` on **both** surviving create routes, that the fix required no repository
+  behaviour change, and that the documentation agrees — checked against this task's acceptance
+  criteria and the ruling, not against the audit report's coordinates.
+
+depends_on:
+  - task_b5_txn_007_graph_name_conflict
+
+files:
+  - path: src/mkobi/api/routes/graphs.py
+  - path: src/mkobi/db/repositories/graph_repo.py
+  - path: tests/test_graphs.py
+  - path: docs/02-dashboards/dashboards-api.md
+
+verification_steps:
+  - command: ".\\Makefile.ps1 test-select -k \"TestGraphsAPI\" -v"
+    expect: "The whole class green; the three new cases present and passing."
+  - command: ".\\Makefile.ps1 test-select -k test_openapi -v"
+    expect: "Unmodified and green — no published schema or declared status moved."
+  - command: ".\\Makefile.ps1 test"
+    expect: "Full suite green."
+  - command: "git diff --stat"
+    expect: "Exactly the four in-scope files."
+
+pass_criteria:
+  - >-
+    A **sequential** duplicate `(dashboard_id, name)` answers `409` with
+    `code == "DUPLICATE_RESOURCE"` on `POST /graphs/` **and** on
+    `POST /dashboards/{dashboard_id}/graphs`, and is explicitly **neither 500 nor 422**
+  - >-
+    The new clause awaits `db.rollback()`, so no later test in the run inherits a poisoned session
+  - >-
+    No name pre-check exists in the diff — the conflict is detected by the unique index, and the
+    tests would fail if the clause were removed
+  - >-
+    `GraphRepository.create`'s only change is `exc_info=True`; its bare `raise` is intact
+  - >-
+    Both existing routes' permission gates, `ValueError` branches, 403 payloads and declared status
+    codes are unchanged
+  - >-
+    `docs/02-dashboards/dashboards-api.md`'s two duplicate-name rows are byte-identical, and the
+    status is `409`
+  - >-
+    No audit or plan identifier appears in any committed file, and no `HTTPException`, hardcoded
+    error-code string, `print()`, pandas or non-English text was introduced
+  - >-
+    The commit body records the layering rationale, the deliberate 422-versus-409 divergence, the
+    observed pre-fix status from the discrimination check, and the
+    `update_graph_endpoint` observation
+
+failure_action: return task_b5_txn_007_graph_name_conflict to rework
+
+rollback_task: none — one commit, no schema change, no migration; a revert restores the 500 and the
+  documentation's 422 row together

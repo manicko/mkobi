@@ -1,0 +1,695 @@
+id: task_b1_txn_001_transaction_ownership
+
+title: >
+  B1 / TXN-001 — Declare who ends a unit of work for the user write path, and make the
+  four endpoints' writes durable
+
+status: pending
+
+priority: high
+
+depends_on: []
+
+source_reference: C:\py_dev\mkobi\.ai\plans\03-db-concurrency-remediation.md
+source_section: B1 — Declare who ends a unit of work, then fix the four endpoints (TXN-001)
+source_blocks:
+  - "B1 — Declare who ends a unit of work, then fix the four endpoints (TXN-001)"
+  - "B1 design ruling (Planner) — settled 2026-10-01"
+  - "Tech Lead rulings — D-1"
+
+description: >
+  Four endpoints return HTTP success for a write that is never committed. `get_db_dependency` and
+  `db/session.py::get_session` yield a session and close it; no middleware, no lifespan hook and no
+  event handler ends the request's unit of work. `UserService.create_user`,
+  `UserService.update_user_role` and `UserService.update_user_active_status` contain no `commit()`,
+  and neither do their four call sites in `api/routes/users.py` and `api/routes/admin.py`. The fourth
+  write method, `UserService.delete_user`, does commit — so the omission is three of four rather
+  than a service-wide convention. The security-relevant half is
+  `api/routes/admin.py::update_user_active_admin_endpoint`: it writes `is_active` through the service
+  and then revokes the user's tokens in Redis, so the non-transactional effect persists while the
+  transactional one is discarded.
+
+  This task makes the seam explicit (commit inside the service, matching the `delete_user` and
+  `AuthService.approve_registration_request` precedent), writes the ownership contract into
+  `IUserService`, makes the residual unique-index race surface as 422 rather than 500, decides and
+  documents the Redis-pairing failure direction, and strengthens the four endpoints' tests so they
+  can tell a committed write from a flushed one.
+
+goals:
+  - make the three non-committing write methods durable on return
+  - declare the unit-of-work ownership rule in IUserService so the next service is not ambiguous
+  - map the residual users.email unique-index IntegrityError to the existing 422 path, not 500
+  - decide and document which partial state the deactivation / Redis pairing accepts
+  - prove durability with independent-session re-reads, not response-body assertions
+  - leave EMAIL_ALREADY_EXISTS unused and every declared status code unchanged
+
+extra_context: |
+  ## The seam (settled — do not re-litigate)
+
+  The Tech Lead ruled **Alternative A**: commit inside `UserService.create_user`,
+  `UserService.update_user_role` and `UserService.update_user_active_status`. Alternative B (commit
+  in the dependency) and Alternative C (commit at the routes) are rejected: B double-commits the
+  transport-layer commits and changes what `tests/conftest.py` overrides wholesale; C repeats the
+  transport-layer pattern the project is moving away from and leaves the services looking
+  non-committing, which is what misled the audit.
+
+  **Commit only on the success path**, exactly as `UserService.delete_user` does with its
+  `if result:` guard. `update_user_role` and `update_user_active_status` return `None` when the user
+  does not exist; that path must not commit. `UserService.delete_user` already commits and must
+  **not** gain a second one.
+
+  ## RISK-1 ruling — where the deactivation commit lands
+
+  **The commit lands inside `UserService.update_user_active_status`, before the Redis revocation.**
+  No commit placement makes a Redis round trip transactional; the question is only which partial
+  state B1 accepts when the two halves disagree.
+
+  **B1 prefers the "durable deactivation, failed revocation" failure.** Three reasons, in order of
+  weight:
+
+  1. **It is fail-closed on the axis that matters.**
+     `api/deps.py::get_current_user_dependency` re-reads the user row from the database on *every*
+     authenticated request and rejects `is_active is False`. A committed deactivation therefore stops
+     the user at every protected endpoint independently of Redis. The reverse placement fails open:
+     an account believed deactivated stays fully usable and merely has its current tokens revoked.
+  2. **The reverse failure is silent; this one is reported.** With the commit after the revocation, a
+     database fault leaves `is_active` unchanged, the user logs in again, and nothing in the response
+     says the deactivation did not happen. With the commit first, a Redis fault is a 500 an operator
+     sees and can retry, and the endpoint is idempotent — the retry re-commits the same `is_active`
+     and re-issues the marker.
+  3. **The residual exposure is bounded and enumerated.** The only paths that do not re-read
+     `is_active` are `POST /auth/refresh` and the two login routes: `is_active` has **no comparison
+     anywhere in `src/` outside `api/deps.py::get_current_user_dependency`** (zero occurrences in
+     `services/auth_service.py`). A failed revocation therefore leaves the deactivated user able to
+     obtain fresh *signed* tokens, each of which is then rejected at the gate.
+
+  **Consequences that are in this task's scope.**
+
+  - `api/routes/admin.py::update_user_active_admin_endpoint`'s `except Exception` handler calls
+    `await db.rollback()`. After this task that rollback **can no longer undo the write**. Keep it —
+    it is still correct for the pre-commit window, where a failure inside
+    `update_user_active_status` before its commit leaves the session needing one — and add a comment
+    stating exactly what it can and cannot undo. Do not leave it silently implying more than it does.
+  - Guard the `revoke_all_user_tokens` call separately so a Redis fault is reported as what it is:
+    the deactivation is committed, the revocation is not. Keep the status at **500** on the existing
+    `ErrorCode.INTERNAL_ERROR` and make the `detail` and the error log say which half failed. Do not
+    introduce a new `ErrorCode`, and do not add 409 to `admin_responses`.
+  - The docstring of `update_user_active_admin_endpoint` must state the pairing: `is_active` is the
+    authority for protected access; the Redis user-level marker is the authority for
+    `POST /auth/refresh` and login. B1 makes that split load-bearing for the first time — before it,
+    the database half never persisted, so the marker was the only thing holding. The
+    `is_active`-authoritative check in `get_current_user_dependency` is the mitigation that makes the
+    preferred failure direction acceptable; say so, so the ordering reads as deliberate.
+
+  **Out of this task:** `POST /auth/refresh` never testing `is_active` is a new finding in phase 04's
+  AUTH-004 zone, raised as coordination item **C-7**. It is unchanged by B1 and B1 does not fix it.
+
+  ## D-1's second bullet is real work — the IntegrityError classifier
+
+  Duplicate detection happens in exactly one place: the application-level `get_by_email` pre-check in
+  `UserService.create_user`, which raises `ValueError`; `api/routes/users.py::create_user_endpoint`
+  maps `ValueError` to `AppException(code=ErrorCode.VALIDATION_ERROR)`; `utils/exceptions.py` maps
+  `VALIDATION_ERROR` to 422. There is **no** unique-index detection on that path, and **no
+  `IntegrityError` handler and no `SQLAlchemyError` handler anywhere in `src/`**.
+
+  The race's `IntegrityError` is raised by `await db.flush()` inside `UserRepository.create`, re-raised
+  unchanged by that method's `except SQLAlchemyError`, passes through `UserService.create_user` (no
+  try/except), misses the route's `except ValueError`, and lands in `except Exception` →
+  `INTERNAL_ERROR` → **500**. Commit placement does not move the error site — `flush` fires before
+  any commit — so the classifier must sit where the flush is visible.
+
+  **Ruling: the service-level conversion, in `UserService.create_user`, around the `user_repo.create`
+  call.** It converts the driver's error into the same `ValueError` the pre-check already raises, so
+  the route's existing mapping yields 422 with **zero route change** and the create endpoint's error
+  contract is provably identical. A route-level `except IntegrityError` is the larger diff, puts a
+  driver exception type into the HTTP layer against the API → Service → Repository rule, and
+  duplicates a message the service already owns.
+
+  **Verify before classifying; do not guess.** On `IntegrityError`: roll back, then re-read through
+  `user_repo.get_by_email`. A row with that email present *is* the duplicate-email race → raise the
+  existing `ValueError` (422). Absent → `raise` unchanged (500). This is sound because a PostgreSQL
+  unique-index conflict is only raised once the conflicting transaction has **committed** — otherwise
+  the inserter blocks — so the winner's row is visible to the re-read. It is driver-agnostic,
+  duplicates no constraint-name string, and needs no new enum.
+
+  **The rollback is mandatory.** After a flush-time `IntegrityError` the transaction is aborted, so
+  without a rollback the next statement on that session raises `PendingRollbackError`. In production
+  the dependency's session teardown would absorb it; **in tests the session is the shared
+  long-lived test session**, so the poisoning leaks into every later test in the session.
+
+  ## Harness facts that change the test design (both verified, neither assumed)
+
+  1. `tests/conftest.py::async_client` replaces `get_db_dependency` wholesale, so the request's
+     session **is** the test's session. A re-read through it sees uncommitted data exactly as well
+     as committed data and **proves nothing**. Every independent re-read must open a **second**
+     session from the `async_session_maker` fixture the conftest already exposes.
+  2. Verified against the installed SQLAlchemy 2.0.50: `Session.commit()` calls
+     `trans.commit(_to_root=True)` and its own docstring states the outermost transaction "is
+     committed unconditionally, automatically releasing any SAVEPOINTs in effect". The
+     `async_db_session` fixture's SAVEPOINT therefore does **not** isolate a production commit — the
+     fixture's teardown rollback cannot undo a row this task makes durable. **Every test that
+     exercises the four endpoints must delete the rows it commits.** Existing hard-coded emails in
+     `tests/test_admin_user_management.py` are mutually distinct, so no unique-index collision arises
+     within one run, but do not add new hard-coded emails without a unique suffix or an explicit
+     cleanup.
+
+  ## Call-site census (exact — there is no fifth caller)
+
+  | Method | Production callers |
+  | ------ | ------------------ |
+  | `UserService.create_user` | `api/routes/users.py::create_user_endpoint` |
+  | `UserService.update_user_role` | `api/routes/users.py::update_user_endpoint` · `api/routes/admin.py::update_user_role_admin_endpoint` |
+  | `UserService.update_user_active_status` | `api/routes/admin.py::update_user_active_admin_endpoint` |
+  | `UserService.delete_user` | `api/routes/users.py::delete_me_endpoint` · `api/routes/users.py::delete_user_endpoint` · `api/routes/admin.py::delete_user_admin_endpoint` |
+
+  `tests/` contains **no** `UserService` unit test, so no existing mock-based commit assertion on
+  these three methods can break. `api/routes/admin.py::update_user_role_admin_endpoint` and
+  `api/routes/users.py::update_user_endpoint` need **no** change: neither has a Redis pairing.
+
+files:
+
+  - path: src/mkobi/services/user_service.py
+
+    targets:
+      - type: class
+        name: UserService
+      - type: method
+        name: create_user
+      - type: method
+        name: update_user_role
+      - type: method
+        name: update_user_active_status
+
+    semantic_anchors:
+
+      insert_after:
+        type: await_expression
+        value: self.user_repo.create
+
+      insert_before:
+        type: return_statement
+
+    changes:
+      - action: add_code
+        description: >
+          `UserService.create_user`: add the D-1 `IntegrityError` classifier around the
+          `user_repo.create` call — `except IntegrityError`, `await db.rollback()`, re-read through
+          `user_repo.get_by_email`, raise the existing duplicate-email `ValueError` when the row is
+          present, `raise` unchanged when it is absent.
+        code_hint: |
+          try:
+              user_obj = await self.user_repo.create(
+                  db=db,
+                  email=email,
+                  password_hash=password_hash,
+                  role=role,
+              )
+          except IntegrityError:
+              # A unique-index conflict on users.email is only raised once the
+              # competing transaction has committed, so the winner is visible here.
+              await db.rollback()
+              winner = await self.user_repo.get_by_email(email, db)
+              if winner is not None:
+                  raise ValueError(f"User with email '{email}' already exists") from None
+              raise
+      - action: add_code
+        description: >
+          `UserService.create_user`: `await db.commit()` on the success path, after the
+          `user_obj is None` guard and before the success log, so the returned `UserRead` is
+          constructed from a durable row.
+      - action: add_code
+        description: >
+          `UserService.update_user_role` and `UserService.update_user_active_status`:
+          `await db.commit()` inside the truthy `updated_user` branch only, immediately before the
+          success log — the same shape as `UserService.delete_user`'s `if result:` guard. The
+          `None` (user not found) path must not commit.
+      - action: add_import
+        description: >
+          `from sqlalchemy.exc import IntegrityError`. `ruff check --fix` sorts it (I001).
+      - action: update_docstring
+        description: >
+          State the durability on the three methods' `Returns:`/`Raises:` sections and point at
+          `IUserService` for the ownership rule rather than restating it (single source of truth).
+
+  - path: src/mkobi/interfaces/service_interfaces.py
+
+    targets:
+      - type: class
+        name: IUserService
+      - type: method
+        name: create_user
+      - type: method
+        name: update_user_role
+      - type: method
+        name: update_user_active_status
+      - type: method
+        name: delete_user
+
+    changes:
+      - action: update_docstring
+        description: >
+          `IUserService` class docstring gains the transaction-ownership contract: **write methods own
+          their unit of work.** On success a write method commits, so the write is durable when the
+          method returns; on failure nothing is committed and the session is left usable. A method
+          returning `None` because the entity does not exist commits nothing. Read methods never
+          commit. Callers must not add a commit of their own and must not assume the session's
+          teardown is a boundary.
+      - action: update_docstring
+        description: >
+          Give `create_user`, `update_user_role`, `update_user_active_status` and `delete_user`
+          individual docstrings naming their own durability, mirroring the phrasing already
+          established by `IAuthService.approve_registration_request` ("...commits, and only then..."),
+          which is this repository's own precedent for stating commit ownership in an interface.
+          `create_user`'s docstring must also record that a duplicate email — whether caught by the
+          pre-check or by the unique index — raises `ValueError` and therefore maps to 422.
+      - action: no_change
+        description: >
+          No signature change. No new abstract method. `IAuthService` is untouched.
+
+  - path: src/mkobi/api/routes/admin.py
+
+    targets:
+      - type: function
+        name: update_user_active_admin_endpoint
+
+    changes:
+      - action: add_code
+        description: >
+          Guard the `revoke_all_user_tokens` call on its own `try` / `except Exception`, mapping a
+          Redis fault to `AppException(code=ErrorCode.INTERNAL_ERROR)` whose `detail` and error log
+          state that **the deactivation is committed and the token revocation failed**. Keep the
+          status at 500 — no new `ErrorCode`, no new status, no change to `admin_responses`.
+      - action: update_comment
+        description: >
+          The existing `except Exception` handler's `await db.rollback()` stays — it is still correct
+          for the pre-commit window — and gains a comment stating that it cannot undo a committed
+          deactivation.
+      - action: update_docstring
+        description: >
+          State the Redis pairing and which half is load-bearing: `is_active` is the authority for
+          protected access via `api/deps.py::get_current_user_dependency`; the Redis user-level
+          marker is the authority for `POST /auth/refresh` and login. Note that the ordering is
+          deliberate and that the endpoint is idempotent, so retrying after a revocation failure
+          completes the revocation.
+      - action: no_change
+        description: >
+          `update_user_role_admin_endpoint`, `delete_user_admin_endpoint`,
+          `reject_registration_request_admin_endpoint` and every other handler in this module are
+          untouched. `reject_registration_request_admin_endpoint`'s own transport-layer commit is
+          pre-existing and out of scope.
+
+  - path: src/mkobi/api/deps.py
+
+    targets:
+      - type: function
+        name: get_db_dependency
+
+    changes:
+      - action: update_docstring
+        description: >
+          Docstring only — no behaviour change. State that the dependency yields a session and closes
+          it and **does not commit and does not roll back**; that the request's unit of work belongs
+          to the service layer, whose write methods commit their own transactions; and that closing
+          the session is not a transaction boundary. This is the sentence that keeps the next reader
+          from repeating the audit's question.
+      - action: no_change
+        description: >
+          Do **not** add a commit, a rollback, or a second `begin()` here. There is no `begin()` in
+          this path to add to: `get_db_dependency` takes no parameters, so FastAPI caches it and the
+          identity dependency and the handler share one session and one transaction. Alternative B
+          was rejected for exactly this reason.
+
+  - path: src/mkobi/db/session.py
+
+    targets:
+      - type: function
+        name: get_session
+
+    changes:
+      - action: update_docstring
+        description: >
+          One sentence on `get_session` stating that it creates and closes a session and ends no
+          transaction, mirroring the `get_db_dependency` docstring. Cheap, and it stops the next
+          reader from assuming the shared primitive commits.
+      - action: no_change
+        description: >
+          **AD-1 — leave `db/session.py::get_db` alone.** It has no production caller:
+          `api/deps.py` re-exports it under `# noqa: F401` and lists it in `__all__`, and
+          `api/routes/graphs.py` aliases a *different* object (`get_db_dependency as get_db`). Its
+          only consumers are `tests/test_permissions.py::TestGetDb`, which tests the generator shape
+          and must stay green. Recorded here so the Implementor knows it was seen and deliberately
+          left, not overlooked.
+
+  - path: tests/test_user_service.py
+
+    targets:
+      - type: module
+        name: test_user_service
+
+    note: >
+      **New file.** `UserService` has no unit-test module today. It is the home for the commit-count
+      contract tests, which need no database.
+
+    changes:
+      - action: add_code
+        description: >
+          Mock-based commit-count tests for all four write methods, using the existing `mock_db`
+          fixture (`AsyncMock(spec=AsyncSession)`) and a repository double in the same style as
+          `tests/test_auth_service.py`. Pin **`commit` called exactly once** on
+          `create_user`, `update_user_role`, `update_user_active_status` and `delete_user`, and
+          **`commit` not called** on the user-not-found `None` paths of `update_user_role` and
+          `update_user_active_status` and on `delete_user`'s not-found path.
+        code_hint: |
+          # "exactly one" is the assertion that matters: a second commit is the
+          # regression this whole block exists to prevent.
+          assert mock_db.commit.await_count == 1
+          assert mock_db.commit.not_awaited
+
+  - path: tests/test_admin_user_management.py
+
+    targets:
+      - type: class
+        name: TestCreateUser
+      - type: class
+        name: TestUpdateUserRole
+      - type: class
+        name: TestDeactivateUser
+
+    changes:
+      - action: strengthen_existing
+        description: >
+          `TestUpdateUserRole::test_update_user_role_admin`,
+          `TestUpdateUserRole::test_update_user_role_to_admin`,
+          `TestDeactivateUser::test_deactivate_user_admin` and
+          `TestDeactivateUser::test_reactivate_user_admin` gain an **independent-session re-read**
+          proving committed-not-flushed. **Keep the existing response-body assertions** — they are
+          correct and must not be replaced; add to them.
+      - action: add_code
+        description: >
+          `TestCreateUser::test_create_user_duplicate_email` gains the assertion it is missing today:
+          the **first** create's response is discarded and unchecked. Assert it returned 201 and,
+          via an independent session, that the row is committed. Without this the test can pass
+          having created nothing. The existing 422 assertion on the second create stays exactly as it
+          is — D-1 requires it.
+      - action: add_code
+        description: >
+          A new race test proving an `IntegrityError` from the repository surfaces as **422, not
+          500**. Drive it over HTTP with a real `UserRepository` and a real unique-index violation:
+          override `get_user_service` in `app.dependency_overrides` with a `UserService` whose
+          repository double returns `None` from the *first* `get_by_email` call only and delegates
+          every other call (including `create`) to the real repository. That defeats the pre-check
+          and lets the real `flush` raise. Assert, in one test: 422; the RFC 7807 `code` is
+          `VALIDATION_ERROR`; exactly one row exists for that email (the rollback discarded the failed
+          insert); and the session is still usable afterwards — that last assertion is what protects
+          every later test in the session from `PendingRollbackError` poisoning.
+      - action: add_code
+        description: >
+          A new test that an `IntegrityError` which is **not** the duplicate-email race still
+          surfaces as 500 — the classifier's `raise` branch. Same double, but `get_by_email` returns
+          `None` on the re-read too.
+      - action: add_code
+        description: >
+          Every test in these three classes must delete the rows it commits, because the production
+          commit is durable in this harness and `async_db_session`'s teardown rollback cannot undo
+          it. Prefer a unique email suffix plus explicit cleanup over a fixed literal.
+
+  - path: tests/test_users_api.py
+
+    targets:
+      - type: module
+        name: test_users_api
+
+    changes:
+      - action: add_code
+        description: >
+          **AD-2 — cover the deprecated `PUT /users/{user_id}` surface**
+          (`api/routes/users.py::update_user_endpoint`). It is `deprecated=True`, it reaches
+          `UserService.update_user_role`, and it has **zero test callers anywhere in `tests/`** — a
+          live uncommitted-write surface with no regression signal at all. It is the one of the four
+          endpoints that this task fixes with no test change, which would leave it unverified.
+          Add a test that exercises it end to end, asserts the response body, and re-reads through
+          an independent session to prove the new role is committed. Do not complete its
+          deprecation and do not remove it in this task.
+      - action: no_change
+        description: >
+          `TestDeleteAccount` and `test_admin_cannot_delete_self` must stay green unmodified.
+          `test_admin_cannot_delete_self` asserts exact committed user and admin counts; it deletes
+          every user and commits first, so it is self-protecting. If it fails, the cause is leaked
+          rows from a B1 test, not the last-admin guard.
+
+  - path: tests/test_token_revocation.py
+
+    targets:
+      - type: class
+        name: TestUserDeactivationRevocation
+
+    changes:
+      - action: strengthen_existing
+        description: >
+          `test_user_deactivation_revokes_all_tokens` gains the **database-side** assertion it lacks:
+          it currently passes on the Redis half alone, because the Redis marker is checked before
+          the database read. Add an independent-session re-read proving `is_active` is committed
+          `False` for the target. Keep the existing 401 and `"revoked"` assertions — the Redis marker
+          is still consulted first, so they remain true and remain the half this test already owned.
+
+acceptance_criteria:
+  - UserService.create_user commits exactly once on success and the row is durable
+  - UserService.update_user_role and update_user_active_status commit exactly once on success and
+    not at all on the user-not-found path
+  - UserService.delete_user still commits exactly once and did not gain a second commit
+  - a unique-index IntegrityError on users.email returns 422 with code VALIDATION_ERROR, and a
+    non-duplicate IntegrityError still returns 500
+  - the create endpoint's declared status codes are unchanged and EMAIL_ALREADY_EXISTS is still unused
+  - no 409 was added to admin_responses
+  - all four endpoints have an independent-session re-read proving committed-not-flushed, with the
+    original response-body assertions retained
+  - a Redis fault during deactivation reports 500 whose detail and log name the committed
+    deactivation and the failed revocation, and the rollback comment states what it cannot undo
+  - AuthService is untouched and its four shipped tests are green
+  - tests that commit rows clean them up; running the suite twice in one session raises no
+    unique-index collision
+  - .\Makefile.ps1 lint and .\Makefile.ps1 typecheck pass
+
+# ── Out of scope ──────────────────────────────────────────────────────────────────────────────────
+
+out_of_scope:
+  - >
+    api/routes/users.py::create_user_endpoint — no change at all. Its `except ValueError` mapping
+    already produces the 422 D-1 requires, and its docstring's `AppException 409` line is a
+    documentation defect D-1 explicitly defers to the documentation phase. Do not "fix" it here.
+  - >
+    api/routes/admin.py::update_user_role_admin_endpoint and api/routes/users.py::update_user_endpoint
+    — no change. Neither pairs its write with a Redis effect, so RISK-1 does not reach them.
+  - >
+    ErrorCode.EMAIL_ALREADY_EXISTS and utils/exceptions.py::ConflictException — must stay unused.
+    Introducing 409 is the outcome D-1 rejected.
+  - >
+    api/schemas/responses.py::admin_responses — unchanged. It declares 401/403/404/422/429/500 and
+    no 409; adding one is out of proportion to a defect whose fix changes no status code.
+  - >
+    api/deps.py::get_current_user_dependency — unchanged. Its `is_active` check is read as the
+    reason the preferred RISK-1 failure direction is acceptable; do not modify or refactor it.
+  - >
+    api/routes/auth.py::refresh and the two login routes — unchanged. Their not consulting
+    `is_active` is coordination item C-7, phase 04's AUTH-004 zone, not B1's.
+  - >
+    services/auth_service.py — untouched in every respect, including AuthService.create_user, which
+    is a same-named, disjoint method. The registration/approval flow and its four shipped tests
+    depend on it.
+  - >
+    db/repositories/user_repo.py — unchanged. UserRepository.create and update keep
+    `await db.flush()` + `await db.refresh()` and no commit. Replacing flush with commit would move
+    the IntegrityError site past the service's classifier and reopen D-1's second bullet.
+  - >
+    db/session.py::get_db (AD-1) — unchanged. No production caller; noted, not removed.
+  - >
+    Completing the deprecation of PUT /users/{user_id}, and every other deprecation — out of scope.
+    B1 only makes the surface verifiable.
+  - >
+    Any file under docs/. Per docs/00-overview/doc-maintenance-rules.md, and per the plan,
+    docs/04-admin/admin-api.md, docs/08-security/error-format.md,
+    docs/99-reference/error-handling-guide.md and docs/06-backend/architecture.md are the
+    documentation phase's, and architecture.md's transaction-ownership statement is B10's by rule.
+  - >
+    The audit corpus — .ai/audit/** is not an implementation target.
+  - >
+    The last-admin guard (_check_admin_deletion_allowed) — no change. It counts committed admin rows
+    and has been over-eager because promotions never persisted; after this task it becomes correctly
+    permissive. That direction is expected, not a bug to fix here.
+  - >
+    tests/test_upload_api.py, tests/test_storage_manager.py, tests/test_data_worker.py —
+    do not touch. Order-sensitive to DP-001 / DP-004 / B3, and B3's three
+    `commit.assert_not_called()` assertions are a contract this task must not disturb.
+  - >
+    Retrying the Redis revocation, or adding any retry/backoff policy — speculative. No precedent in
+    src/, and not supported by the specification.
+
+# ── Implementation sequence ───────────────────────────────────────────────────────────────────────
+
+sequence:
+  - step: 1
+    action: >
+      Re-read git status. Confirm src/ and tests/ are clean and HEAD is b646ef1. All fourteen TXN-001
+      anchors resolve; if any named symbol is missing, stop and report rather than substituting the
+      nearest match.
+  - step: 2
+    action: >
+      Write the ownership contract into IUserService first, before any behaviour changes. The contract
+      is the deliverable that stops the next service repeating the ambiguity, and it makes each
+      subsequent edit checkable against a stated rule.
+  - step: 3
+    action: >
+      Add the IntegrityError classifier and the commit to UserService.create_user. Classifier first:
+      it is the only edit that must be right about an aborted transaction, and it is easier to
+      verify in isolation.
+  - step: 4
+    action: >
+      Add the success-path commits to UserService.update_user_role and
+      UserService.update_user_active_status. Leave UserService.delete_user's body untouched.
+  - step: 5
+    action: >
+      Apply the RISK-1 changes to api/routes/admin.py::update_user_active_admin_endpoint: the
+      separately-guarded revocation, the truthful detail and log, the rollback comment, the docstring.
+  - step: 6
+    action: >
+      Update the docstrings of api/deps.py::get_db_dependency and db/session.py::get_session. No
+      behaviour change in either file.
+  - step: 7
+    action: >
+      Write tests/test_user_service.py — the mock-based commit-count contract tests. These are the
+      cheapest signal in the task and they pin "exactly one" before anything touches a database.
+  - step: 8
+    action: >
+      Strengthen tests/test_admin_user_management.py and tests/test_token_revocation.py with
+      independent-session re-reads, and add the duplicate-email first-create assertion. Add the
+      cleanup every one of those tests now needs.
+  - step: 9
+    action: >
+      Add the race test (422, not 500) and its non-duplicate 500 counterpart.
+  - step: 10
+    action: >
+      Add the AD-2 test for the deprecated PUT /users/{user_id} surface in tests/test_users_api.py.
+  - step: 11
+    action: >
+      Run the targeted suites, then the full suite, then lint and typecheck. The full suite is not
+      optional: because the production commit is durable in this harness, a row leaked by any B1
+      test can break a file this task never touched.
+
+# ── Architectural constraints ─────────────────────────────────────────────────────────────────────
+
+constraints:
+  - >
+    Layering is API → Service → Repository. The commit belongs in the service (ruled). The
+    IntegrityError classifier belongs in the service (ruled). No repository method may gain a commit,
+    and no driver exception type may appear in an HTTP handler.
+  - >
+    Errors are raised only through AppException with an ErrorCode from models/enums.py. No
+    HTTPException anywhere. No hardcoded error-code strings. VALIDATION_ERROR → 422 and
+    INTERNAL_ERROR → 500 come from utils/exceptions.py's mapping table; do not bypass it.
+  - >
+    All fixed values and statuses use Enum or StrEnum from src/mkobi/models/enums.py, kept separately
+    in the models. Do not introduce a bare literal set, a dict of codes, or a new enum for this task.
+  - >
+    No raw SQL via f-strings. No new SQL is written by this task at all.
+  - >
+    English only — comments, docstrings, log messages, error details and the new test names. No
+    Russian anywhere.
+  - >
+    No print(). Use `logger = logging.getLogger(__name__)`; the module already has one. Pass format
+    arguments to the logger rather than building the string with an f-string.
+  - >
+    No pandas. The data-processing constraint is unchanged by this task and is restated only so it is
+    not violated by an import.
+  - >
+    Type hints on every public function and method touched, including the new test doubles.
+  - >
+    Keep `await db.flush()` + `await db.refresh()` in UserRepository.create and update. The repository
+    must remain non-committing.
+  - >
+    Do not touch AuthService — not create_user, not approve_registration_request, not register_user.
+  - >
+    Small, focused changes. No refactoring of neighbouring code, no signature changes, no new
+    abstractions, no extraction of helpers that are used once. Resist tidying the files you touch.
+  - >
+    Every comment and docstring must explain a non-obvious decision — why the classifier re-reads,
+    why the rollback stays, why the ordering is deliberate — and must not restate the code.
+
+# ── Verification ──────────────────────────────────────────────────────────────────────────────────
+
+verification_steps:
+  - test: .\\Makefile.ps1 test-select -k test_user_service -v
+    why: the new commit-count contract tests
+  - test: .\\Makefile.ps1 test-select -k test_admin_user_management -v
+    why: independent-session re-reads, duplicate-email first-create assertion, the 422 race path
+  - test: .\\Makefile.ps1 test-select -k test_token_revocation -v
+    why: the new database-side assertion on deactivation
+  - test: .\\Makefile.ps1 test-select -k test_users_api -v
+    why: the AD-2 PUT surface, and the last-admin guard that must stay green
+  - test: .\\Makefile.ps1 test-select -k test_auth_service -v
+    why: >
+      RISK-2 regression guard. AuthService is untouched; this proves the registration and approval
+      flow and its shipped tests are unaffected.
+  - test: .\\Makefile.ps1 test-select -k test_deps -v
+    why: get_db_dependency's contract, unchanged
+  - test: .\\Makefile.ps1 test-select -k test_permissions -v
+    why: db/session.py::get_db's generator shape (AD-1), unchanged
+  - test: .\\Makefile.ps1 test-select -k test_services_integration -v
+    why: the registration flow end to end
+  - test: .\\Makefile.ps1 test
+    why: >
+      Required, not optional. A production commit is durable in this harness, so a row leaked by any
+      B1 test can break a file this task never touched. Only the full suite can show that.
+  - smoke_check: .\\Makefile.ps1 lint
+  - smoke_check: .\\Makefile.ps1 typecheck
+
+notes:
+  - >
+    Tests run in Docker only — there is no test database on localhost. `uv run pytest` fails by
+    design. If the test stack is not running, start it once with `.\Makefile.ps1 test-up`.
+  - >
+    `.\Makefile.ps1 test-select` forwards every argument after the target name to pytest verbatim.
+    `ruff check --fix` handles import sorting (I001); `ruff format` does not, and the project's
+    `format` target runs `ruff check --fix`, not `ruff format`.
+  - >
+    Rollout is one-way in one respect: rows that begin persisting do not un-persist. Reverting the
+    code is a single commit, but interim user rows and role changes are the operator's to clean up
+    by hand. Any account an operator believes is a viewer may become editor or admin.
+
+---
+# Verification task template (only for multi-stage work)
+
+id: verify_task_b1_txn_001_transaction_ownership
+
+title: Verify — B1 / TXN-001 transaction ownership for the user write path
+
+type: verification
+
+status: pending
+
+depends_on:
+  - task_b1_txn_001_transaction_ownership
+
+verifies:
+  - task_b1_txn_001_transaction_ownership
+
+verification_steps:
+  - build: .\\Makefile.ps1 lint
+  - typecheck: .\\Makefile.ps1 typecheck
+  - test: .\\Makefile.ps1 test
+  - smoke_check: >
+      Targeted runs of the six suites named in the implementation task, each with
+      `test-select -k <name> -v`.
+
+pass_criteria:
+  - lint and typecheck are clean
+  - the full suite passes, including test_upload_api, test_storage_manager and test_data_worker,
+    which this task did not touch
+  - the four endpoints' tests fail if any commit is removed, and fail if a second commit is added
+  - the race test returns 422, and its non-duplicate counterpart returns 500
+  - no test in the suite relies on a row that a committed test left behind
+
+failure_action: return task_b1_txn_001_transaction_ownership to rework
+
+rollback_task: >
+  Revert the single implementation commit. The code reverts cleanly; the data does not — rows and
+  role changes created while the fix was live remain and must be reconciled by an operator.

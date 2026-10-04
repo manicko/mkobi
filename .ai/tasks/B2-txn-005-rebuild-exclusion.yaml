@@ -1,0 +1,643 @@
+id: task_b2_txn_005_rebuild_exclusion
+
+title: >
+  B2 / TXN-005 — Give the aggregate rebuild a declared exclusion and a bound
+
+status: pending
+priority: high
+depends_on:
+  - task_b1_txn_001_transaction_ownership
+
+source_reference: C:\py_dev\mkobi\.ai\plans\03-db-concurrency-remediation.md
+source_section: B2 — Give the aggregate rebuild a declared exclusion and a bound (TXN-005)
+source_blocks:
+  - "B2 — Give the aggregate rebuild a declared exclusion and a bound (TXN-005)"
+  - "B2 research (Researcher) — settled 2026-10-01"
+  - "Tech Lead rulings — D-2"
+
+description: >
+  Two concurrent OVERWRITE rebuilds of one dashboard currently serialise on an accidental
+  row lock. Nothing declares the exclusion, nothing bounds the wait, nothing is logged, and
+  the waiter's processing-log row reads `uploaded` for the whole wait. This block replaces
+  that accident with a declared per-`dashboard_id` transaction-scoped advisory lock and a
+  configured bound on the wait, and routes the timeout to the error code that already means
+  "another rebuild holds this dashboard".
+
+
+  Scope is exactly four production touch-points plus tests: one new small module in the
+  persistence layer, one field on `DatabaseSettings`, two statements plus one classifier
+  branch in `workers/data_worker.py`, and one operator-facing configuration row.
+
+
+goals:
+  - >-
+    Declare the exclusion that the row-lock accident already enforced: one transaction-scoped
+    `pg_advisory_xact_lock(bigint)` per `dashboard_id`, held for the whole rebuild and released
+    by transaction end on commit and on rollback alike.
+  - >-
+    Bound the wait with a transaction-scoped `lock_timeout` from configuration, so a stuck
+    holder becomes an error instead of a pooled connection pinned for the whole job.
+  - >-
+    Make the wait diagnosable without a live database: an acquire-intent log before the lock
+    and a warning naming the elapsed bound when the bound elapses.
+  - >-
+    Report the timeout as `ErrorCode.PROCESSING_IN_PROGRESS` rather than `PROCESSING_FAILED`,
+    through the existing failure-compensation route, with no new enum member, no status-code
+    change, no API/schema change and no frontend change.
+  - >-
+    Prove the exclusion and the bound deterministically, without racing two coroutines
+    through SQLAlchemy's greenlet bridge.
+
+extra_context: |
+  ## Binding research (settled 2026-10-01 — read the plan section before writing code)
+
+  The B2 research block in the plan is authoritative and was verified live against
+  PostgreSQL 18.6 / SQLAlchemy 2.0.50 / asyncpg 0.31.0 / Python 3.14. It already answers
+  Q1–Q7 (function form, derivation, timeout semantics, release semantics, failure
+  classification, test strategy, operational cautions). Do not re-litigate it. Three
+  findings in it are hard constraints rather than preferences:
+
+  - **A bare `SET lock_timeout` leaks onto the pooled connection after COMMIT** (verified).
+    `set_config(..., is_local => true)` / `SET LOCAL` does not. A session-level `SET` would
+    bound every unrelated lock wait in the process forever.
+  - **`SET LOCAL` cannot take a bind parameter** (`syntax error at or near "$1"`), which is
+    why `set_config` is used; and the lock is the **second** statement of the transaction,
+    because SQLAlchemy autobegins and any statement before `session.begin()` raises
+    `InvalidRequestError: A transaction is already begun on this Session`.
+  - **`hash()` is not merely discouraged here, it is broken**: no `PYTHONHASHSEED` is set in
+    `docker/Dockerfile` or any compose file, so a `hash()` key takes a different lock in
+    each of the four `--workers 4` replicas and in `rq-worker` — the exclusion would not
+    exist. The derivation must be `hashlib.blake2b(..., digest_size=8)` interpreted as a
+    **signed** int64, because an unsigned value above 2^63-1 is a hard `DataError` from
+    asyncpg, not a truncation.
+
+  Release semantics that constrain the shape (all verified): the lock is released at
+  transaction end on commit, on rollback, and at session end on crash; it survives
+  `ROLLBACK TO SAVEPOINT` if taken before the savepoint and is released if taken inside
+  one. The existing `except Exception` compensation handler runs **after** `session.begin()`
+  has exited and rolled back, so `_update_processing_log_status` opens a fresh session and
+  commits `FAILED` without contending for anything. **B2 must not move the lock outside
+  that block.** A session-level `pg_advisory_lock` survives even a `ROLLBACK` and was
+  rejected on that ground.
+
+  ## Planner decisions (settled — implement these, do not re-open)
+
+  - **Placement.** `src/mkobi/db/advisory_lock.py` — a new small module in the persistence
+    layer, not `utils/` and not `core/`. `src/mkobi/utils/` holds stateless helpers with no
+    session (`file_utils.py`, `validators.py`) and `core/` holds cross-cutting runtime
+    infrastructure that is deliberately not a correctness gate (`core/reconciler_lease.py`
+    says so in its own docstring). This mechanism *is* a correctness gate and it is bound to
+    `AsyncSession` and to PostgreSQL semantics, so it belongs beside `db/session.py`.
+    Module contents: the namespace constant, the SQLSTATE constant, the pure derivation
+    function, the async acquisition helper, and the failure predicate. Five small members,
+    one responsibility ("declared, bounded, transaction-scoped advisory exclusion").
+  - **Wait logging** is `logger.info` before the lock and `logger.warning` when the bound
+    elapses. The generic `logger.exception` in the existing compensation handler stays the
+    single ERROR carrying the error code, so one failure yields one ERROR plus two
+    adjacent, correlatable lines.
+  - **The failure predicate lives in the same module** as the acquisition, so the caller
+    never re-derives the error shape it is classifying.
+  - **One operator-facing documentation row** is in scope (the new environment variable in
+    the `docs/06-backend/configuration.md` table). `docs/06-backend/architecture.md` is
+    B10's and no `docs/SPEC.md` version row is added here — B1 landed without one, and the
+    phase close records one row for the whole phase.
+
+  ## Anchor census (read before editing; the tree moved under phase-01 concurrency)
+
+  - **Insertion point**: `_process_csv_file_async` in `src/mkobi/workers/data_worker.py`,
+    inside the `else` branch that owns its session — between `async with session.begin():`
+    and the `return await _run_with_transaction(session)` call. `dashboard_id` is already
+    a `UUID` in scope (`dashboard_id = UUID(dashboard_id_str)`) and `task_id` is the string
+    parameter.
+  - **Classification entry point**: the module-level function
+    `_map_processing_error_to_code(error: Exception) -> str` in the same module. It is
+    reached from **both** `except Exception` blocks of `_process_csv_file_async` via
+    `error_code = _map_processing_error_to_code(e)`, and its result goes to exactly two
+    places: the `logger.exception(...)` line and the `error_code=` keyword of
+    `_update_processing_log_status`. That helper stores it on
+    `ProcessingLog.error_code`, and it reaches the client through
+    `DataService.get_processing_status` → `ProcessingStatusResponse.error_code`.
+  - **No new enum, no new status code, no migration**: `ErrorCode.PROCESSING_IN_PROGRESS`
+    already exists in `src/mkobi/models/enums.py` under `# Processing errors`, and
+    `ProcessingLog.error_code` is `sa.String(length=50)` — the 22-character value fits. Its
+    HTTP mapping (`utils/exceptions.py`) is irrelevant on this path: the code is stored, not
+    raised, so do not attempt to make this a 409 and do not touch the status mapping. The
+    frontend already knows the value (`frontend/src/shared/types/enums.ts` and
+    `frontend/src/shared/api/errorMessages.ts`).
+  - **Config plumbing**: `DatabaseSettings` is a plain `BaseModel` nested at
+    `Settings.database`. `_set_nested_value` lower-cases the variable and splits on `__`, so
+    a field named `lock_timeout_ms` is populated by `DATABASE__LOCK_TIMEOUT_MS` with no
+    `Settings`-level change and no `model_config` change.
+  - **Pool**: `get_async_engine` currently passes `pool_pre_ping=True`, `pool_size=10`,
+    `max_overflow=20`, `pool_timeout=30` and **no `pool_recycle`** — that is B7's, not this
+    block's.
+
+  ## Test-harness corrections to the research's Q6
+
+  - `tests/conftest.py::async_test_engine` is built on **`NullPool`**. A "fresh session"
+    therefore gets a brand-new connection whose `lock_timeout` is `0` whether or not the
+    implementation leaks. **A fresh-session non-leak assertion is vacuous on this harness.**
+    The required assertion is on the **same session, immediately after** `commit()` and
+    immediately after `rollback()` — that is the connection whose setting could have
+    leaked.
+  - `tests/conftest.py::async_db_session` is SAVEPOINT-based (`begin_nested`), so a lock
+    taken through it is released when the fixture rolls back. Use the session-scoped
+    `async_session_maker` for the holder/waiter tests, opening sessions directly.
+  - **The three `commit.assert_not_called()` assertions are not at risk.** They live in
+    `TestDataWorker::test_update_processing_log_status_started`,
+    `::test_update_processing_log_status_completed` and
+    `::test_update_processing_log_status_failed`, and they exercise
+    `_update_processing_log_status` directly — a function this block does not touch. Leave
+    them alone.
+  - **Every** existing caller of the worker in `tests/` (`test_e2e_upload.py`,
+    `test_filter_persistence.py`, `test_filter_values_consistency.py`,
+    `test_upload_api.py`, `test_file_cleanup.py::test_temp_file_cleaned_up_when_processing_fails`)
+    passes `db_session=async_db_session`, so they take the caller's-session branch and never
+    reach the new statements. The **only** existing test that drives the production branch
+    is `tests/test_file_cleanup.py::TestProcessingFailureReportedOnOwnSession`
+    (`test_failure_is_reported_on_a_fresh_session_without_a_session_argument` and
+    `test_failure_before_transaction_begin_reports_failed_not_nameerror`), and it substitutes
+    an `AsyncMock` session whose `begin` is a `MagicMock`. The new `session.execute` calls
+    resolve on that mock — **provided the helper never consumes a result object**, so do not
+    read `.scalar()`, `rowcount` or any other attribute of what `execute` returns. Both
+    tests must keep passing unchanged.
+
+files:
+  - path: src/mkobi/db/advisory_lock.py
+    change: new
+    anchors:
+      - "module docstring — what the exclusion is, and the four rejected alternatives in one short paragraph each"
+      - "REBUILD_LOCK_NAMESPACE"
+      - "LOCK_TIMEOUT_SQLSTATE"
+      - "dashboard_rebuild_lock_key(dashboard_id: UUID) -> int"
+      - "acquire_dashboard_rebuild_lock(session, dashboard_id, *, task_id=None, timeout_ms=None) -> None"
+      - "is_lock_timeout_error(error: BaseException) -> bool"
+    instructions: |
+      Module docstring states, tersely and in English, why this exists: the exclusion is
+      declared rather than incidental, it is transaction-scoped (`pg_advisory_xact_lock`,
+      single-argument `bigint` form — the two-argument `(int4, int4)` form would force an
+      arbitrary 32/32 split into a namespace the single-argument form gets for free by
+      prefixing the hashed payload), and the four rejected alternatives with one clause each:
+      `hash()` (unseeded, so each replica would take a different key), SQL-side
+      `hashtextextended` (undocumented, collation-sensitive, and disagrees with Python
+      anyway), UUID truncation (lossy on the least uniform bits), and
+      `pg_try_advisory_xact_lock` (converts ordinary queueing into hard failure).
+      `statement_timeout` is rejected in the same breath: it is not scoped to lock
+      acquisition, so it would abort a long but legitimate aggregation.
+
+      `REBUILD_LOCK_NAMESPACE = "mkobi:aggregate-rebuild"` — a plain module constant with an
+      explanatory comment, matching `LEASE_KEY` in `core/reconciler_lease.py`. Note in the
+      comment that the Alembic migration lock lives in the same 2^64 advisory key space,
+      which is exactly why the namespace is prefixed.
+
+      `LOCK_TIMEOUT_SQLSTATE = "55P03"` — a plain module constant with a comment naming
+      PostgreSQL's `lock_not_available`. Not a `StrEnum`: it is one value, and `models/enums.py`
+      holds domain enums, not protocol constants. This is the reason classification is
+      sqlstate-keyed rather than type-keyed — SQLAlchemy's asyncpg dialect maps only a
+      handful of asyncpg exception classes and `LockNotAvailableError` is not among them, so
+      `isinstance(exc, OperationalError)` is `False` and type-based classification cannot
+      work.
+
+      `dashboard_rebuild_lock_key(dashboard_id: UUID) -> int` — pure, no I/O, no globals
+      beyond the namespace constant. `hashlib.blake2b(payload, digest_size=8)` over
+      `f"{REBUILD_LOCK_NAMESPACE}:{dashboard_id}".encode("utf-8")`, then
+      `int.from_bytes(..., byteorder="big", signed=True)`. The `signed=True` and the
+      big-endian order are load-bearing and each needs one clause of comment: signed, because
+      asyncpg raises a hard `DataError` on an unsigned value above 2^63-1; big-endian,
+      because little-endian is simply the wrong reading of the digest.
+      Add a `: >-` note that the key must be identical in every process (four `uvicorn
+      --workers 4` replicas plus `rq-worker`), which is why it is a stable digest and not
+      `hash()`.
+
+      `acquire_dashboard_rebuild_lock(session, dashboard_id, *, task_id=None, timeout_ms=None) -> None`
+      — awaits exactly two statements, in this order, inside the caller's already-open
+      transaction:
+        1. `SELECT set_config('lock_timeout', :value, true)` with
+           `{"value": f"{bound_ms}ms"}` — the third argument is the transaction scope, and
+           the comment says why: a bare `SET` survives `COMMIT` on the pooled connection and
+           would then bound every unrelated lock wait in this process, and `SET LOCAL` cannot
+           take a bind parameter, which is the only reason `set_config` is used at all.
+        2. `SELECT pg_advisory_xact_lock(:lock_key)` with the derived key.
+      `bound_ms` is `timeout_ms` when given, else `get_config().database.lock_timeout_ms`.
+      `task_id` exists so the log lines correlate the wait with the job; it is keyword-only
+      and optional so the helper is callable from tests without one.
+      `logger.info` between the two statements, carrying `dashboard_id`, `task_id`, the lock
+      key and the bound. Wrap only the lock call in `try/except DBAPIError`; when
+      `is_lock_timeout_error(exc)` holds, log `logger.warning` naming the bound that
+      elapsed and re-raise. Anything else propagates unchanged.
+      The docstring records the shape constraint: both statements must be issued inside the
+      caller's `async with session.begin():` block, because SQLAlchemy autobegins and a
+      statement issued before `session.begin()` raises `InvalidRequestError`. It also records
+      that the lock must not be taken outside that block — the compensation handler depends
+      on the lock already being released when it runs.
+      Do not consume the return value of either `execute`.
+
+      `is_lock_timeout_error(error: BaseException) -> bool` — `isinstance(error, DBAPIError)`
+      and `getattr(error.orig, "sqlstate", None) == LOCK_TIMEOUT_SQLSTATE`. Use `getattr`,
+      because `orig` is not guaranteed to expose the attribute. Docstring notes that the same
+      state is also visible as `.pgcode` on the asyncpg error, and that keying on
+      `sqlstate` is the only portable form.
+
+  - path: src/mkobi/config.py
+    change: modify
+    anchors:
+      - "class DatabaseSettings"
+      - "lock_timeout_ms: int = 180_000   # new field"
+    instructions: |
+      Add `lock_timeout_ms: int = 180_000` to `DatabaseSettings`, next to the existing
+      connection fields, with a comment giving the two reasons the default is 180 000 ms:
+      comfortably above a 100 MB upload plus aggregation, and — the binding one — below the
+      30-minute `stale_processing_timeout_minutes` backstop, because a lock wait that
+      outlives the mechanism meant to clean it up is not a bound at all. Env variable is
+      `DATABASE__LOCK_TIMEOUT_MS`; confirm by reading `_set_nested_value`, which lower-cases
+      and splits on `__`, so no `Settings`-level or `model_config` change is needed.
+      Do not add a validator — the field needs no constraint beyond being positive, and
+      inventing one would be a new invariant this block does not justify. (If a guard is
+      added, it must be a `field_validator` on this class and a `ValueError`, following
+      `Settings.validate_temp_password_ttl`; the simpler option is to omit it.)
+
+  - path: src/mkobi/workers/data_worker.py
+    change: modify
+    anchors:
+      - "_process_csv_file_async — production branch (the `else` that opens get_session())"
+      - "_map_processing_error_to_code(error: Exception) -> str"
+    instructions: |
+      In `_process_csv_file_async`, in the branch that owns its session, insert between
+      `async with session.begin():` and the `return await _run_with_transaction(session)`
+      call:
+
+          async with session.begin():
+              await acquire_dashboard_rebuild_lock(session, dashboard_id, task_id=task_id)
+              return await _run_with_transaction(session)
+
+      with a comment covering, in order: SQLAlchemy autobegins, so these two statements cannot
+      move above `session.begin()` without raising `InvalidRequestError`; the timeout is
+      transaction-scoped precisely so it does not outlive this block; and the compensation
+      handler below runs after this block has rolled back, so the lock is already gone by the
+      time the `FAILED` row is written on a fresh session.
+
+      Add the import of `acquire_dashboard_rebuild_lock` and `is_lock_timeout_error` from
+      `mkobi.db.advisory_lock`, placed by `ruff check --fix` (I001), not by hand. This module
+      does **not** import `get_config`: the bound is resolved inside the helper.
+
+      In `_map_processing_error_to_code`, add as the **first** branch — before every
+      message-substring test — `if is_lock_timeout_error(error): return
+      str(ErrorCode.PROCESSING_IN_PROGRESS.value)`, and add one clause to the docstring saying
+      a contended rebuild is reported as in-progress rather than failed. Order matters: the
+      classification must not depend on the driver's message text at all, and
+      `PROCESSING_IN_PROGRESS` is the semantically correct answer for "another rebuild holds
+      this dashboard" rather than the default `PROCESSING_FAILED`.
+
+  - path: tests/test_advisory_lock.py
+    change: new
+    anchors:
+      - "TestDashboardRebuildLockKey"
+      - "TestRebuildLockExclusion"
+      - "TestLockTimeoutDoesNotLeak"
+    instructions: |
+      New module mirroring the source module, following the `test_db_pool.py` /
+      `test_file_cleanup.py` naming precedent.
+
+      `TestDashboardRebuildLockKey` — pure, no database, no async:
+      the same `UUID` yields the same key across repeated calls (this is the regression
+      guard against the `hash()` failure, and it must assert a **hard-coded expectation or a
+      repeated-call equality plus range check**, not merely that two calls agree);
+      different `UUID`s yield different keys; the key is inside
+      `[-2**63, 2**63 - 1]`, since an out-of-range value is a `DataError` from asyncpg at
+      execution time, not a truncation.
+
+      `TestRebuildLockExclusion` — four tests, using the session-scoped
+      `async_session_maker` fixture and opening sessions directly. **Do not race two
+      coroutines**: `asyncio.create_task` plus SQLAlchemy's greenlet bridge hangs, and the
+      research had to kill the probe at 180 s. Use the deterministic harness-held-lock
+      pattern — a holder session commits nothing, then a second session attempts.
+        - the bound is honoured: holder acquires; the second session attempts with an
+          explicit 200–500 ms bound and raises `DBAPIError` whose `.orig.sqlstate ==
+          "55P03"`; the holder still holds afterwards.
+        - release on rollback: holder acquires, then rolls back; the second acquires cleanly.
+        - release on commit: holder acquires, then commits; the second acquires cleanly.
+        - **different `dashboard_id`s do not contend**: the second acquires immediately.
+          This test is mandatory and is the only one of the four that catches a global key
+          or a mismatched per-dashboard key — a single-key implementation passes the other
+          three.
+
+      `TestLockTimeoutDoesNotLeak` — two tests, one for the commit path and one for the
+      rollback path. Acquire with an explicit `timeout_ms=30_000`, end the transaction, then
+      assert `current_setting('lock_timeout') == '0'` **on the same session** — the same
+      connection, which is the only place a leak is observable on a `NullPool` engine. Repeat
+      the assertion on the error path as well: after a `55P03` the transaction is aborted, so
+      roll back before issuing any further statement, then read the setting. A fresh-session
+      assertion may be added for completeness but must not be the one carrying the test, and
+      its vacuity under `NullPool` should be said in a comment.
+
+  - path: tests/test_data_worker.py
+    change: modify
+    anchors:
+      - "new class TestProcessingErrorClassification"
+    instructions: |
+      Add one small class covering `_map_processing_error_to_code`, which lives in
+      `data_worker.py` and therefore belongs in this module. Two cases, no database:
+      a `DBAPIError` whose `orig` carries `sqlstate == "55P03"` maps to
+      `ErrorCode.PROCESSING_IN_PROGRESS`; a `DBAPIError` with a different sqlstate still
+      maps to `ErrorCode.PROCESSING_FAILED`, which pins that the new branch is narrow and
+      that nothing else was rerouted. Leave `TestDataWorker` untouched — including its three
+      `commit.assert_not_called()` assertions, which cannot be affected by this block.
+      Read the file before editing: it was modified in the working tree by concurrent
+      phase-01 work and that work is now committed (`cea2d06`), but the file is still
+      shared ground.
+
+  - path: docs/06-backend/configuration.md
+    change: modify
+    anchors:
+      - "environment variable table — row alongside the other DATABASE__* rows"
+    instructions: |
+      One additive row for `DATABASE__LOCK_TIMEOUT_MS` → `database.lock_timeout_ms` →
+      default `180000`, described as the transaction-scoped bound on the aggregate-rebuild
+      advisory-lock wait, with the operational relationship stated: it must stay below
+      `STALE_PROCESSING_TIMEOUT_MINUTES`. Match the table's existing column shape and
+      formatting exactly. No other documentation changes in this block.
+
+acceptance_criteria:
+  - "src/mkobi/db/advisory_lock.py exists, contains the pure derivation, the acquisition helper and the failure predicate, and imports nothing outside hashlib/logging/uuid/sqlalchemy/mkobi.config"
+  - >-
+    `dashboard_rebuild_lock_key` is a pure function of `dashboard_id` returning a signed
+    int64-range value derived from `hashlib.blake2b(..., digest_size=8)`; it contains no
+    `hash()`, no `uuid` truncation and no SQL
+  - >-
+    `acquire_dashboard_rebuild_lock` issues `set_config('lock_timeout', :value, true)` and
+    then `pg_advisory_xact_lock(:lock_key)`, both parameterised (no f-string SQL), both
+    awaited on the session it is given, and both documented as required to run inside the
+    caller's `session.begin()` block
+  - >-
+    A bare `SET lock_timeout` appears nowhere in the block's diff; the transaction scope is
+    carried by the third argument of `set_config`
+  - >-
+    The lock call is inside `async with session.begin():` in `_process_csv_file_async` and
+    is the second statement of that transaction, and a comment at the call site states why
+    it cannot move
+  - >-
+    `lock_timeout_ms` defaults to `180_000` on `DatabaseSettings`, is reachable as
+    `DATABASE__LOCK_TIMEOUT_MS`, and its comment explains that the bound must stay below
+    `stale_processing_timeout_minutes`
+  - >-
+    `is_lock_timeout_error` keys on `DBAPIError.orig.sqlstate == "55P03"` and is used as
+    the first branch of `_map_processing_error_to_code`, which now returns
+    `ErrorCode.PROCESSING_IN_PROGRESS` for a contended rebuild and is unchanged for every
+    other input
+  - >-
+    No new `ErrorCode` member, no change to the ErrorCode→HTTP mapping, no Alembic
+    migration, no API or Pydantic schema change, no frontend change — `PROCESSING_IN_PROGRESS`
+    and its 50-character storage column already exist
+  - >-
+    `ruff check` and `mypy` pass on every touched path; no `print()`, no pandas, no
+    non-English comment, full type hints including the new module's public signatures
+  - >-
+    `tests/test_advisory_lock.py` contains the four exclusion tests, the derivation test
+    class and the non-leak test class, and all of them pass
+  - >-
+    `tests/test_file_cleanup.py::TestProcessingFailureReportedOnOwnSession` still passes
+    unchanged, and no production-branch test needed a new assertion to accommodate the
+    added statements
+  - >-
+    `docs/06-backend/configuration.md` gains exactly one row and no other documentation
+    file is modified
+
+out_of_scope: |
+  Everything below is another block's or another phase's work. Do not touch it, and do not
+  "improve" it while passing through.
+
+  - **B3 (TXN-002 / TXN-004)** owns the transaction restructure and the processing-status
+    transitions — in particular moving the `PROCESSING` write out of the blocked transaction
+    and shortening the span of the worker's transaction. B2 does not shorten the transaction,
+    and must not move the lock in anticipation of B3's boundary. B3 will insert its own first
+    statement; B2's lock stays first until then.
+  - **DP-015** owns the one-minute orphan literal (`mark_orphaned_uploaded_logs_failed`) and
+    the reconciliation `stale_processing_log` row. Not this block.
+  - **B7 (TXN-010)** owns `get_async_engine`'s pool parameters, including the absent
+    `pool_recycle`. B2 changes nothing in `db/session.py`.
+  - **`pool_pre_ping` / `idle_in_transaction_session_timeout`**: the first is already safe and
+    needs no change; the second will not rescue a lock waiter (a blocked session reports
+    `state='active'`, `wait_event='Lock'`) and adding it is B7's call, not B2's.
+  - **Not a 409**: `ErrorCode.PROCESSING_IN_PROGRESS`'s existing HTTP mapping stays exactly as
+    it is. This path stores the code on the processing-log row; it never raises it.
+  - **No new exclusion mechanism anywhere else**: not in the API upload route, not in
+    `StorageManager`, not in `rq_worker_wrapper`. One exclusion, one place.
+  - **No lock in the caller's-session (test) branch** of `_process_csv_file_async`: it has no
+    `session.begin()` of its own and `tests/conftest.py::async_db_session` is SAVEPOINT-based.
+  - **Docs**: `docs/06-backend/architecture.md` is B10's (TXN-012); `docs/SPEC.md` version
+    history gets one row for the whole phase at the close, not one per block. The
+    pre-existing absence of `STALE_PROCESSING_TIMEOUT_MINUTES` and
+    `STALE_PROCESSING_CLEANUP_INTERVAL_SECONDS` from the configuration table is a drift
+    recorded for the phase close, not something to fix here.
+  - **No server-side or compose-level GUC change**: no `command:`/`postgresql.conf` edit, no
+    `PGOPTIONS`, no compose environment variable. The bound is set per transaction from
+    application configuration.
+  - **Alembic and `alembic/env.py`'s existing `pg_advisory_lock`** stay untouched — the
+    namespace prefix is precisely what keeps the two key spaces apart.
+
+sequence:
+  - step: 1
+    action: >-
+      Read the B2 research block and the Tech Lead ruling D-2 in
+      `.ai/plans/03-db-concurrency-remediation.md` in full, then read
+      `src/mkobi/workers/data_worker.py::_process_csv_file_async` (both branches),
+      `_map_processing_error_to_code`, `src/mkobi/config.py::DatabaseSettings`,
+      `src/mkobi/db/session.py::get_async_engine`, `tests/conftest.py` (`async_test_engine`,
+      `async_session_maker`, `async_db_session`) and
+      `tests/test_file_cleanup.py::TestProcessingFailureReportedOnOwnSession`.
+    verify: "You can name the exact statement that follows the lock call, and you know which branch each existing test takes."
+  - step: 2
+    action: >-
+      Re-read `git status` and `git log --oneline -3` before the first edit. If
+      `tests/test_data_worker.py`, `src/mkobi/workers/data_worker.py` or
+      `tests/test_file_cleanup.py` shows uncommitted changes from another agent, re-read them
+      and work with them; never revert.
+    verify: "The working tree state you are about to edit matches what you last read."
+  - step: 3
+    action: >-
+      Create `src/mkobi/db/advisory_lock.py` with the namespace constant, the SQLSTATE
+      constant, `dashboard_rebuild_lock_key`, `acquire_dashboard_rebuild_lock` and
+      `is_lock_timeout_error` — module complete before it is wired in.
+    verify: "`uv run mypy src/mkobi/db/advisory_lock.py` is clean on its own, with no consumer yet."
+  - step: 4
+    action: >-
+      Add `lock_timeout_ms: int = 180_000` to `DatabaseSettings` with its reasoning comment,
+      then read it back through the settings object
+      (`get_config().database.lock_timeout_ms`) to prove `DATABASE__LOCK_TIMEOUT_MS` reaches
+      it.
+    verify: "The field resolves from both the default and the environment variable; no `Settings`-level change was needed."
+  - step: 5
+    action: >-
+      Wire the two statements into `_process_csv_file_async`'s production branch with the
+      ordering comment, and add the `is_lock_timeout_error` branch to
+      `_map_processing_error_to_code`.
+    verify: "The lock is visibly inside `session.begin()`, and `_map_processing_error_to_code` returns `PROCESSING_IN_PROGRESS` for `55P03`."
+  - step: 6
+    action: >-
+      Write `tests/test_advisory_lock.py`: derivation class first (it needs no database and
+      runs fastest), then the four exclusion tests, then the non-leak class. Run it alone
+      before moving on.
+    verify: "All seven tests pass, and the `NullPool` same-session non-leak assertion is in place."
+  - step: 7
+    action: >-
+      Add `TestProcessingErrorClassification` to `tests/test_data_worker.py`.
+    verify: "The new class passes and `TestDataWorker` is untouched."
+  - step: 8
+    action: >-
+      Add the single configuration row to `docs/06-backend/configuration.md`.
+    verify: "One row added, table formatting intact, no other doc file touched."
+  - step: 9
+    action: >-
+      Run the targeted suites, then lint and typecheck, then the full suite.
+    verify: "All commands in `verification_steps` are green."
+
+constraints:
+  architecture:
+    - >-
+      One new module, one responsibility. `src/mkobi/db/advisory_lock.py` holds exactly the
+      namespace constant, the SQLSTATE constant, the derivation, the acquisition and the
+      failure predicate. It does not also grow transaction policy, status transitions or
+      worker orchestration.
+    - >-
+      Layering: `workers` may depend on `db`; `db` must not depend on `workers`. The helper
+      never imports from `mkobi.workers`, and reads its bound from `mkobi.config` only.
+    - >-
+      The worker call site stays two statements wide. No lock policy, no timeout arithmetic
+      and no error-shape knowledge leaks into `data_worker.py`.
+  correctness:
+    - >-
+      The acquisition helper must be called from inside an already-open transaction. Do not
+      open, commit or roll back a transaction inside it, and do not move the call above
+      `session.begin()`.
+    - >-
+      `set_config(..., true)` is mandatory; a bare `SET lock_timeout` is forbidden, and so
+      is `SET LOCAL` (it cannot take a bind parameter).
+    - >-
+      The derived key must be a signed int64-range value and identical in every process. No
+      `hash()`, no `uuid` truncation, no SQL-side `hashtextextended`, no little-endian
+      reading.
+    - >-
+      Classification keys on `sqlstate`. Never on exception type — the asyncpg dialect's
+      mapping makes `isinstance(exc, OperationalError)` `False` for this error.
+    - >-
+      Do not consume the return value of either `execute`; `TestProcessingFailureReportedOnOwnSession`
+      substitutes an `AsyncMock` session on the production branch.
+    - >-
+      Both statements are parameterised. No f-string, no `%`, no concatenation into SQL text.
+  process:
+    - "English only — docstrings, comments and log messages."
+    - "No `print()`; use `logger = logging.getLogger(__name__)`."
+    - "No pandas. Polars only, and this block touches no data processing."
+    - >-
+      Type hints on every public function, including the keyword-only parameters
+      (`task_id: str | None`, `timeout_ms: int | None`) and the `-> None` return of the
+      acquisition helper.
+    - >-
+      Comments only where non-obvious: why `set_config` instead of `SET LOCAL`, why
+      `signed=True`, why the lock is second, why the classification is sqlstate-keyed, why
+      the bound sits below the stale backstop. No narration of what the next line does.
+    - >-
+      Single-line commits where the split is meaningful; run `.\Makefile.ps1 format` before
+      committing (it runs `ruff check --fix`, which is what sorts imports).
+
+verification_steps:
+  - command: "git status --porcelain; git log --oneline -3"
+    expect: >-
+      HEAD at or after `cea2d06`; if `tests/test_data_worker.py` or
+      `src/mkobi/workers/data_worker.py` shows uncommitted changes, they are another agent's
+      — read and preserve them.
+  - command: ".\\Makefile.ps1 test-select -k test_advisory_lock -v"
+    expect: "All new tests pass: the derivation class, the four exclusion tests and the non-leak class."
+  - command: ".\\Makefile.ps1 test-select -k test_data_worker -v"
+    expect: "The new classification class passes and every pre-existing test in the module still passes, `TestDataWorker` included."
+  - command: ".\\Makefile.ps1 test-select -k test_file_cleanup -v"
+    expect: "Both `TestProcessingFailureReportedOnOwnSession` tests pass unchanged — the AsyncMock production-branch session absorbs the added statements."
+  - command: ".\\Makefile.ps1 test-select -k test_config -v"
+    expect: "No config test regressed by the new `DatabaseSettings` field."
+  - command: ".\\Makefile.ps1 test-select -k test_enum_db_consistency -v"
+    expect: "Unchanged — no enum was added and no migration was created."
+  - command: "uv run ruff check src/mkobi/db/advisory_lock.py src/mkobi/config.py src/mkobi/workers/data_worker.py tests/test_advisory_lock.py tests/test_data_worker.py"
+    expect: "Clean, including import ordering (I001) on the two edited modules."
+  - command: "uv run mypy src/mkobi/db/advisory_lock.py src/mkobi/config.py src/mkobi/workers/data_worker.py"
+    expect: "No errors."
+  - command: ".\\Makefile.ps1 test"
+    expect: "Full suite green. This is the block's release gate: the lock runs in the production branch, which several integration suites reach."
+
+notes:
+  - >-
+    Repository state at hand-off: HEAD is `cea2d06`, which is `b646ef1` plus B1's two
+    commits. B1 touched the user write path only and shares no file with this block.
+    `tests/test_data_worker.py` was modified in the working tree by concurrent phase-01
+    reconciler-lease work; that work is now committed, and `src/mkobi/workers/data_worker.py`
+    is clean — re-check at step 2 regardless.
+  - >-
+    Tests must be run through the Docker test stack; local `uv run pytest` has no test
+    database.
+  - >-
+    The research named `test_file_cleanup.py::TestProcessingFailureReportedOnOwnSession`
+    generically; the two named tests above are the specific ones. Everything else in
+    `tests/` reaches the worker through a caller-supplied session and is structurally
+    unaffected.
+  - >-
+    Two of the research's own claims are superseded by the anchor census, deliberately: the
+    "fresh session" non-leak assertion is vacuous under `NullPool`, and the three
+    `commit.assert_not_called()` assertions named as at risk cannot be reached by this
+    block. Both corrections are recorded above and in the plan's B2 block.
+  - >-
+    Advisory-lock waits are visible to an operator in `pg_locks`
+    (`wait_event_type='Lock'`, `wait_event='advisory'`, `granted=false`) with no extra
+    code, but that requires a live database session — the two log lines are what makes the
+    wait diagnosable from logs alone.
+
+---
+id: task_b2_txn_005_rebuild_exclusion_verify
+mode: verify
+status: pending
+title: >
+  B2 / TXN-005 verification — declared, bounded, transaction-scoped rebuild exclusion
+
+description: >
+  Independent verification that the aggregate-rebuild exclusion is declared, bounded,
+  transaction-scoped and correctly reported — checked against the block's own acceptance
+  criteria rather than against the research.
+
+depends_on:
+  - task_b2_txn_005_rebuild_exclusion
+
+files:
+  - path: src/mkobi/db/advisory_lock.py
+    role: new module
+  - path: src/mkobi/config.py
+    role: new setting
+  - path: src/mkobi/workers/data_worker.py
+    role: lock call site and error classification
+  - path: tests/test_advisory_lock.py
+    role: exclusion, derivation and non-leak tests
+  - path: tests/test_data_worker.py
+    role: classification test
+  - path: docs/06-backend/configuration.md
+    role: operator-facing setting row
+
+verify:
+  - check: "grep the block's diff for a bare `SET lock_timeout`"
+    expect: "No match. `set_config(..., true)` appears with its third argument present and correct."
+  - check: "read `acquire_dashboard_rebuild_lock`"
+    expect: "Exactly two awaited statements, in the order set_config → pg_advisory_xact_lock; both parameterised; neither return value consumed."
+  - check: "read the call site in `_process_csv_file_async`"
+    expect: "The lock is the first statement inside `async with session.begin():`, and a comment states the autobegin constraint."
+  - check: "read `dashboard_rebuild_lock_key`"
+    expect: "blake2b with `digest_size=8`, `byteorder=\"big\"`, `signed=True`; no `hash()`, no UUID truncation, no SQL."
+  - check: "read `is_lock_timeout_error` and `_map_processing_error_to_code`"
+    expect: "The predicate keys on `DBAPIError.orig.sqlstate == \"55P03\"` and is the classifier's first branch; `PROCESSING_FAILED` remains the default."
+  - check: "grep the diff for `ErrorCode` additions"
+    expect: "None. `PROCESSING_IN_PROGRESS` is reused, not re-minted."
+  - check: "run the four exclusion tests individually"
+    expect: "The different-`dashboard_id` test passes — the only one that would catch a global or mismatched key."
+  - check: "read the non-leak tests"
+    expect: "The assertion is on the same session after commit and after rollback, not only on a fresh session; the NullPool caveat is noted."
+  - check: ".\\Makefile.ps1 test"
+    expect: "Full suite green, including `TestProcessingFailureReportedOnOwnSession`."
+  - check: ".\\Makefile.ps1 lint; .\\Makefile.ps1 typecheck"
+    expect: "Both clean."
+
+depends_on_candidates: []
