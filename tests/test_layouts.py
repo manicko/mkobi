@@ -1,11 +1,15 @@
 """Tests for layouts API."""
 
+import uuid
+
 import pytest
 
 from fastapi import status
 from httpx import AsyncClient
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mkobi.db.models import layout as layout_model
 from mkobi.db.repositories.layout_repo import LayoutRepository
 from mkobi.models.enums import ErrorCode, UserRole
 
@@ -395,11 +399,16 @@ class TestLayoutsAPI:
         definition_errors = [e for e in errors if "definition" in e.get("loc", [])]
         assert len(definition_errors) > 0, "Expected validation error for 'definition' field"
 
-    async def test_create_layout_duplicate_name_returns_400(
+    async def test_create_layout_duplicate_name_returns_409(
         self, async_db_session: AsyncSession, authenticated_client: AsyncClient, test_user: dict
     ) -> None:
-        """Test that creating layout with duplicate name returns validation error."""
-        # Create first layout
+        """A duplicate layout name answers 409, not 500 or 422.
+
+        The unique index on ``layouts.name`` is the detector: the service no
+        longer pre-checks, so the conflict always arrives as a flush-time
+        ``IntegrityError`` and the route maps it to ``DUPLICATE_RESOURCE``.
+        """
+        # Create first layout on the shared session.
         repo = LayoutRepository()
         await repo.create(
             db=async_db_session,
@@ -408,11 +417,98 @@ class TestLayoutsAPI:
         )
         await async_db_session.flush()
 
-        # Try to create another layout with same name
+        # Try to create another layout with same name.
         response = await authenticated_client.post(
             "/layouts",
             json={"name": "duplicate_test_layout", "definition": {"grid": []}},
         )
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR
+        assert response.status_code != status.HTTP_422_UNPROCESSABLE_CONTENT
         data = response.json()
-        assert "already exists" in data["detail"].lower()
+        # RFC 7807 Problem Details envelope.
+        for member in ("type", "title", "status", "detail", "code"):
+            assert member in data
+        assert data["code"] == ErrorCode.DUPLICATE_RESOURCE
+        assert data["status"] == status.HTTP_409_CONFLICT
+        assert data["details"] == {"name": "duplicate_test_layout"}
+
+    async def test_update_layout_rename_onto_existing_name_returns_409(
+        self, async_db_session: AsyncSession, authenticated_client: AsyncClient, test_user: dict
+    ) -> None:
+        """Renaming a layout onto an existing name answers 409, not 500 or 422."""
+        repo = LayoutRepository()
+        await repo.create(
+            db=async_db_session,
+            name="rename_target_layout",
+            definition={"grid": []},
+        )
+        await async_db_session.flush()
+
+        layout = await repo.create(
+            db=async_db_session,
+            name="rename_source_layout",
+            definition={"grid": []},
+        )
+        await async_db_session.flush()
+        layout_id = layout.id
+
+        response = await authenticated_client.put(
+            f"/layouts/{layout_id}",
+            json={"name": "rename_target_layout"},
+        )
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR
+        assert response.status_code != status.HTTP_422_UNPROCESSABLE_CONTENT
+        data = response.json()
+        for member in ("type", "title", "status", "detail", "code"):
+            assert member in data
+        assert data["code"] == ErrorCode.DUPLICATE_RESOURCE
+        assert data["status"] == status.HTTP_409_CONFLICT
+        assert data["details"] == {"name": "rename_target_layout"}
+
+    async def test_create_layout_duplicate_name_race_returns_409(
+        self,
+        async_db_session: AsyncSession,
+        async_session_maker,
+        authenticated_client: AsyncClient,
+        test_user: dict,
+    ) -> None:
+        """The loser of a create race answers 409, never 500.
+
+        Two real sessions exercise the sequential/loser ordering: one session
+        commits a layout, then the HTTP request runs in a second session and
+        must observe the unique-index conflict as 409 rather than a 500. The
+        ordering is fixed by the test -- no coroutine is raced.
+        """
+        name = f"race_layout_{uuid.uuid4().hex[:8]}"
+
+        repo = LayoutRepository()
+        try:
+            # Winner: a genuinely separate connection commits the row.
+            async with async_session_maker() as winner_session:
+                await repo.create(
+                    db=winner_session,
+                    name=name,
+                    definition={"grid": []},
+                )
+                await winner_session.commit()
+
+            # Loser: the request session now creates the same name.
+            response = await authenticated_client.post(
+                "/layouts",
+                json={"name": name, "definition": {"grid": []}},
+            )
+            assert response.status_code == status.HTTP_409_CONFLICT
+            assert response.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR
+            assert response.status_code != status.HTTP_422_UNPROCESSABLE_CONTENT
+            assert response.json()["code"] == ErrorCode.DUPLICATE_RESOURCE
+        finally:
+            # A production commit is durable; the fixture teardown cannot undo
+            # it, so the winner's row must be deleted through its own session.
+            async with async_session_maker() as cleanup_session:
+                await cleanup_session.execute(
+                    delete(layout_model.Layout).where(layout_model.Layout.name == name)
+                )
+                await cleanup_session.commit()
+
