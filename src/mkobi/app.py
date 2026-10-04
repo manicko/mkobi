@@ -48,6 +48,25 @@ setup_logging(
 logger = logging.getLogger(__name__)
 
 
+def build_security_headers() -> dict[str, str]:
+    """Return the baseline security headers stamped on every response.
+
+    The single definition both the ``SecurityHeadersMiddleware`` and the
+    unhandled-500 handler in ``mkobi.utils.exceptions`` read. The middleware
+    adds the two production-only headers (HSTS and CSP) on top; the three
+    returned here apply in every environment, so an unhandled 500 that never
+    traverses the middleware still carries them (SECB-3).
+
+    Returns:
+        dict[str, str]: Header name to value for the environment-independent set.
+    """
+    return {
+        "X-Content-Type-Options": "nosniff",
+        "X-XSS-Protection": "1; mode=block",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+    }
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Middleware to add security headers to all responses.
 
@@ -73,9 +92,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             Response with security headers added.
         """
         response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        for header_name, header_value in build_security_headers().items():
+            response.headers[header_name] = header_value
 
         config = get_config()
         if config.environment == EnvironmentEnum.PRODUCTION:

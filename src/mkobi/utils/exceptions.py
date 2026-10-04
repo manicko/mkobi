@@ -345,7 +345,7 @@ def add_exception_handlers(app: FastAPI) -> None:
     async def global_exception_handler(
         request: Request, exc: Exception,
     ) -> JSONResponse:
-        logger.error("Unhandled exception: %s", exc)
+        logger.error("Unhandled exception: %s", exc, exc_info=True)
         response = ErrorResponse(
             type="https://api.mkobi.com/errors/internal_error",
             title="Internal server error",
@@ -354,7 +354,15 @@ def add_exception_handlers(app: FastAPI) -> None:
             code=ErrorCode.INTERNAL_ERROR,
             details=None,
         )
+        # This handler builds its own JSONResponse and therefore never traverses
+        # SecurityHeadersMiddleware (which is registered innermost). Stamp the
+        # same baseline headers here so an unhandled 500 is not served without
+        # them. The single definition lives in mkobi.app (SECB-3); the import is
+        # local because mkobi.app imports this module.
+        from mkobi.app import build_security_headers
+
         return JSONResponse(
             status_code=HTTP_500_INTERNAL_SERVER_ERROR,
             content=response.model_dump(),
+            headers=build_security_headers(),
         )
