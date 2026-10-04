@@ -124,11 +124,11 @@ class TestUserModels:
         user = UserUpdate(
             email="new@example.com",
             role=UserRole.ADMIN,
-            password="new_password",
+            password="secure_password123",
         )
         assert user.email == "new@example.com"
         assert user.role == UserRole.ADMIN
-        assert user.password == "new_password"
+        assert user.password == "secure_password123"
 
     def test_user_base_config(self):
         """Test base model configuration."""
@@ -140,7 +140,7 @@ class TestUserModels:
         """Test model creation from attributes."""
         data = {
             "email": "test@example.com",
-            "password": "pass",
+            "password": "secure_password123",
             "role": UserRole.ADMIN,
         }
         user = UserCreate.model_validate(data)
