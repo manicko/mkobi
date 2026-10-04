@@ -127,6 +127,14 @@ Create a new dashboard. Admin only.
 }
 ```
 
+| Field         | Type            | Description                                              |
+| ------------- | --------------- | -------------------------------------------------------- |
+| `name`        | `string`        | Dashboard name (required, unique).                       |
+| `description` | `string`        | Optional dashboard description.                          |
+| `layout_id`   | `UUID`          | Optional associated layout.                              |
+
+The created row also carries a `created_by` column (`UUID REFERENCES users(id) ON DELETE SET NULL`, nullable — see [Database Schema](../09-database/schema-core.md)). It is **server-set**: the service records the authenticated caller's id as `created_by`; it is **not** a client-supplied request field. **`created_by` records authorship and confers no access.** A user with no `dashboard_access` grant row for the dashboard cannot read it even if they created it, and a later administrator may revoke the creator's grant. The creator's readable access at creation time comes from the explicit `dashboard_access` row the service grants, not from `created_by`.
+
 **Response** (`201 Created`): Dashboard detail object.
 
 **Error responses:**
