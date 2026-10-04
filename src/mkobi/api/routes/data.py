@@ -26,6 +26,7 @@ from mkobi.api.schemas.responses import (
     auth_protected_responses,
 )
 from mkobi.core.permissions import check_dashboard_access, DashboardPermissionError
+from mkobi.db.repositories.graph_repo import GraphRepository
 from mkobi.models.data import ProcessingResultData, AggregatedDataResponse, GraphDataResponse
 from mkobi.models.enums import DashboardPermission, ErrorCode
 from mkobi.services.data_service import DataService
@@ -48,7 +49,7 @@ async def get_aggregated_data_endpoint(
     current_user: CurrentUser,
     data_service: DataService = Depends(get_data_service),
     db: AsyncSession = Depends(get_db_dependency),
-    graph_repo: Any = Depends(get_graph_repository),
+    graph_repo: GraphRepository = Depends(get_graph_repository),
     dashboard_id: UUID = Query(..., description="Dashboard ID"),
     graph_id: UUID | None = Query(default=None, description="Graph ID (optional, returns all dashboard graphs if absent)"),
     filters: str | None = Query(default=None, description="JSON string with filters"),

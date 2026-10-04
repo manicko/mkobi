@@ -17,7 +17,10 @@ from mkobi.api.deps import (
 )
 from mkobi.core.security import create_access_token, hash_password
 from mkobi.db.repositories.access_repo import AccessRepository
+from mkobi.db.repositories.dashboard_filter_repo import DashboardFilterRepository
 from mkobi.db.repositories.dashboard_repo import DashboardRepository
+from mkobi.db.repositories.graph_repo import GraphRepository
+from mkobi.db.repositories.registration_request_repo import RegistrationRequestRepository
 from mkobi.db.repositories.user_repo import UserRepository
 from mkobi.models.enums import UserRole
 
@@ -463,6 +466,60 @@ class TestDIFactories:
 
         service = get_layout_service()
         assert isinstance(service, LayoutService)
+
+
+class TestRepositoryProviderAnnotations:
+    """Runtime resolution of the narrowed repository provider annotations.
+
+    ``mypy`` never evaluates a runtime annotation, but FastAPI resolves every
+    ``Depends`` parameter annotation at import time. The four route modules
+    carry no ``from __future__ import annotations``, so a ``TYPE_CHECKING``-only
+    import there is a startup ``NameError`` that no static gate reports. This
+    test performs the exact resolution FastAPI performs and builds the app.
+    """
+
+    def test_narrowed_dependency_annotations_resolve_at_runtime(self) -> None:
+        """Import the changed route modules, resolve their annotations, build the app."""
+        import importlib
+        import typing
+
+        from mkobi.app import create_app
+
+        # 1. Importing each changed module must succeed. A TYPE_CHECKING-only
+        #    import in a module without the future import would raise NameError here.
+        admin = importlib.import_module("mkobi.api.routes.admin")
+        dashboards_filters = importlib.import_module(
+            "mkobi.api.routes.dashboards_filters"
+        )
+        dashboards_graphs = importlib.import_module(
+            "mkobi.api.routes.dashboards_graphs"
+        )
+        data = importlib.import_module("mkobi.api.routes.data")
+
+        # 2. Resolve one narrowed repository parameter per module, exactly as
+        #    FastAPI does while building the dependency graph.
+        expected = {
+            admin.get_registration_requests_admin_endpoint: (
+                "repo",
+                RegistrationRequestRepository,
+            ),
+            dashboards_filters.get_dashboard_filters_endpoint: (
+                "dashboard_filter_repo",
+                DashboardFilterRepository,
+            ),
+            dashboards_graphs.get_dashboard_graphs_endpoint: (
+                "graph_repo",
+                GraphRepository,
+            ),
+            data.get_aggregated_data_endpoint: ("graph_repo", GraphRepository),
+        }
+        for handler, (param, concrete) in expected.items():
+            hints = typing.get_type_hints(handler)
+            assert hints[param] is concrete
+
+        # 3. Build the application so the full dependency graph is constructed;
+        #    an unresolvable forward reference raises at startup here.
+        create_app()
 
 
 class TestRepositoryFactories:

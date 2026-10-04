@@ -5,7 +5,7 @@ Create operations require admin role. Read operations use dashboard access contr
 """
 
 import logging
-from typing import Any, cast
+from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
@@ -28,6 +28,7 @@ from mkobi.api.schemas.responses import (
     error_429,
     error_500,
 )
+from mkobi.db.repositories.graph_repo import GraphRepository
 from mkobi.models.enums import ErrorCode
 from mkobi.models.graph import GraphCreate, GraphRead
 from mkobi.models.user import UserRead
@@ -60,7 +61,7 @@ async def create_dashboard_graph_endpoint(
     graph: GraphCreate,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db_dependency),
-    graph_repo: Any = Depends(get_graph_repository),
+    graph_repo: GraphRepository = Depends(get_graph_repository),
 ) -> GraphRead:
     """Create a new graph for a dashboard.
 
@@ -150,7 +151,7 @@ async def get_dashboard_graphs_endpoint(
     dashboard_id: UUID,
     current_user: UserRead = Depends(require_dashboard_read_access),
     db: AsyncSession = Depends(get_db_dependency),
-    graph_repo: Any = Depends(get_graph_repository),
+    graph_repo: GraphRepository = Depends(get_graph_repository),
 ) -> list[GraphRead]:
     """Get all graphs for a dashboard.
 

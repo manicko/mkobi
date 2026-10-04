@@ -17,6 +17,7 @@ from mkobi.api.deps import (
     get_temp_password_store,
 )
 from mkobi.api.schemas.responses import admin_responses, error_503
+from mkobi.db.repositories.registration_request_repo import RegistrationRequestRepository
 from mkobi.interfaces import IUserService
 from mkobi.models.enums import ErrorCode, RegistrationStatus
 from mkobi.utils.exceptions import AppException
@@ -342,7 +343,7 @@ async def reset_user_password_admin_endpoint(
 async def get_registration_requests_admin_endpoint(
     admin_user: AdminUser,
     db: AsyncSession = Depends(get_db_dependency),
-    repo: Any = Depends(get_registration_request_repository),
+    repo: RegistrationRequestRepository = Depends(get_registration_request_repository),
 ) -> list[RegistrationRequestItem]:
     """Get all registration requests (admin endpoint)."""
     logger.info("Admin: getting registration requests")
@@ -369,7 +370,7 @@ async def approve_registration_request_admin_endpoint(
     admin_user: AdminUser,
     db: AsyncSession = Depends(get_db_dependency),
     auth_service: AuthService = Depends(get_auth_service),
-    repo: Any = Depends(get_registration_request_repository),
+    repo: RegistrationRequestRepository = Depends(get_registration_request_repository),
 ) -> dict[str, Any]:
     """Approve registration request (admin endpoint)."""
     logger.info("Admin: approving registration request: id=%s", request_id)
@@ -425,7 +426,7 @@ async def reject_registration_request_admin_endpoint(
     request_id: UUID,
     admin_user: AdminUser,
     db: AsyncSession = Depends(get_db_dependency),
-    repo: Any = Depends(get_registration_request_repository),
+    repo: RegistrationRequestRepository = Depends(get_registration_request_repository),
 ) -> SuccessResponse:
     """Reject registration request (admin endpoint)."""
     logger.info("Admin: rejecting registration request: id=%s", request_id)

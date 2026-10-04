@@ -19,6 +19,8 @@ from mkobi.api.deps import (
     require_dashboard_read_access,
 )
 from mkobi.api.schemas.responses import admin_responses
+from mkobi.db.repositories.dashboard_filter_repo import DashboardFilterRepository
+from mkobi.db.repositories.filter_repo import FilterRepository
 from mkobi.models.enums import ErrorCode
 from mkobi.models.user import UserRead
 from mkobi.utils.exceptions import AppException
@@ -41,8 +43,8 @@ async def bind_filter_endpoint(
     filter_id: UUID,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db_dependency),
-    filter_repo: Any = Depends(get_filter_repository),
-    dashboard_filter_repo: Any = Depends(get_dashboard_filter_repository),
+    filter_repo: FilterRepository = Depends(get_filter_repository),
+    dashboard_filter_repo: DashboardFilterRepository = Depends(get_dashboard_filter_repository),
 ) -> dict[str, Any]:
     """Bind a filter to a dashboard."""
     logger.info(
@@ -91,7 +93,7 @@ async def unbind_filter_endpoint(
     filter_id: UUID,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db_dependency),
-    dashboard_filter_repo: Any = Depends(get_dashboard_filter_repository),
+    dashboard_filter_repo: DashboardFilterRepository = Depends(get_dashboard_filter_repository),
 ) -> dict[str, Any]:
     """Unbind a filter from a dashboard."""
     logger.info(
@@ -139,7 +141,7 @@ async def get_dashboard_filters_endpoint(
     dashboard_id: UUID,
     current_user: UserRead = Depends(require_dashboard_read_access),
     db: AsyncSession = Depends(get_db_dependency),
-    dashboard_filter_repo: Any = Depends(get_dashboard_filter_repository),
+    dashboard_filter_repo: DashboardFilterRepository = Depends(get_dashboard_filter_repository),
 ) -> list[dict[str, Any]]:
     """Get all filters bound to a dashboard."""
     logger.info("Getting filters for dashboard: dashboard_id=%s", dashboard_id)
