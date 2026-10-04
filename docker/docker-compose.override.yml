@@ -90,6 +90,10 @@ services:
       DATABASE__DBNAME: bidb
       DATABASE__TEST_DBNAME: bidb_test
       REDIS__HOST: redis
+      # Declared in the override with the same default as the base service, so a
+      # developer can set RATE_LIMITER_FAIL_CLOSED in .env and have it reach the
+      # dev tier instead of the base value silently winning.
+      RATE_LIMITER_FAIL_CLOSED: ${RATE_LIMITER_FAIL_CLOSED:-true}
       JWT__ALGORITHM: HS256
       JWT__SECRET_KEY: ${JWT__SECRET_KEY:?JWT__SECRET_KEY must be set}
       # Admin credentials (valid email format required)
@@ -157,6 +161,9 @@ services:
       REDIS__HOST: redis
       REDIS__PORT: "6379"
       REDIS__DB: "0"
+      # Declared with the same default as the base worker service so the posture
+      # is overridable per-developer through .env (SECB-9).
+      RATE_LIMITER_FAIL_CLOSED: ${RATE_LIMITER_FAIL_CLOSED:-true}
       JWT__ALGORITHM: HS256
       JWT__SECRET_KEY: ${JWT__SECRET_KEY:?JWT__SECRET_KEY must be set}
       ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME must be set}

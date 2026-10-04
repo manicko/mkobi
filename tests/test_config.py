@@ -1338,3 +1338,60 @@ class TestRqWorkerComposeWiring:
             assert "redis-cli" not in block, compose_path.name
             assert "mkobi.rq_worker_wrapper" in block, compose_path.name
 
+
+
+class TestRateLimiterOverrideWiring:
+    """SECB-9: the dev override must declare the limiter posture for both services.
+
+    The base compose passes ``RATE_LIMITER_FAIL_CLOSED`` to ``app`` and
+    ``rq-worker``, but the dev override declared no such key, so a developer
+    setting it in ``.env`` had no way to reach the dev tier through the override
+    file. These tests read both compose files directly and pin the key in each
+    dev service block with the same base default.
+    """
+
+    @staticmethod
+    def _compose_files() -> dict:
+        from pathlib import Path
+
+        docker_dir = Path(__file__).resolve().parent.parent / "docker"
+        return {
+            "base": docker_dir / "docker-compose.yml",
+            "override": docker_dir / "docker-compose.override.yml",
+        }
+
+    @staticmethod
+    def _service_block(text: str, service: str) -> str:
+        """Return one top-level service block from a compose file's text."""
+        lines = text.splitlines()
+        start = None
+        for index, line in enumerate(lines):
+            if line.rstrip() == f"  {service}:":
+                start = index
+                break
+        assert start is not None, f"{service} service not found"
+        block = [lines[start]]
+        for line in lines[start + 1:]:
+            if line.startswith("  ") and not line.startswith("    ") and line.strip():
+                break
+            block.append(line)
+        return "\n".join(block)
+
+    def test_override_declares_rate_limiter_key_for_app_and_worker(self) -> None:
+        """Both dev services declare RATE_LIMITER_FAIL_CLOSED with the base default."""
+        files = self._compose_files()
+        override_text = files["override"].read_text(encoding="utf-8")
+
+        for service in ("app", "rq-worker"):
+            block = self._service_block(override_text, service)
+            assert "RATE_LIMITER_FAIL_CLOSED" in block, service
+            assert "${RATE_LIMITER_FAIL_CLOSED:-true}" in block, service
+
+    def test_base_still_declares_the_key_for_both_services(self) -> None:
+        """The base tier keeps the key, so the override matches rather than diverges."""
+        files = self._compose_files()
+        base_text = files["base"].read_text(encoding="utf-8")
+
+        for service in ("app", "rq-worker"):
+            block = self._service_block(base_text, service)
+            assert "RATE_LIMITER_FAIL_CLOSED" in block, service
