@@ -29,6 +29,24 @@ async def _delete_committed_email(async_session_maker, email: str) -> None:
         await session.commit()
 
 
+async def _read_existing_user_ids(
+    async_session_maker, user_ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Return which of the given ids are still present, via a fresh session.
+
+    A fresh session reads committed state only, so a delete that reached the
+    database durably - as opposed to merely being flushed inside the test's
+    open transaction - is observed as missing.
+    """
+    if not user_ids:
+        return set()
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(user_model.User.id).where(user_model.User.id.in_(user_ids))
+        )
+        return set(result.scalars().all())
+
+
 class TestGetProfile:
     """Tests for get profile endpoint."""
 
@@ -149,7 +167,7 @@ class TestDeleteAccount:
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
     async def test_admin_cannot_delete_self(
-        self, async_client: AsyncClient, async_db_session
+        self, async_client: AsyncClient, async_db_session, async_session_maker
     ) -> None:
         """Test that admin cannot delete their own account when they are the only admin.
 
@@ -197,10 +215,15 @@ class TestDeleteAccount:
         # while the fixture's SAVEPOINT rollback at teardown restores those rows
         # for any later test. The precondition is constructed, not persisted; no
         # global state is destroyed. Non-admin rows and this test's own admin are
-        # never touched.
-        for existing in await repo.get_all(async_db_session):
-            if existing.role == UserRole.ADMIN and existing.id != admin_user.id:
-                await repo.delete(existing.id, async_db_session)
+        # never touched. The ids are captured so the rollback can be proven to
+        # restore them; see the restoration assertion below.
+        foreign_admin_ids = [
+            existing.id
+            for existing in await repo.get_all(async_db_session)
+            if existing.role == UserRole.ADMIN and existing.id != admin_user.id
+        ]
+        for foreign_admin_id in foreign_admin_ids:
+            await repo.delete(foreign_admin_id, async_db_session)
 
         # Login as the admin
         login_resp = await async_client.post(
@@ -221,3 +244,17 @@ class TestDeleteAccount:
 
         # Should be forbidden: sole admin cannot be deleted while users exist
         assert response.status_code == status.HTTP_403_FORBIDDEN
+
+        # The foreign admins above were deleted only inside this test's open
+        # transaction. Roll back to the SAVEPOINT now and prove they came back:
+        # if a future change ever committed those deletes, the rows would be
+        # destroyed for later tests with nothing here to notice. Re-reading via
+        # a fresh session sees committed state, so a durable delete fails this.
+        await async_db_session.rollback()
+        restored_ids = await _read_existing_user_ids(
+            async_session_maker, foreign_admin_ids
+        )
+        assert restored_ids == set(foreign_admin_ids), (
+            "Foreign admin rows were not restored after the savepoint rollback; "
+            f"missing={sorted(set(foreign_admin_ids) - restored_ids)}"
+        )
