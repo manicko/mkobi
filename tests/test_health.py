@@ -13,11 +13,12 @@ class TestHealthEndpoint:
     """Tests for basic health check endpoint."""
 
     @pytest.fixture
-    async def health_client(self) -> AsyncClient:
-        """Create HTTP client for health endpoint testing without database dependency.
+    async def health_client(self, setup_test_database) -> AsyncClient:
+        """Create HTTP client for health endpoint testing.
 
-        Health endpoints operate independently of database setup in tests,
-        we create a fresh app instance and client without DB setup.
+        /health reports the database component, so these tests depend on the
+        test database being created and migrated; the fixture is requested
+        explicitly rather than relied upon as an autouse side effect.
         """
         import os
 
@@ -66,10 +67,11 @@ class TestHealthDetailedEndpoint:
     """Tests for detailed health check endpoint."""
 
     @pytest.fixture
-    async def detailed_health_client(self) -> AsyncClient:
+    async def detailed_health_client(self, setup_test_database) -> AsyncClient:
         """Create HTTP client for detailed health endpoint testing.
 
-        Detailed health endpoint operates independently of database setup.
+        /health/detailed reports a database component whose status is asserted,
+        so the test database must exist; the fixture is requested explicitly.
         """
         import os
 
@@ -192,7 +194,7 @@ class TestDetailedHealthRedisComponent:
     """The redis component reports a degraded Redis without moving liveness."""
 
     @pytest.fixture
-    async def client(self) -> AsyncClient:
+    async def client(self, setup_test_database) -> AsyncClient:
         import os
 
         os.environ.setdefault("ENV", "test")
@@ -305,7 +307,7 @@ class TestHealthWithRedisDown:
     """A Redis outage must not drag down /health or the overall detailed status."""
 
     @pytest.fixture
-    async def client(self) -> AsyncClient:
+    async def client(self, setup_test_database) -> AsyncClient:
         import os
 
         os.environ.setdefault("ENV", "test")

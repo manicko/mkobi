@@ -524,7 +524,7 @@ def strict_redis(monkeypatch):
     yield mock_redis_client
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 async def setup_test_database():
     """Fixture to set up test database before tests run.
     
