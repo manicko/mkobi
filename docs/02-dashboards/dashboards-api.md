@@ -738,7 +738,7 @@ Editor and above.
 
 ## Dashboard Access Management
 
-Admins can grant, list, and revoke user access to a dashboard through dedicated endpoints.
+Managing access to a dashboard requires an `admin` permission on that dashboard — held by the dashboard's owner — or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.
 
 ### 24. Grant Dashboard Access
 
@@ -746,7 +746,7 @@ Admins can grant, list, and revoke user access to a dashboard through dedicated 
 | -------------- | -------------------------------------------------- |
 | **Method**     | `POST`                                             |
 | **Path**       | `/api/v1/dashboards/{dashboard_id}/access`         |
-| **Auth level** | Admin                                              |
+| **Auth level** | Owner or administrator                             |
 
 **Request body:**
 
@@ -776,9 +776,12 @@ Admins can grant, list, and revoke user access to a dashboard through dedicated 
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
 | `200`  | A grant for this `(user_id, dashboard_id)` already exists — idempotent no-op | `Access granted` (same body as a first grant) |
-| `403`  | Caller is not admin          | Forbidden                    |
-| `404`  | Dashboard not found          | `Dashboard not found`        |
+| `403`  | Caller is neither the owner nor an administrator | Forbidden                    |
+| `422`  | Admitted caller (owner or administrator) and the dashboard does not exist | permission validation error |
+| `422`  | `permission` outside `view` / `edit` / `admin` | permission validation error |
 | `422`  | dashboard_id mismatch        | `dashboard_id in body doesn't match URL` |
+
+The absent-dashboard case is role-dependent: an admitted caller (owner or administrator) reaches the handler and receives `422` when the dashboard does not exist, while a caller outside the audience receives `403` whether or not the dashboard exists, because the admin-access gate runs before the handler body.
 
 ---
 
@@ -788,9 +791,15 @@ Admins can grant, list, and revoke user access to a dashboard through dedicated 
 | -------------- | -------------------------------------------------- |
 | **Method**     | `GET`                                              |
 | **Path**       | `/api/v1/dashboards/{dashboard_id}/access`         |
-| **Auth level** | Admin                                              |
+| **Auth level** | Owner or administrator                             |
 
-**Response** (`200 OK`): List of access records with user_id, permission level.
+**Response** (`200 OK`): List of access records with user_id, permission level. An admitted caller (owner or administrator) receives `200` with an empty list when the dashboard has no access records; a caller outside the audience receives `403` whether or not the dashboard exists.
+
+**Error responses:**
+
+| Status | Condition                    | Detail                       |
+| ------ | ---------------------------- | ---------------------------- |
+| `403`  | Caller is neither the owner nor an administrator | Forbidden                    |
 
 ---
 
@@ -800,24 +809,13 @@ Admins can grant, list, and revoke user access to a dashboard through dedicated 
 | -------------- | -------------------------------------------------- |
 | **Method**     | `DELETE`                                           |
 | **Path**       | `/api/v1/dashboards/{dashboard_id}/access/{user_id}` |
-| **Auth level** | Admin                                              |
+| **Auth level** | Owner or administrator                             |
 
 **Response** (`200 OK`):
 
 ```json
 {
-  "id": "660e8400-e29b-41d4-a716-446655440001",
-  "name": "Two Column Grid",
-  "definition": {
-    "grid": [{"x": 0, "y": 0, "w": 6, "h": 4}],
-    "graphs": ["g1", "g2"],
-    "filters": ["year"],
-    "bindings": [
-      {"filter": "year", "graphs": ["g1", "g2"]}
-    ]
-  },
-  "created_at": "2026-04-24T16:02:46+03:00",
-  "updated_at": "2026-04-24T16:02:46+03:00"
+  "message": "Access revoked successfully"
 }
 ```
 
@@ -825,7 +823,8 @@ Admins can grant, list, and revoke user access to a dashboard through dedicated 
 
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
-| `404`  | Access record not found      | `Access record not found`    |
+| `403`  | Caller is neither the owner nor an administrator | Forbidden                    |
+| `404`  | No access record exists for this `(user_id, dashboard_id)` | `Access record not found`    |
 
 ---
 

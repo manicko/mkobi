@@ -1,7 +1,7 @@
 """Dashboard access management routes.
 
 This module provides endpoints for granting, revoking, and listing dashboard access.
-All operations require admin role.
+Managing access to a dashboard requires an `admin` permission on that dashboard — held by the dashboard's owner — or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.
 """
 
 import logging
@@ -12,13 +12,14 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.api.deps import (
-    CurrentUser,
     get_db_dependency,
     get_dashboard_service,
+    require_dashboard_admin_access,
 )
 from mkobi.api.schemas.responses import admin_responses
 from mkobi.models.access import AccessGrant
 from mkobi.models.enums import ErrorCode
+from mkobi.models.user import UserRead
 from mkobi.services.dashboard_service import DashboardService
 from mkobi.utils.exceptions import AppException
 
@@ -32,24 +33,24 @@ router = APIRouter(tags=["dashboards"])
     "/{dashboard_id}/access",
     status_code=status.HTTP_200_OK,
     summary="Grant dashboard access",
-    description="Grants user access to dashboard. Available only to owners.",
+    description="Grants user access to dashboard. Managing access to a dashboard requires an `admin` permission on that dashboard — held by the dashboard's owner — or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.",
     responses=admin_responses,
 )
 async def grant_dashboard_access_endpoint(
     dashboard_id: UUID,
     access_grant: AccessGrant,
-    current_user: CurrentUser,
+    current_user: UserRead = Depends(require_dashboard_admin_access),
     db: AsyncSession = Depends(get_db_dependency),
     dashboard_service: DashboardService = Depends(get_dashboard_service),
 ) -> dict[str, Any]:
     """Grant user access to dashboard.
 
-    Available only to dashboard owner (user with admin permission).
+    Managing access to a dashboard requires an `admin` permission on that dashboard — held by the dashboard's owner — or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.
 
     Args:
         dashboard_id: Dashboard ID.
         access_grant: Model with access grant data.
-        current_user: Current authenticated user.
+        current_user: Current authenticated user who passed the dashboard admin-access gate.
         db: Database session.
         dashboard_service: Injected dashboard service.
 
@@ -132,12 +133,12 @@ async def grant_dashboard_access_endpoint(
     response_model=list[dict[str, Any]],
     status_code=status.HTTP_200_OK,
     summary="List dashboard access",
-    description="Returns all access records for a dashboard. Requires admin role.",
+    description="Returns all access records for a dashboard. Managing access to a dashboard requires an `admin` permission on that dashboard — held by the dashboard's owner — or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.",
     responses=admin_responses,
 )
 async def get_dashboard_access_endpoint(
     dashboard_id: UUID,
-    current_user: CurrentUser,
+    current_user: UserRead = Depends(require_dashboard_admin_access),
     db: AsyncSession = Depends(get_db_dependency),
     dashboard_service: DashboardService = Depends(get_dashboard_service),
 ) -> list[dict[str, Any]]:
@@ -145,7 +146,7 @@ async def get_dashboard_access_endpoint(
 
     Args:
         dashboard_id: Dashboard ID.
-        current_user: Current authenticated user.
+        current_user: Current authenticated user who passed the dashboard admin-access gate.
         db: Database session.
         dashboard_service: Injected dashboard service.
 
@@ -175,13 +176,13 @@ async def get_dashboard_access_endpoint(
     "/{dashboard_id}/access/{user_id}",
     status_code=status.HTTP_200_OK,
     summary="Revoke dashboard access",
-    description="Revokes user's access to a dashboard. Requires admin role.",
+    description="Revokes user's access to a dashboard. Managing access to a dashboard requires an `admin` permission on that dashboard — held by the dashboard's owner — or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.",
     responses=admin_responses,
 )
 async def revoke_dashboard_access_endpoint(
     dashboard_id: UUID,
     user_id: UUID,
-    current_user: CurrentUser,
+    current_user: UserRead = Depends(require_dashboard_admin_access),
     db: AsyncSession = Depends(get_db_dependency),
     dashboard_service: DashboardService = Depends(get_dashboard_service),
 ) -> dict[str, Any]:
@@ -190,7 +191,7 @@ async def revoke_dashboard_access_endpoint(
     Args:
         dashboard_id: Dashboard ID.
         user_id: User ID to revoke access from.
-        current_user: Current authenticated user.
+        current_user: Current authenticated user who passed the dashboard admin-access gate.
         db: Database session.
         dashboard_service: Injected dashboard service.
 

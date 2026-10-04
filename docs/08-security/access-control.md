@@ -141,9 +141,9 @@ Access control is enforced on **all** dashboard-related endpoints, not just data
 
 | Endpoint | Auth Level | Access Check |
 | --- | --- | --- |
-| `GET /api/v1/dashboards/:id/access` | Admin only | Lists access entries; requires admin role |
-| `POST /api/v1/dashboards/:id/access` | Admin only | Grants access to a user for a dashboard |
-| `DELETE /api/v1/dashboards/:id/access/:user_id` | Admin only | Revokes access |
+| `GET /api/v1/dashboards/:id/access` | Owner or administrator | Resolves `require_dashboard_admin_access`, which requires an `admin` permission on that dashboard and is short-circuited for callers holding the `admin` role |
+| `POST /api/v1/dashboards/:id/access` | Owner or administrator | Resolves `require_dashboard_admin_access`, which requires an `admin` permission on that dashboard and is short-circuited for callers holding the `admin` role |
+| `DELETE /api/v1/dashboards/:id/access/:user_id` | Owner or administrator | Resolves `require_dashboard_admin_access`, which requires an `admin` permission on that dashboard and is short-circuited for callers holding the `admin` role |
 
 ### Upload and Processing Endpoints
 
@@ -169,6 +169,8 @@ Access control is enforced on **all** dashboard-related endpoints, not just data
 ---
 
 ## Access Check Function
+
+`require_dashboard_admin_access` in `src/mkobi/api/deps.py` is the single shared dependency the three dashboard access-management routes resolve; it delegates to `check_dashboard_access` with `required_permission="admin"`.
 
 The `check_dashboard_access` function is the central enforcement mechanism:
 

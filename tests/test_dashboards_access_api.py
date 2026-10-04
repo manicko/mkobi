@@ -4,6 +4,14 @@ The endpoint had no route-level coverage before this module. Its job is to pin t
 chosen contract: a duplicate grant is a 200 idempotent no-op with the same body,
 never a 409 and never a 500. The pre-existing 422 renderings are pinned so the
 untouched branches are proven untouched.
+
+The audience tests below exist because the admin gate is structurally invisible to
+every test that calls through ``authenticated_client``: ``conftest.py::test_user``
+is ``role="admin"``, so the bypass in
+``core/permissions.py::_check_access_with_session`` short-circuits before any grant
+is read. All four pre-existing tests in this module stay green under any audience,
+including a wrong one. The audience tests impersonate an explicit caller per test,
+so ``require_dashboard_admin_access`` is genuinely exercised end to end.
 """
 
 from uuid import uuid4
@@ -12,10 +20,42 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import delete, select
 
+from mkobi.core.security import create_access_token
 from mkobi.db.models import Dashboard, DashboardAccess, User
+from mkobi.db.repositories.access_repo import AccessRepository
 from mkobi.db.repositories.dashboard_repo import DashboardRepository
 from mkobi.db.repositories.user_repo import UserRepository
 from mkobi.models.enums import DashboardPermission, UserRole
+
+
+async def _impersonate(
+    async_client: AsyncClient, user: User
+) -> None:
+    """Point the client at one explicit caller, replacing any inherited header."""
+    token = create_access_token({"user_id": str(user.id), "email": user.email})
+    async_client.headers.update({"Authorization": f"Bearer {token}"})
+
+
+async def _dashboard_access_row_exists(
+    async_session_maker, user_id, dashboard_id
+) -> bool:
+    """Read the grant through an independent session.
+
+    ``expire_on_commit=False`` makes a read-back on the test's own session cached,
+    so only a second session can distinguish "the handler never wrote" from "it
+    wrote and the session already knows".
+    """
+    verify = async_session_maker()
+    try:
+        result = await verify.execute(
+            select(DashboardAccess).where(
+                DashboardAccess.user_id == user_id,
+                DashboardAccess.dashboard_id == dashboard_id,
+            )
+        )
+        return result.scalars().first() is not None
+    finally:
+        await verify.close()
 
 
 async def _cleanup(
@@ -206,3 +246,465 @@ class TestGrantDashboardAccessEndpoint:
             assert response.status_code == 422
         finally:
             await _cleanup(async_db_session, unknown_dashboard_id, target_user.id)
+
+
+class TestGrantAccessAudience:
+    """POST /dashboards/{id}/access enforces the ruled owner-or-administrator audience."""
+
+    @pytest.mark.asyncio
+    async def test_administrator_who_is_neither_owner_nor_grantee_is_admitted(
+        self, async_client: AsyncClient, async_db_session, async_session_maker
+    ) -> None:
+        """An administrator with no grant row manages access via the admin-role bypass.
+
+        This is the block's only real proof of the bypass: remove
+        ``core/permissions.py::_check_access_with_session``'s admin short-circuit and
+        this returns 403. Nothing else in the suite catches that.
+        """
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        owner = await user_repo.create(
+            db=async_db_session,
+            email=f"aud_admin_owner_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        caller = await user_repo.create(
+            db=async_db_session,
+            email=f"aud_admin_caller_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.ADMIN,
+        )
+        target = await user_repo.create(
+            db=async_db_session,
+            email=f"aud_admin_target_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.VIEWER,
+        )
+        assert owner is not None and caller is not None and target is not None
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"aud-admin-dashboard-{uuid4().hex[:8]}",
+            created_by=owner.id,
+        )
+        assert dashboard is not None
+        await async_db_session.flush()
+
+        await _impersonate(async_client, caller)
+        assert not await _dashboard_access_row_exists(async_session_maker, caller.id, dashboard.id)
+
+        body = {
+            "user_id": str(target.id),
+            "dashboard_id": str(dashboard.id),
+            "permission": DashboardPermission.VIEW.value,
+        }
+
+        try:
+            response = await async_client.post(
+                f"/dashboards/{dashboard.id}/access", json=body
+            )
+            assert response.status_code == 200
+            assert await _dashboard_access_row_exists(async_session_maker, target.id, dashboard.id)
+        finally:
+            await _cleanup(async_db_session, dashboard.id, owner.id)
+            await _cleanup(async_db_session, uuid4(), caller.id)
+            await _cleanup(async_db_session, uuid4(), target.id)
+
+    @pytest.mark.asyncio
+    async def test_owner_with_admin_grant_is_admitted(
+        self, async_client: AsyncClient, async_db_session, async_session_maker
+    ) -> None:
+        """A non-admin caller holding an admin grant is admitted.
+
+        The only case that proves the gate reads ``dashboard_access`` at all:
+        every other admitted path short-circuits on the bypass.
+        """
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        access_repo = AccessRepository()
+        other = await user_repo.create(
+            db=async_db_session,
+            email=f"aud_owner_other_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        caller = await user_repo.create(
+            db=async_db_session,
+            email=f"aud_owner_caller_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        target = await user_repo.create(
+            db=async_db_session,
+            email=f"aud_owner_target_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.VIEWER,
+        )
+        assert other is not None and caller is not None and target is not None
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"aud-owner-dashboard-{uuid4().hex[:8]}",
+            created_by=other.id,
+        )
+        assert dashboard is not None
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=caller.id,
+            dashboard_id=dashboard.id,
+            permission=DashboardPermission.ADMIN,
+        )
+        await async_db_session.flush()
+
+        await _impersonate(async_client, caller)
+
+        body = {
+            "user_id": str(target.id),
+            "dashboard_id": str(dashboard.id),
+            "permission": DashboardPermission.VIEW.value,
+        }
+
+        try:
+            response = await async_client.post(
+                f"/dashboards/{dashboard.id}/access", json=body
+            )
+            assert response.status_code == 200
+            assert await _dashboard_access_row_exists(async_session_maker, target.id, dashboard.id)
+        finally:
+            await _cleanup(async_db_session, dashboard.id, other.id)
+            await _cleanup(async_db_session, uuid4(), caller.id)
+            await _cleanup(async_db_session, uuid4(), target.id)
+
+    @pytest.mark.asyncio
+    async def test_grantee_with_view_only_grant_is_refused_and_writes_no_row(
+        self, async_client: AsyncClient, async_db_session, async_session_maker
+    ) -> None:
+        """A caller who holds a row is refused because ``view`` is below ``admin``.
+
+        Proves ``required_permission="admin"`` is enforced, not merely
+        "has a row -> admit".
+        """
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        access_repo = AccessRepository()
+        owner = await user_repo.create(
+            db=async_db_session,
+            email=f"aud_view_owner_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        caller = await user_repo.create(
+            db=async_db_session,
+            email=f"aud_view_caller_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.VIEWER,
+        )
+        target = await user_repo.create(
+            db=async_db_session,
+            email=f"aud_view_target_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.VIEWER,
+        )
+        assert owner is not None and caller is not None and target is not None
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"aud-view-dashboard-{uuid4().hex[:8]}",
+            created_by=owner.id,
+        )
+        assert dashboard is not None
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=caller.id,
+            dashboard_id=dashboard.id,
+            permission=DashboardPermission.VIEW,
+        )
+        await async_db_session.flush()
+
+        await _impersonate(async_client, caller)
+
+        body = {
+            "user_id": str(target.id),
+            "dashboard_id": str(dashboard.id),
+            "permission": DashboardPermission.VIEW.value,
+        }
+
+        try:
+            response = await async_client.post(
+                f"/dashboards/{dashboard.id}/access", json=body
+            )
+            assert response.status_code == 403
+            assert response.json()["code"] == "PERMISSION_DENIED"
+            assert not await _dashboard_access_row_exists(
+                async_session_maker, target.id, dashboard.id
+            )
+        finally:
+            await _cleanup(async_db_session, dashboard.id, owner.id)
+            await _cleanup(async_db_session, uuid4(), caller.id)
+            await _cleanup(async_db_session, uuid4(), target.id)
+
+    @pytest.mark.asyncio
+    async def test_user_with_no_grant_is_refused_and_writes_no_row(
+        self, async_client: AsyncClient, async_db_session, async_session_maker
+    ) -> None:
+        """The acceptance criterion: a non-admin with no grant gets 403 and writes nothing."""
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        owner = await user_repo.create(
+            db=async_db_session,
+            email=f"aud_none_owner_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        caller = await user_repo.create(
+            db=async_db_session,
+            email=f"aud_none_caller_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        target = await user_repo.create(
+            db=async_db_session,
+            email=f"aud_none_target_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.VIEWER,
+        )
+        assert owner is not None and caller is not None and target is not None
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"aud-none-dashboard-{uuid4().hex[:8]}",
+            created_by=owner.id,
+        )
+        assert dashboard is not None
+        await async_db_session.flush()
+
+        await _impersonate(async_client, caller)
+
+        body = {
+            "user_id": str(target.id),
+            "dashboard_id": str(dashboard.id),
+            "permission": DashboardPermission.VIEW.value,
+        }
+
+        try:
+            response = await async_client.post(
+                f"/dashboards/{dashboard.id}/access", json=body
+            )
+            assert response.status_code == 403
+            assert response.json()["code"] == "PERMISSION_DENIED"
+            assert not await _dashboard_access_row_exists(
+                async_session_maker, target.id, dashboard.id
+            )
+        finally:
+            await _cleanup(async_db_session, dashboard.id, owner.id)
+            await _cleanup(async_db_session, uuid4(), caller.id)
+            await _cleanup(async_db_session, uuid4(), target.id)
+
+
+class TestListAccessAudience:
+    """GET /dashboards/{id}/access enforces the ruled owner-or-administrator audience."""
+
+    @pytest.mark.asyncio
+    async def test_administrator_who_is_neither_owner_nor_grantee_may_list(
+        self, async_client: AsyncClient, async_db_session
+    ) -> None:
+        """The admin-role bypass admits an administrator on the read surface too."""
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        access_repo = AccessRepository()
+        owner = await user_repo.create(
+            db=async_db_session,
+            email=f"list_admin_owner_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        caller = await user_repo.create(
+            db=async_db_session,
+            email=f"list_admin_caller_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.ADMIN,
+        )
+        assert owner is not None and caller is not None
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"list-admin-dashboard-{uuid4().hex[:8]}",
+            created_by=owner.id,
+        )
+        assert dashboard is not None
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=owner.id,
+            dashboard_id=dashboard.id,
+            permission=DashboardPermission.ADMIN,
+        )
+        await async_db_session.flush()
+
+        await _impersonate(async_client, caller)
+
+        try:
+            response = await async_client.get(f"/dashboards/{dashboard.id}/access")
+            assert response.status_code == 200
+            payload = response.json()
+            assert isinstance(payload, list)
+            assert any(record["user_id"] == str(owner.id) for record in payload)
+        finally:
+            await _cleanup(async_db_session, dashboard.id, owner.id)
+            await _cleanup(async_db_session, uuid4(), caller.id)
+
+    @pytest.mark.asyncio
+    async def test_user_with_no_grant_is_refused(
+        self, async_client: AsyncClient, async_db_session
+    ) -> None:
+        """A caller outside the audience gets 403, not the old ``200 []`` oracle."""
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        owner = await user_repo.create(
+            db=async_db_session,
+            email=f"list_none_owner_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        caller = await user_repo.create(
+            db=async_db_session,
+            email=f"list_none_caller_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        assert owner is not None and caller is not None
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"list-none-dashboard-{uuid4().hex[:8]}",
+            created_by=owner.id,
+        )
+        assert dashboard is not None
+        await async_db_session.flush()
+
+        await _impersonate(async_client, caller)
+
+        try:
+            response = await async_client.get(f"/dashboards/{dashboard.id}/access")
+            assert response.status_code == 403
+            assert response.json()["code"] == "PERMISSION_DENIED"
+        finally:
+            await _cleanup(async_db_session, dashboard.id, owner.id)
+            await _cleanup(async_db_session, uuid4(), caller.id)
+
+
+class TestRevokeAccessAudience:
+    """DELETE /dashboards/{id}/access/{user_id} enforces the ruled audience."""
+
+    @pytest.mark.asyncio
+    async def test_administrator_who_is_neither_owner_nor_grantee_may_revoke(
+        self, async_client: AsyncClient, async_db_session, async_session_maker
+    ) -> None:
+        """An administrator may revoke; the target row is gone when read independently."""
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        access_repo = AccessRepository()
+        owner = await user_repo.create(
+            db=async_db_session,
+            email=f"rev_admin_owner_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        caller = await user_repo.create(
+            db=async_db_session,
+            email=f"rev_admin_caller_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.ADMIN,
+        )
+        target = await user_repo.create(
+            db=async_db_session,
+            email=f"rev_admin_target_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.VIEWER,
+        )
+        assert owner is not None and caller is not None and target is not None
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"rev-admin-dashboard-{uuid4().hex[:8]}",
+            created_by=owner.id,
+        )
+        assert dashboard is not None
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=target.id,
+            dashboard_id=dashboard.id,
+            permission=DashboardPermission.VIEW,
+        )
+        # Commit so the pre-existing grant row is durable and visible to the
+        # independent session below; the survival check needs a real stored row.
+        await async_db_session.commit()
+        assert await _dashboard_access_row_exists(async_session_maker, target.id, dashboard.id)
+
+        await _impersonate(async_client, caller)
+
+        try:
+            response = await async_client.delete(
+                f"/dashboards/{dashboard.id}/access/{target.id}"
+            )
+            assert response.status_code == 200
+            assert not await _dashboard_access_row_exists(
+                async_session_maker, target.id, dashboard.id
+            )
+        finally:
+            await _cleanup(async_db_session, dashboard.id, owner.id)
+            await _cleanup(async_db_session, uuid4(), caller.id)
+            await _cleanup(async_db_session, uuid4(), target.id)
+
+    @pytest.mark.asyncio
+    async def test_user_with_no_grant_is_refused_and_the_row_survives(
+        self, async_client: AsyncClient, async_db_session, async_session_maker
+    ) -> None:
+        """403, and the pre-existing grant row survives, proving the body never ran."""
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        access_repo = AccessRepository()
+        owner = await user_repo.create(
+            db=async_db_session,
+            email=f"rev_none_owner_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        caller = await user_repo.create(
+            db=async_db_session,
+            email=f"rev_none_caller_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        target = await user_repo.create(
+            db=async_db_session,
+            email=f"rev_none_target_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.VIEWER,
+        )
+        assert owner is not None and caller is not None and target is not None
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"rev-none-dashboard-{uuid4().hex[:8]}",
+            created_by=owner.id,
+        )
+        assert dashboard is not None
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=target.id,
+            dashboard_id=dashboard.id,
+            permission=DashboardPermission.VIEW,
+        )
+        # Commit so the pre-existing grant row is durable and visible to the
+        # independent session below; the survival check needs a real stored row.
+        await async_db_session.commit()
+        assert await _dashboard_access_row_exists(async_session_maker, target.id, dashboard.id)
+
+        await _impersonate(async_client, caller)
+
+        try:
+            response = await async_client.delete(
+                f"/dashboards/{dashboard.id}/access/{target.id}"
+            )
+            assert response.status_code == 403
+            assert response.json()["code"] == "PERMISSION_DENIED"
+            assert await _dashboard_access_row_exists(
+                async_session_maker, target.id, dashboard.id
+            )
+        finally:
+            await _cleanup(async_db_session, dashboard.id, owner.id)
+            await _cleanup(async_db_session, uuid4(), caller.id)
+            await _cleanup(async_db_session, uuid4(), target.id)
