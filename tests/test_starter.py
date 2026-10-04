@@ -26,6 +26,7 @@ from mkobi.db.starter import (  # noqa: E402
     DatabaseStarter,
     DatabaseStarterConfig,
     UnsafeTestDatabaseRecreationError,
+    assert_safe_test_database_name,
     main,
 )
 from mkobi.models.enums import EnvironmentEnum  # noqa: E402
@@ -526,6 +527,102 @@ def _pin_configured_env(monkeypatch, environment: EnvironmentEnum) -> None:
     monkeypatch.setattr(
         starter_module, "get_config", lambda: _ConfiguredEnvironment(environment)
     )
+
+
+class TestSafeTestDatabaseNamePredicate:
+    """Direct tests for the pure name predicate, with no URL or engine.
+
+    ``assert_safe_test_database_name`` is a plain function over a ``str``, so
+    the naming rules can be pinned without constructing a URL, an engine or an
+    event loop. The end-to-end parametrized test in
+    ``TestRecreateTestDatabaseGuards`` still proves the guards are not
+    over-tight (the positive path); these tests pin the rejection rules.
+    """
+
+    @pytest.mark.parametrize(
+        "db_name",
+        [
+            "bidb_test",
+            # The per-run shape tests/conftest.py actually generates:
+            # 'bidb_test_' + an 8-hex-char run token.
+            "bidb_test_a1b2c3d4",
+            # An xdist worker token folded into the same single segment.
+            "bidb_test_a1b2c3d4gw0",
+        ],
+    )
+    def test_accepts_convention_names(self, db_name):
+        """Convention names return normally."""
+        assert_safe_test_database_name(db_name)
+
+    @pytest.mark.parametrize(
+        "db_name",
+        [
+            # The real production database name.
+            "bidb",
+            # A trailing newline: '$' would accept this, '\Z' must not.
+            "bidb_test\n",
+            # Two suffix segments are refused (the guard allows at most one).
+            "bidb_test_a_b",
+            # An empty suffix is refused.
+            "bidb_test_",
+            # Base name is case-sensitive.
+            "BIDB_TEST",
+            "Bidb_Test",
+            # Substring non-matches must not be treated as the base name.
+            "bidb_testing",
+            "bidb_testbackup",
+            # SQL-injection-shaped strings must be refused.
+            "bidb_test; DROP DATABASE bidb",
+            "bidb_test--",
+            # Absent name.
+            None,
+            "",
+        ],
+    )
+    def test_rejects_non_convention_names(self, db_name):
+        """Non-convention names raise the refusal error."""
+        with pytest.raises(UnsafeTestDatabaseRecreationError, match="does not match"):
+            assert_safe_test_database_name(db_name)
+
+    def test_suffix_case_is_currently_accepted(self):
+        """Suffix case is accepted: pinned as the observed behaviour.
+
+        PostgreSQL folds unquoted identifiers to lowercase, and the suite only
+        ever generates a lowercase token, so an uppercase suffix reaches a
+        lowercase database and is harmless here. This pins the current
+        behaviour; see the report for whether it should instead be refused.
+        """
+        assert_safe_test_database_name("bidb_test_GW0")
+
+    def test_secondary_guard_is_a_superset_of_the_primary(self):
+        """Every name the primary accepts also satisfies the secondary guard.
+
+        The secondary injection guard ``^[a-zA-Z0-9_]+\\Z`` is unreachable
+        today because the primary guard's language is a strict subset of it.
+        It is deliberately kept as defense in depth, so this test pins that
+        property: an exhaustive enumeration over a fixed alphabet that includes
+        every character the primary admits, plus a few it rejects, must never
+        produce a string the primary accepts and the secondary rejects. A future
+        change that makes the secondary guard live (for example, letting the
+        primary admit a hyphen) fails here loudly.
+        """
+        import itertools
+        import re
+
+        primary = starter_module.TEST_DATABASE_NAME_PATTERN
+        secondary = re.compile(r"^[a-zA-Z0-9_]+\Z")
+
+        # The alphabet spans the accepted set plus characters designed to be
+        # refused; an accepted-and-refused-by-secondary pair can only arise from
+        # a character the secondary rejects.
+        alphabet = "abcZ09_.-\n ;"
+        counterexamples = []
+        for length in range(1, 5):
+            for chars in itertools.product(alphabet, repeat=length):
+                candidate = "bidb_test" + "".join(chars)
+                if primary.match(candidate) and not secondary.match(candidate):
+                    counterexamples.append(candidate)
+        assert counterexamples == [], counterexamples
 
 
 class TestRecreateTestDatabaseGuards:
