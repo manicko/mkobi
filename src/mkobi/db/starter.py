@@ -79,6 +79,32 @@ class UnsafeTestDatabaseRecreationError(Exception):
     """
 
 
+def assert_safe_test_database_name(db_name: str | None) -> None:
+    """Refuse a database name that is not a guarded test-database name.
+
+    Pure predicate over an already-parsed database name: it touches no URL, no
+    engine and no connection, so it is reachable from a test directly. It is
+    the fine-grained member of the two recreation gates and is called only
+    after the environment-tier gate, so a refusal happens before any engine is
+    created.
+
+    Args:
+        db_name: The database name to check, or ``None``/empty when the URL
+            carried no database segment.
+
+    Raises:
+        UnsafeTestDatabaseRecreationError: If the name is absent or does not
+            match ``TEST_DATABASE_NAME_PATTERN``.
+    """
+    if not db_name or not TEST_DATABASE_NAME_PATTERN.match(str(db_name)):
+        raise UnsafeTestDatabaseRecreationError(
+            "Refusing to recreate database "
+            f"'{db_name}': name does not match the test-database "
+            f"convention '{TEST_DATABASE_NAME_PATTERN.pattern}'. "
+            "Rename the database to a test name or set the test tier explicitly."
+        )
+
+
 # Test database naming convention shared with tests/conftest.py: the base name
 # is 'bidb_test' and per-run (and pytest-xdist worker) isolation appends a
 # single '_<token>' suffix, e.g. 'bidb_test_a1b2c3d4'. Recreation is refused
@@ -276,14 +302,10 @@ class DatabaseStarter:
         db_name = parsed_url.database
 
         # Name gate (fine): stops a misconfigured environment tier from
-        # targeting a non-test database.
-        if not db_name or not TEST_DATABASE_NAME_PATTERN.match(str(db_name)):
-            raise UnsafeTestDatabaseRecreationError(
-                "Refusing to recreate database "
-                f"'{db_name}': name does not match the test-database "
-                f"convention '{TEST_DATABASE_NAME_PATTERN.pattern}'. "
-                "Rename the database to a test name or set the test tier explicitly."
-            )
+        # targeting a non-test database. The check lives in a pure predicate so
+        # it is testable without constructing a URL or an engine; it still runs
+        # here, before engine creation, so a refusal precedes any connection.
+        assert_safe_test_database_name(db_name)
 
         # Validate database name against safe pattern to prevent SQL injection.
         # '\Z' anchors at the true end of the string; '\Z' is required because
