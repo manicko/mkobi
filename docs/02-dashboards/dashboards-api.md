@@ -114,7 +114,7 @@ Create a new dashboard. Admin only.
 | Attribute      | Value                          |
 | -------------- | ------------------------------ |
 | **Method**     | `POST`                         |
-| **Path**       | `/api/v1/dashboards`           |
+| **Path**       | `/api/v1/dashboards/`          |
 | **Auth level** | Admin                          |
 
 **Request body:**
@@ -333,7 +333,7 @@ Returns graphs for dashboards the user has access to.
 | Attribute      | Value                          |
 | -------------- | ------------------------------ |
 | **Method**     | `GET`                          |
-| **Path**       | `/api/v1/graphs`               |
+| **Path**       | `/api/v1/graphs/`              |
 | **Auth level** | Any authenticated user         |
 
 **Query parameters:**
@@ -392,7 +392,7 @@ Admin only.
 | Attribute      | Value                          |
 | -------------- | ------------------------------ |
 | **Method**     | `POST`                         |
-| **Path**       | `/api/v1/graphs`               |
+| **Path**       | `/api/v1/graphs/`              |
 | **Auth level** | Admin                          |
 
 **Request body:**

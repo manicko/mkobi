@@ -180,6 +180,14 @@ collection paths exist.
 - **POST /api/v1/graphs/** - Create graph (admin)
 - **GET /api/v1/admin/logs/** - List processing logs (admin)
 
+> **Both redirect directions are disabled.** Setting `redirect_slashes=False`
+> removed the reverse redirect too: a declared non-slash path requested **with**
+> a trailing slash (for example `GET /health/`, previously `307 → 200`) now
+> answers `404`. The scope of the flag is therefore wider than the four
+> collection paths above — no in-repo caller relies on that direction (the
+> SPA's only trailing-slash requests are exactly the four collection paths; the
+> `Dockerfile` healthcheck and the anchored nginx `location` are unaffected).
+
 ### Data
 - **GET /api/v1/data/aggregated** - Get aggregated data for charts
 - **POST /api/v1/upload/{dashboard_id}** - Upload CSV data (editor+)

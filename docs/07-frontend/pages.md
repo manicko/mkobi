@@ -268,9 +268,9 @@ The admin panel uses a tabbed interface with 4 sections. Tab state (pagination, 
 | List registration requests | `GET` | `/api/v1/admin/registration-requests` |
 | Approve request | `POST` | `/api/v1/admin/registration-requests/:id/approve` |
 | Reject request | `POST` | `/api/v1/admin/registration-requests/:id/reject` |
-| List processing logs | `GET` | `/api/v1/admin/logs` |
+| List processing logs | `GET` | `/api/v1/admin/logs/` |
 | Get single log | `GET` | `/api/v1/admin/logs/:log_id` |
-| Dashboard CRUD | `GET/POST/PUT/DELETE` | `/api/v1/dashboards` |
+| Dashboard CRUD | `GET/POST/PUT/DELETE` | `/api/v1/dashboards/` |
 
 ### User Management Tab — Password Reset Flow
 

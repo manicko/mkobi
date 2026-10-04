@@ -37,7 +37,7 @@ Retrieve a list of all registered users. Admin only.
 | Attribute      | Value                          |
 | -------------- | ------------------------------ |
 | **Method**     | `GET`                          |
-| **Path**       | `/api/v1/users`                |
+| **Path**       | `/api/v1/users/`               |
 | **Auth level** | Admin                          |
 
 **Response** (`200 OK`):
@@ -110,7 +110,7 @@ Directly create a new user account with a specified role. Admin only. This endpo
 | Attribute      | Value                          |
 | -------------- | ------------------------------ |
 | **Method**     | `POST`                         |
-| **Path**       | `/api/v1/users`                |
+| **Path**       | `/api/v1/users/`               |
 | **Auth level** | Admin                          |
 
 **Request body:**
@@ -283,7 +283,7 @@ These endpoints are exclusively available under the `/api/v1/admin` path and req
 
 ### 8. Admin: List Users
 
-Admin-specific user listing (alternative to `/api/v1/users`).
+Admin-specific user listing (alternative to `/api/v1/users/`).
 
 | Attribute      | Value                          |
 | -------------- | ------------------------------ |
@@ -572,7 +572,7 @@ Retrieve processing logs with filtering and pagination. Admin only.
 | Attribute      | Value                          |
 | -------------- | ------------------------------ |
 | **Method**     | `GET`                          |
-| **Path**       | `/api/v1/admin/logs`           |
+| **Path**       | `/api/v1/admin/logs/`          |
 | **Auth level** | Admin                          |
 
 **Query parameters:**
@@ -839,7 +839,7 @@ Displays processing logs with filtering and pagination.
 - Paginated navigation
 
 **Related API endpoints:**
-- `GET /api/v1/admin/logs` — List logs with filters (supports `status_filter`, `dashboard_id`, `date_from`, `date_to`, `skip`, `limit`)
+- `GET /api/v1/admin/logs/` — List logs with filters (supports `status_filter`, `dashboard_id`, `date_from`, `date_to`, `skip`, `limit`)
 - `GET /api/v1/admin/logs/:log_id` — Get single log entry
 
 ### Dashboard Access Management (`/admin`)

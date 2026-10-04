@@ -56,7 +56,7 @@ Before creating a dashboard, plan the following:
 
 ## Create the Dashboard
 
-Navigate to the Admin page and use the dashboard creation form. The endpoint is `POST /api/v1/dashboards`.
+Navigate to the Admin page and use the dashboard creation form. The endpoint is `POST /api/v1/dashboards/`.
 
 **Request body:**
 

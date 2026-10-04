@@ -327,13 +327,15 @@ class TestAppSettings(TestSettingsBase):
 
         This is the EXT-010 guarantee: the value is derived, not written down,
         so there is exactly one place to read it. The assertion reads the
-        distribution's metadata independently, so it fails if the default
-        reverts to a hard-written string that no longer matches the package.
+        distribution's metadata independently — through ``importlib.metadata``
+        directly, not through the production ``distribution_version`` helper —
+        so it fails if the default reverts to a hard-written string that no
+        longer matches the installed package.
         """
-        from mkobi.config import distribution_version
+        import importlib.metadata
 
         resolved = Settings(_env_file=None).app.version
-        assert resolved == distribution_version()
+        assert resolved == importlib.metadata.version("mkobi")
 
     def test_app_version_env_override_wins_over_distribution(self, monkeypatch):
         """``APP__VERSION`` still overrides the distribution-derived default.

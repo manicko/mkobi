@@ -119,7 +119,7 @@ Access control is enforced on **all** dashboard-related endpoints, not just data
 
 | Endpoint | Auth Level | Access Check |
 | --- | --- | --- |
-| `POST /api/v1/dashboards` | Admin only | Admin role required for creation; no resource-level check needed (new resource) |
+| `POST /api/v1/dashboards/` | Admin only | Admin role required for creation; no resource-level check needed (new resource) |
 | `PUT /api/v1/dashboards/:id` | Admin or editor | Resource-level access check: admin role bypasses; otherwise requires `edit` or `admin` permission on the dashboard |
 | `DELETE /api/v1/dashboards/:id` | Admin only | Admin role required; resource-level access check with admin bypass |
 
@@ -134,7 +134,7 @@ Access control is enforced on **all** dashboard-related endpoints, not just data
 
 | Endpoint | Auth Level | Access Check |
 | --- | --- | --- |
-| `GET /api/v1/graphs` | Any authenticated | Graph definitions are filtered by dashboard access |
+| `GET /api/v1/graphs/` | Any authenticated | Graph definitions are filtered by dashboard access |
 | `GET /api/v1/graphs/:id` | Any authenticated | Validates access to the parent dashboard |
 
 ### Access Management Endpoints
@@ -164,7 +164,7 @@ Access control is enforced on **all** dashboard-related endpoints, not just data
 | `GET /api/v1/admin/registration-requests` | Admin only | Registration request listing |
 | `POST /api/v1/admin/registration-requests/:id/approve` | Admin only | Approve registration |
 | `POST /api/v1/admin/registration-requests/:id/reject` | Admin only | Reject registration |
-| `GET /api/v1/admin/logs` | Admin only | Processing log access |
+| `GET /api/v1/admin/logs/` | Admin only | Processing log access |
 
 ---
 

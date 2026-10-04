@@ -487,7 +487,7 @@ dropped, so a misspelled setting had no effect and no diagnostic.
 | Attribute      | Value                                              |
 | -------------- | -------------------------------------------------- |
 | **Method**     | `GET`                                              |
-| **Path**       | `/api/v1/admin/logs`                               |
+| **Path**       | `/api/v1/admin/logs/`                              |
 | **Auth level** | Admin                                              |
 | **Query params**| `status_filter`, `dashboard_id`, `date_from`, `date_to`, `skip`, `limit`     |
 
