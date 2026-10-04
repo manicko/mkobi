@@ -57,17 +57,24 @@ async def test_ensure_test_media_dash_is_idempotent(async_db_session):
     result1 = await ensure_test_media_dash(db=async_db_session)
     dashboard_id_1 = result1["dashboard_id"]
 
+    # Capture graph identities before the re-seed
+    stmt = select(Dashboard).where(Dashboard.name == "test_media_dash")
+    dashboard = (await async_db_session.execute(stmt)).scalar_one()
+    graph_stmt = select(Graph).where(Graph.dashboard_id == dashboard.id)
+    graphs_before = (await async_db_session.execute(graph_stmt)).scalars().all()
+    graph_ids_before = {g.id for g in graphs_before}
+
     # Second run - should always be "updated" since dashboard now exists
     result2 = await ensure_test_media_dash(db=async_db_session)
     assert result2["action"] == "updated"
     assert result2["dashboard_id"] == dashboard_id_1
 
-    # Verify no duplicate graphs
-    stmt = select(Dashboard).where(Dashboard.name == "test_media_dash")
-    dashboard = (await async_db_session.execute(stmt)).scalar_one()
-    graph_stmt = select(Graph).where(Graph.dashboard_id == dashboard.id)
+    # Verify the same graphs are reused in place, not recreated
     graphs = (await async_db_session.execute(graph_stmt)).scalars().all()
     assert len(graphs) == 2  # Should still be 2, not 4
+    assert {g.id for g in graphs} == graph_ids_before, (
+        "Re-seeding must reuse existing graphs, not delete and recreate them"
+    )
 
     # Verify no duplicate filters (they are shared)
     filter_stmt = select(Filter).where(
