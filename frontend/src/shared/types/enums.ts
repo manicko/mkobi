@@ -73,6 +73,41 @@ export const FileUploadStatus = {
 export type FileUploadStatus = (typeof FileUploadStatus)[keyof typeof FileUploadStatus]
 
 /**
+ * Bar chart display mode, mirroring the backend ``BarmodeEnum``
+ * (``src/mkobi/models/enums.py``). Named verbatim after the backend class so the
+ * cross-tier parity test keys on the class name with no rename table.
+ */
+export const BarmodeEnum = { GROUP: 'group', STACK: 'stack' } as const
+export type BarmodeEnum = (typeof BarmodeEnum)[keyof typeof BarmodeEnum]
+
+/**
+ * Server-only `StrEnum` families deliberately not mirrored to the client:
+ * either there is no client consumer, or the family is backend presentation
+ * vocabulary with no client counterpart (D-08-3 for `ButtonVariant` and
+ * `ComponentSize`). Recorded here so a missing mirror is an explicit decision,
+ * not an undocumented absence.
+ */
+export const SERVER_ONLY_FAMILIES = [
+  'LeaseAcquisitionResult',
+  'ReconcilerLeaseState',
+  'EnvironmentEnum',
+  'MimeTypeEnum',
+  'FileExtensionEnum',
+  'ButtonVariant',
+  'ComponentSize',
+  'OrientationEnum',
+  'YoyModeEnum',
+  'AggregationFunctionEnum',
+  'FilterOperatorEnum',
+] as const
+
+/**
+ * Client-only families with no backend counterpart. Recorded so the
+ * two-directional asymmetry between the tiers is explicit.
+ */
+export const CLIENT_ONLY_FAMILIES = ['FileUploadStatus'] as const
+
+/**
  * Frontend ErrorCode enum matching backend StrEnum values.
  * All codes use UPPER_SNAKE_CASE convention for type safety.
  */

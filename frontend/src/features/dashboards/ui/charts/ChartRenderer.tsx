@@ -2,6 +2,7 @@ import { PlotlyChart } from './PlotlyChart'
 import { LineChart } from './LineChart'
 import { TableChart } from './TableChart'
 import type { GraphDataWithConfig, ChartLayoutConfig } from '../../../../shared/types/api.types'
+import { BarmodeEnum } from '../../../../shared/types/enums'
 import type { Data, Layout } from 'react-plotly.js'
 
 interface ChartRendererProps {
@@ -146,7 +147,7 @@ export function ChartRenderer({ graph }: ChartRendererProps) {
     const convertedLayout = convertChartLayoutToPlotly(graph.layout)
     const barLayout: Partial<Layout> = {
       ...convertedLayout,
-      barmode: (graph.config?.barmode || 'group') as 'group' | 'overlay' | 'relative' | 'stack',
+      barmode: graph.config?.barmode || BarmodeEnum.GROUP,
       xaxis: { type: 'category' as const },
     }
     return <PlotlyChart data={plotlyData} layout={barLayout} />

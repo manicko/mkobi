@@ -1,4 +1,4 @@
-import type { UserRole, DashboardPermission, GraphType, FilterType, ProcessingStatus, RegistrationStatus } from './enums'
+import type { UserRole, DashboardPermission, GraphType, FilterType, ProcessingStatus, RegistrationStatus, BarmodeEnum } from './enums'
 import type { Data } from 'react-plotly.js'
 import { ErrorCode } from './enums'
 
@@ -211,7 +211,7 @@ export interface GraphDataWithConfig {
     color?: string
     metrics?: string[]
     orientation?: string
-    barmode?: string
+    barmode?: BarmodeEnum
   }
 }
 
