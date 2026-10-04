@@ -158,25 +158,6 @@ async def update_user_active_admin_endpoint(
     db: AsyncSession = Depends(get_db_dependency),
     redis_client: Any = Depends(get_redis_client_dependency),
 ) -> UserRead:
-    """Update user active status (admin endpoint).
-
-    Two effects are paired on deactivation: the ``is_active`` write and the
-    Redis user-level revocation marker. They cannot be made transactional
-    together, so the ordering is deliberate. ``update_user_active_status``
-    commits before this endpoint revokes, and ``is_active`` is the authority
-    for protected access — ``api/deps.py::get_current_user_dependency`` rejects a
-    deactivated user independently of Redis. ``is_active`` is now authoritative
-    at login as well: the login routes refuse a deactivated row with the same
-    ``AUTHENTICATION_FAILED`` a wrong password produces, so no freshly signed
-    tokens are issued for a deactivated account. On ``POST /auth/refresh`` the
-    database row is co-authoritative with the Redis user-level marker: the row
-    is consulted after the marker branch, so a deactivated user's still-valid
-    refresh credential is refused there too. The marker remains the authority
-    for the protected gate (``api/deps.py``, ``core/permissions.py``). A
-    Redis fault therefore leaves a committed deactivation with a failed
-    revocation: that is reported as 500 and the endpoint is idempotent, so a
-    retry completes the revocation.
-    """
     from mkobi.config import get_config
 
     logger.info(
