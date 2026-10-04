@@ -312,9 +312,10 @@ def _reset_config_cache():
     Teardown restores the environment snapshot taken at setup and rebuilds the
     singleton from it, so the cache cannot survive a test and the next test
     starts from the baseline rather than from ``None`` reconstructed out of a
-    mutated environment. Restoring the environment first is required: this
-    fixture's teardown runs before ``monkeypatch`` undoes a test's ``setenv``,
-    so rebuilding blindly would read the mutated values and raise.
+    mutated environment. Restoring the environment first is required: a test
+    may write to ``os.environ`` directly, bypassing ``monkeypatch``, and that
+    write is still present when this teardown runs, so rebuilding without the
+    snapshot would read the mutated values and raise.
 
     The manual ``clear_config_cache()`` calls inside tests remain load-bearing:
     a test that mutates the environment and reads config mid-test needs the
