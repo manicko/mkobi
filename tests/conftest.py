@@ -507,11 +507,15 @@ async def async_session_maker(async_test_engine):
 async def async_db_session(async_session_maker):
     """Fixture for creating async DB session for tests.
 
-    Uses SAVEPOINT pattern (session.begin_nested()) for proper rollback:
-    - Starts a SAVEPOINT before each test
-    - Yields the session for test use
-    - Automatically rolls back the SAVEPOINT at the end
-    - No TRUNCATE needed, faster, no deadlocks
+    Opens a nested transaction (SAVEPOINT) and rolls it back when the test
+    ends. This isolates only work that stays inside that SAVEPOINT.
+
+    It does not give full per-test isolation. ``Session.commit()`` inside a
+    test commits the session's root transaction, and the fixture's rollback of
+    the SAVEPOINT does not undo it: committed rows persist in the test database
+    and are visible to later tests. Cross-test cleanup is therefore the test's
+    responsibility. The ``delete(...)`` blocks shipped in tests that create
+    such rows are load-bearing, not redundant, and must not be removed.
     """
     from sqlalchemy import event
 
