@@ -43,7 +43,6 @@ class TestLayoutService:
     async def test_create_layout_success(self, layout_service, mock_layout_repo, mock_db):
         """Test successful layout creation."""
         layout_id = uuid4()
-        mock_layout_repo.get_by_name.return_value = None
         mock_layout_repo.create.return_value = self._make_layout_obj(
             layout_id=layout_id, name="Sales Layout"
         )
@@ -69,7 +68,9 @@ class TestLayoutService:
         """Test layout creation propagates the database's duplicate-name error.
 
         The service no longer pre-checks the name; it surfaces the repository's
-        ``IntegrityError`` unchanged so the HTTP layer can classify it.
+        ``IntegrityError`` unchanged so the HTTP layer can classify it, and it
+        rolls the session back so the aborted transaction cannot leak into the
+        next statement on the same session.
         """
         mock_layout_repo.create.side_effect = IntegrityError(
             "INSERT INTO layouts", {}, Exception("duplicate key value violates unique constraint")
@@ -84,10 +85,10 @@ class TestLayoutService:
                 db=mock_db,
             )
         mock_layout_repo.create.assert_called_once()
+        mock_db.rollback.assert_awaited_once()
 
     async def test_create_layout_repo_returns_none_raises(self, layout_service, mock_layout_repo, mock_db):
         """Test layout creation fails when repo returns None."""
-        mock_layout_repo.get_by_name.return_value = None
         mock_layout_repo.create.return_value = None
 
         data = LayoutCreate(name="Test Layout", definition={"grid": []})
@@ -125,7 +126,6 @@ class TestLayoutService:
         """Test successful layout update."""
         layout_id = uuid4()
         mock_layout_repo.get.return_value = self._make_layout_obj(layout_id=layout_id, name="Old Name")
-        mock_layout_repo.get_by_name.return_value = None
         mock_layout_repo.update.return_value = self._make_layout_obj(layout_id=layout_id, name="Updated Name")
 
         data = LayoutUpdate(name="Updated Name")
@@ -147,7 +147,9 @@ class TestLayoutService:
         """Test update propagates the database's duplicate-name error.
 
         As with creation, the service surfaces the repository's
-        ``IntegrityError`` rather than producing a domain error itself.
+        ``IntegrityError`` rather than producing a domain error itself, and it
+        rolls the session back so the aborted transaction cannot leak into the
+        next statement on the same session.
         """
         layout_id = uuid4()
         mock_layout_repo.get.return_value = self._make_layout_obj(layout_id=layout_id, name="Old Name")
@@ -159,6 +161,7 @@ class TestLayoutService:
 
         with pytest.raises(IntegrityError, match="duplicate key value violates unique constraint"):
             await layout_service.update_layout(layout_id, data, db=mock_db)
+        mock_db.rollback.assert_awaited_once()
 
     async def test_update_layout_partial(self, layout_service, mock_layout_repo, mock_db):
         """Test partial update only changes provided fields."""
@@ -166,7 +169,6 @@ class TestLayoutService:
         mock_layout_repo.get.return_value = self._make_layout_obj(
             layout_id=layout_id, name="Old Name", definition={"grid": []}
         )
-        mock_layout_repo.get_by_name.return_value = None
         mock_layout_repo.update.return_value = self._make_layout_obj(layout_id=layout_id, name="Updated Name")
 
         data = LayoutUpdate(name="Updated Name")
