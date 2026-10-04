@@ -55,7 +55,6 @@ export const changePasswordSchema = z.object({
   current_password: z.string().min(1, { error: 'Current password is required' }),
   new_password: z.string()
     .min(8, { error: 'Password must be at least 8 characters' })
-    .regex(/[A-Z]/, { error: 'Password must contain at least one uppercase letter' })
     .regex(/[0-9]/, { error: 'Password must contain at least one digit' }),
   confirm_password: z.string().min(1, { error: 'Password confirmation is required' }),
 }).refine((data) => data.new_password === data.confirm_password, {

@@ -181,6 +181,18 @@ describe('changePasswordSchema', () => {
     expect(result.success).toBe(true)
   })
 
+  it('imposes no complexity rule beyond what the server declares', () => {
+    // The server is authoritative for password rules. The client previously
+    // required an uppercase letter; that rule is dropped. A password without
+    // an uppercase letter is accepted client-side and the server decides.
+    const result = changePasswordSchema.safeParse({
+      current_password: 'oldpass123',
+      new_password: 'nouppercase123',
+      confirm_password: 'nouppercase123',
+    })
+    expect(result.success).toBe(true)
+  })
+
   it('rejects when new_password and confirm_password do not match', () => {
     const result = changePasswordSchema.safeParse({
       current_password: 'oldpass123',
