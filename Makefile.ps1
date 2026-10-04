@@ -36,6 +36,7 @@ $DevCompose  = @('-p', $DevProject,  '--env-file', '.env',
 $TestCompose = @('-p', $TestProject, '-f', 'docker/docker-compose.test.yml')
 $BackupDir   = 'backups'
 $UpTimeout   = 180
+$TestDbName  = 'bidb_test'
 
 # A restore database dump must be non-trivial: a truncated or empty artefact is
 # the exact failure this floor catches before it is handed to pg_restore. The
@@ -104,10 +105,10 @@ function Show-Help {
     Write-Host "  psql-c [sql]   One-shot SQL against the dev DB"
     Write-Host ""
     Write-Host "Backup:" -ForegroundColor Yellow
-    Write-Host "  backup         pg_dump inside the container, cp out to ./backups/"
-    Write-Host "  restore <file> Copy the dump in, then pg_restore"
+    Write-Host "  backup         pg_dump + cluster globals (one run, shared stamp) -> ./backups/"
+    Write-Host "  restore <file> Restore a run's .dump + matching .globals.sql (both files needed)"
     Write-Host "  rehearse-restore yes [file]  Restore into a throwaway TEST database (proves the path)"
-    Write-Host "  prune-backups  Delete ./backups/*.dump older than 7 days"
+    Write-Host "  prune-backups  Delete ./backups/ artefacts older than 7 days (all kinds)"
     Write-Host ""
     Write-Host "Host-native:" -ForegroundColor Yellow
     Write-Host "  uv-sync        Sync the host Python venv from the lockfile"
@@ -362,15 +363,150 @@ function Invoke-Backup {
         Write-Host "Backup failed: removing the in-container temp dump returned $LASTEXITCODE." -ForegroundColor Red
         return
     }
-    Write-Host "Backup created: $dest" -ForegroundColor Green
+
+    # Second artefact of the same run: cluster globals, sharing the run stamp so
+    # the pairing is unambiguous to a human reading the directory. A restore
+    # needs both files from the same run.
+    $globalsDest = Join-Path $BackupDir "bidb-$stamp.globals.sql"
+    if (-not (Export-ClusterGlobals -Destination $globalsDest -Compose $DevCompose -DbService 'db')) { return }
+
+    Write-Host "Backup created: $dest + $(Split-Path -Leaf $globalsDest) (run $stamp)" -ForegroundColor Green
+    Write-Host "A restore needs both files from the same run; pass the .dump and the matching .globals.sql is found by stamp." -ForegroundColor Cyan
 }
 
-# The restore target. Reads every step's result so the completion line is
-# unreachable on failure, and asserts the artefact is non-trivial before it is
-# handed to pg_restore.
+# Emit a run's cluster globals beside the database dump, with the same stamp.
+# The file is a role definition - the postgres superuser role and mkobi_app with
+# its grants - because roles are cluster-global and a per-database pg_dump does
+# not carry them. pg_dumpall supplies the role definitions (including the
+# password hash); the grants mirror docker/init-scripts/01-create-app-role.sh,
+# which is the authority for mkobi_app's privileges (USAGE on schema public, not
+# CREATE - the CREATE form is the test tier's variant in db/starter.py). The
+# `:"globals_db"` psql variable in the grants is the same `-v <name>` shape the
+# init script uses for `:dbname`, so one artefact loads against the dev database
+# and against a rehearsal scratch database alike.
+#
+# CREATE ROLE has no IF NOT EXISTS, so each role is guarded with a DO block that
+# reuses the same "does it already exist?" shape the repo's admin-user bootstrap
+# uses (db/starter.py::ensure_admin_user's ON CONFLICT DO NOTHING): a role that
+# already exists must not abort the run.
+#
+# Compose and DbService are parameters because the same export serves the dev
+# run (project mkobi, service db) and the test-stack-only rehearsal (project
+# mkobi-test, service test-db). Only the dev run writes to ./backups/; the
+# rehearsal writes its own throwaway pair.
+function Export-ClusterGlobals {
+    param(
+        [Parameter(Mandatory)] [string] $Destination,
+        [Parameter(Mandatory)] [array] $Compose,
+        [Parameter(Mandatory)] [string] $DbService
+    )
+
+    $script = @'
+set -e
+pg_dumpall -U postgres --roles-only > /tmp/mkobi-globals.raw.sql
+awk '
+/^CREATE ROLE / {
+  name=$3; sub(/;$/,"",name);
+  printf "DO $do$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %c%s%c) THEN CREATE ROLE %s; END IF; END $do$;\n", 39, name, 39, name;
+  next
+}
+{ print }
+END {
+  printf "\n-- mkobi_app grants (source: docker/init-scripts/01-create-app-role.sh; USAGE on schema public)\n";
+  print "GRANT CONNECT ON DATABASE :\"globals_db\" TO mkobi_app;";
+  print "GRANT USAGE ON SCHEMA public TO mkobi_app;";
+  print "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO mkobi_app;";
+  print "GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO mkobi_app;";
+  print "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO mkobi_app;";
+  print "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE ON SEQUENCES TO mkobi_app;";
+}
+' /tmp/mkobi-globals.raw.sql > /tmp/mkobi-globals.sql
+rm -f /tmp/mkobi-globals.raw.sql
+'@
+
+    docker compose @Compose exec -T $DbService sh -c $script
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Backup failed: generating cluster globals returned $LASTEXITCODE." -ForegroundColor Red
+        return $false
+    }
+    docker compose @Compose cp "${DbService}:/tmp/mkobi-globals.sql" $Destination
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Backup failed: copying cluster globals out of the container returned $LASTEXITCODE." -ForegroundColor Red
+        return $false
+    }
+    if (-not (Assert-DumpArtefact -Path $Destination -Label 'cluster globals')) { return $false }
+    docker compose @Compose exec -T $DbService rm -f /tmp/mkobi-globals.sql
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Backup failed: removing the in-container globals file returned $LASTEXITCODE." -ForegroundColor Red
+        return $false
+    }
+    return $true
+}
+
+# Resolve the shared run stamp from an artefact name. Returns $null when the
+# name carries no recognised stamp, so the pairing cannot be resolved.
+function Get-BackupStamp {
+    param([Parameter(Mandatory)] [string] $Path)
+    $name = Split-Path -Leaf $Path
+    if ($name -match '^bidb-([0-9_]+)\.[A-Za-z.]+$') { return $Matches[1] }
+    return $null
+}
+
+# Load a run's cluster globals into the dev database. It runs strictly after the
+# pg_restore --clean drop phase: the globals artefact is a role definition, and
+# the roles own the grants the restore re-issues, so loading it before the
+# restore would have it dropped, and loading it against an already-restored
+# database is the correct order. Idempotent by construction: guarded CREATE ROLE
+# plus GRANT/ALTER DEFAULT PRIVILEGES, which are idempotent in PostgreSQL.
+function Invoke-Load-Globals {
+    param(
+        [Parameter(Mandatory)] [string] $Source,
+        [Parameter(Mandatory)] [string] $Database
+    )
+    docker compose @DevCompose cp $Source db:/tmp/mkobi-globals.sql
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Globals load failed: copying the globals file into the container returned $LASTEXITCODE." -ForegroundColor Red
+        return $false
+    }
+    # The grants file is database-name-agnostic: `:"globals_db"` is resolved here
+    # to the database the restore targeted, so the same artefact loads against
+    # bidb in production and against a scratch database in rehearsal.
+    docker compose @DevCompose exec -T db psql -U postgres -d $Database -v ON_ERROR_STOP=1 -v "globals_db=$Database" -f /tmp/mkobi-globals.sql
+    $loadExit = $LASTEXITCODE
+    docker compose @DevCompose exec -T db rm -f /tmp/mkobi-globals.sql
+    if ($loadExit -ne 0) {
+        Write-Host "Globals load failed: psql returned $loadExit." -ForegroundColor Red
+        return $false
+    }
+    return $true
+}
+
+# Read alembic_version from a database that has just been restored. Reading the
+# running database's pre-restore state would report the state the operator
+# already had, which is the false comfort this read exists to remove.
+function Read-RestoredAlembicRevision {
+    param(
+        [Parameter(Mandatory)] [array] $Compose,
+        [Parameter(Mandatory)] [string] $Database,
+        [Parameter(Mandatory)] [string] $Context
+    )
+    $rev = (docker compose @Compose exec -T db psql -U postgres -d $Database -tAc "SELECT version_num FROM alembic_version LIMIT 1") -join ''
+    if ($LASTEXITCODE -ne 0 -or -not $rev) {
+        Write-Host "Could not read alembic_version from the restored database ($Context)." -ForegroundColor Red
+        return $false
+    }
+    Write-Host "Restored alembic_version ($Context) = $($rev.Trim()) (read from the restored database)." -ForegroundColor Green
+    return $true
+}
+
+# The restore target. A restore now needs TWO files from the same run: the
+# .dump and its paired .globals.sql. The operator passes the .dump; the matching
+# globals file is located by the shared run stamp. Reads every step's result so
+# the completion line is unreachable on failure, and asserts both artefacts
+# before they are used.
 function Invoke-Restore {
     if (-not $Rest -or -not $Rest[0]) {
-        Write-Host "Usage: .\Makefile.ps1 restore <file.dump>" -ForegroundColor Red
+        Write-Host "Usage: .\Makefile.ps1 restore <file.dump>   (the matching .globals.sql from the same run is loaded automatically)" -ForegroundColor Red
         return
     }
     $source = $Rest[0]
@@ -380,30 +516,65 @@ function Invoke-Restore {
     }
     if (-not (Assert-DumpArtefact -Path $source -Label 'database dump')) { return }
 
+    # Pairing: a run's dump and globals share a stamp. A missing globals file is
+    # a reported failure, not an absorbed one, so a restore never proceeds
+    # against an incomplete set.
+    $runStamp = Get-BackupStamp -Path $source
+    if (-not $runStamp) {
+        Write-Host "Error: cannot resolve a backup-run stamp from '$source'. Expected 'bidb-<stamp>.dump'." -ForegroundColor Red
+        $global:LASTEXITCODE = 1
+        return
+    }
+    $globalsName = "bidb-$runStamp.globals.sql"
+    $globals = Join-Path (Split-Path -Parent $source) $globalsName
+    if (-not (Test-Path -LiteralPath $globals)) {
+        Write-Host "Error: missing paired globals artefact '$globalsName' for run '$runStamp'." -ForegroundColor Red
+        Write-Host "A restore needs both files from the same run. An incomplete set is refused." -ForegroundColor Red
+        $global:LASTEXITCODE = 1
+        return
+    }
+    Write-Host "Restore set (run $runStamp): $([System.IO.Path]::GetFileName($source)) + $globalsName" -ForegroundColor Cyan
+
     docker compose @DevCompose cp $source db:/tmp/mkobi-restore.dump
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Restore failed: copying the dump into the container returned $LASTEXITCODE." -ForegroundColor Red
         return
     }
-    # pg_restore's exit status is read here; --exit-on-error is deliberately not
-    # passed, because it changes where the tool stops, not whether it reports.
+    # Load order, printed so the operator reads it while it runs:
+    #   1) pg_restore --clean --if-exists  (drop phase, then data)
+    #   2) cluster globals                 (roles + grants, strictly after the drop)
+    # The globals artefact is a role definition, and the roles own the grants the
+    # restore re-issues: loaded before the restore they are dropped by it, loaded
+    # after they are correct. The pg_restore exit status is read; --exit-on-error
+    # is deliberately not passed (it moves where the tool stops, not whether it
+    # reports).
+    Write-Host "Load order: 1) pg_restore --clean (drop phase, then data), 2) cluster globals (roles + grants)." -ForegroundColor Cyan
     docker compose @DevCompose exec -T db pg_restore -U postgres -d bidb --clean --if-exists /tmp/mkobi-restore.dump
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Restore failed: pg_restore returned $LASTEXITCODE." -ForegroundColor Red
         return
     }
+    if (-not (Invoke-Load-Globals -Source $globals -Database 'bidb')) { return }
+    if (-not (Read-RestoredAlembicRevision -Compose $DevCompose -Database 'bidb' -Context 'dev bidb')) { return }
     docker compose @DevCompose exec -T db rm -f /tmp/mkobi-restore.dump
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Restore failed: removing the in-container temp dump returned $LASTEXITCODE." -ForegroundColor Red
         return
     }
-    Write-Host "Restore completed: $source" -ForegroundColor Green
+    Write-Host "Restore completed: $source (run $runStamp)" -ForegroundColor Green
 }
 
 # Rehearsal: prove the restore path works against a database that serves no
-# traffic. It runs entirely on the test stack (test-db, project mkobi-test) and
-# never touches the dev database bidb or any bidb_test* database. The scratch
-# database is dropped on every exit path, including failure.
+# traffic. It runs entirely on the test stack (test-db, project mkobi-test): a
+# fresh run sources its dump and its globals from the test cluster, and an
+# explicit artefact is paired by its run stamp from ./backups/. It never reads
+# or writes the dev database bidb, and it never restores into or drops any
+# bidb_test* database. The only database it writes is its own uniquely-named
+# scratch database, which is dropped on every exit path, including failure.
+#
+# It exercises the paired artefacts: a fresh run emits a .dump and its matching
+# .globals.sql, and an explicit artefact is paired by its run stamp. A missing
+# or mismatched globals file is a reported failure, not an absorbed one.
 function Invoke-RehearseRestore {
     # Explicit operator action. The target is destructive to a scratch database
     # and must not run by accident, so it requires the literal 'yes' argument.
@@ -417,7 +588,7 @@ function Invoke-RehearseRestore {
 
     if (-not (Test-Path $BackupDir)) { New-Item -ItemType Directory -Path $BackupDir | Out-Null }
 
-    $ownedArtifact = $null
+    $ownedArtifacts = @()
     if ($explicitSource) {
         $artifact = $explicitSource
         if (-not (Test-Path -LiteralPath $artifact)) {
@@ -425,49 +596,73 @@ function Invoke-RehearseRestore {
             return
         }
     } else {
-        # A fresh artefact: rehearsal must exercise the whole pipeline, not a
-        # stale file. This writes one dump inside the dev db container and copies
-        # it out; it never restores anything into the dev database.
+        # A fresh set: rehearsal must exercise the whole pipeline, not a stale
+        # file. It sources BOTH artefacts from the test stack, so the rehearsal
+        # touches nothing but the test cluster and its throwaway scratch
+        # database - never the dev database bidb. The dump is a read of the
+        # test database only; nothing is restored into it.
         $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-        $artifact = Join-Path $BackupDir "rehearsal-$stamp.dump"
-        docker compose @DevCompose exec -T db pg_dump -U postgres -d bidb -F c -f /tmp/mkobi-rehearsal.dump
+        $artifact = Join-Path $BackupDir "bidb-$stamp.dump"
+        docker compose @TestCompose exec -T test-db pg_dump -U postgres -d $TestDbName -F c -f /tmp/mkobi-rehearsal.dump
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Rehearsal failed: pg_dump returned $LASTEXITCODE." -ForegroundColor Red
             return
         }
-        docker compose @DevCompose cp db:/tmp/mkobi-rehearsal.dump $artifact
+        docker compose @TestCompose cp test-db:/tmp/mkobi-rehearsal.dump $artifact
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "Rehearsal failed: copying the fresh artefact out returned $LASTEXITCODE." -ForegroundColor Red
+            Write-Host "Rehearsal failed: copying the fresh dump out returned $LASTEXITCODE." -ForegroundColor Red
             return
         }
-        docker compose @DevCompose exec -T db rm -f /tmp/mkobi-rehearsal.dump
+        docker compose @TestCompose exec -T test-db rm -f /tmp/mkobi-rehearsal.dump
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Rehearsal failed: removing the in-container temp dump returned $LASTEXITCODE." -ForegroundColor Red
             return
         }
-        $ownedArtifact = $artifact
+        $ownedArtifacts += $artifact
+        $rehearsalGlobals = Join-Path $BackupDir "bidb-$stamp.globals.sql"
+        if (-not (Export-ClusterGlobals -Destination $rehearsalGlobals -Compose $TestCompose -DbService 'test-db')) { return }
+        $ownedArtifacts += $rehearsalGlobals
+    }
+
+    # Pair the globals by the artefact's run stamp. Both the dump and the globals
+    # live in the same directory under the same stamp.
+    $runStamp = Get-BackupStamp -Path $artifact
+    if (-not $runStamp) {
+        Write-Host "Rehearsal failed: cannot resolve a run stamp from '$artifact'." -ForegroundColor Red
+        $global:LASTEXITCODE = 1
+        return
+    }
+    $globalsName = "bidb-$runStamp.globals.sql"
+    $globals = Join-Path (Split-Path -Parent $artifact) $globalsName
+    if (-not (Test-Path -LiteralPath $globals)) {
+        Write-Host "Rehearsal failed: missing paired globals artefact '$globalsName' for run '$runStamp'." -ForegroundColor Red
+        Write-Host "A restore needs both files from the same run. An incomplete set is refused." -ForegroundColor Red
+        $global:LASTEXITCODE = 1
+        return
     }
 
     $scratchDb = "$RehearsalDbPrefix$([guid]::NewGuid().ToString('N').Substring(0, 8))"
-    Write-Host "Rehearsing restore of '$artifact' into scratch database '$scratchDb' on the test stack." -ForegroundColor Cyan
+    Write-Host "Rehearsing restore of run '$runStamp' ($([System.IO.Path]::GetFileName($artifact)) + $globalsName) into scratch database '$scratchDb'." -ForegroundColor Cyan
     Write-Host "RPO 24h / RTO 4h: this run proves the 4h recovery-time path against a database that serves no traffic." -ForegroundColor Cyan
 
     $rc = 0
     try {
-        if (-not (Assert-DumpArtefact -Path $artifact -Label 'rehearsal artefact')) { $rc = 1; return }
-
+        if (-not (Assert-DumpArtefact -Path $artifact -Label 'rehearsal dump')) { $rc = 1; return }
         docker compose @TestCompose exec -T test-db psql -U postgres -d postgres -c "CREATE DATABASE `"$scratchDb`""
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Rehearsal failed: creating scratch database returned $LASTEXITCODE." -ForegroundColor Red
             $rc = 1; return
         }
 
+        # Load order across the two artefacts: pg_restore --clean first (drop
+        # phase, then data), then the globals (roles + grants) strictly after.
+        Write-Host "Load order: 1) pg_restore --clean (drop phase, then data), 2) cluster globals (roles + grants)." -ForegroundColor Cyan
+
         docker compose @TestCompose cp $artifact test-db:/tmp/mkobi-rehearse.dump
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "Rehearsal failed: copying the artefact into test-db returned $LASTEXITCODE." -ForegroundColor Red
+            Write-Host "Rehearsal failed: copying the dump into test-db returned $LASTEXITCODE." -ForegroundColor Red
             $rc = 1; return
         }
-
         # The corrupted-artefact case lands here: a truncated dump makes
         # pg_restore exit non-zero and the rehearsal reports it. --exit-on-error
         # is deliberately NOT passed; the exit status of pg_restore is the signal.
@@ -476,6 +671,19 @@ function Invoke-RehearseRestore {
         docker compose @TestCompose exec -T test-db rm -f /tmp/mkobi-rehearse.dump
         if ($restoreExit -ne 0) {
             Write-Host "Rehearsal failed: pg_restore into scratch database returned $restoreExit." -ForegroundColor Red
+            $rc = 1; return
+        }
+
+        docker compose @TestCompose cp $globals test-db:/tmp/mkobi-rehearse-globals.sql
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Rehearsal failed: copying the globals into test-db returned $LASTEXITCODE." -ForegroundColor Red
+            $rc = 1; return
+        }
+        docker compose @TestCompose exec -T test-db psql -U postgres -d $scratchDb -v ON_ERROR_STOP=1 -v "globals_db=$scratchDb" -f /tmp/mkobi-rehearse-globals.sql
+        $globalsExit = $LASTEXITCODE
+        docker compose @TestCompose exec -T test-db rm -f /tmp/mkobi-rehearse-globals.sql
+        if ($globalsExit -ne 0) {
+            Write-Host "Rehearsal failed: cluster globals load into scratch database returned $globalsExit." -ForegroundColor Red
             $rc = 1; return
         }
 
@@ -498,8 +706,8 @@ function Invoke-RehearseRestore {
         } else {
             Write-Host "Scratch database '$scratchDb' dropped." -ForegroundColor DarkGray
         }
-        if ($ownedArtifact -and (Test-Path -LiteralPath $ownedArtifact)) {
-            Remove-Item -LiteralPath $ownedArtifact -Force
+        foreach ($owned in $ownedArtifacts) {
+            if (Test-Path -LiteralPath $owned) { Remove-Item -LiteralPath $owned -Force }
         }
         $global:LASTEXITCODE = $rc
     }
