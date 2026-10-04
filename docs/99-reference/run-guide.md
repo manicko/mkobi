@@ -176,19 +176,58 @@ curl http://localhost:8010/health
 
 ### Testing
 
+`.\Makefile.ps1` is the authority for every gate command. The suite runs inside
+the `mkobi-test` Compose project and is not a host command; the `lint` and
+`typecheck` targets run in the dev `app` container. The commands below are the
+gates the project actually executes, and each was run to confirm it behaves as
+documented.
+
 ```bash
-# Run all tests
-uv run pytest tests/ -v
+# Full suite (invoked as a bare `pytest`; see the coverage note below)
+.\Makefile.ps1 test
 
-# Run specific test
-uv run pytest tests/test_dashboards_api.py -v
+# Full suite with the live coverage gate (the only place --cov is passed)
+.\Makefile.ps1 test-all
 
-# Type checking
-uv run mypy src/mkobi/
+# Forward arguments to pytest verbatim (run `.\Makefile.ps1 test-up` first)
+.\Makefile.ps1 test-select tests/test_dashboards_api.py -v
 
-# Code style check
-uv run ruff check .
+# Code style check (Invoke-Lint: ruff check src/ tests/ alembic/env.py)
+.\Makefile.ps1 lint
+
+# Type checking (Invoke-Typecheck: mypy src/ alembic/env.py)
+.\Makefile.ps1 typecheck
 ```
+
+The bare-host spellings these targets wrap are:
+
+- lint → `uv run ruff check src/ tests/ alembic/env.py`
+- typecheck → `uv run mypy src/ alembic/env.py`
+
+Both scopes matter and neither may be narrowed. `ruff check .` scans the whole
+tree, including the historical `alembic/versions/` files the gate deliberately
+excludes, and fails on them; `mypy src/mkobi/` drops `alembic/env.py`, which the
+gate includes.
+
+#### Coverage floor
+
+The coverage floor is **inert on `test` and live on `test-all`**. `pyproject.toml`
+puts `--cov-fail-under=65` in `[tool.pytest.ini_options] addopts` but passes **no
+`--cov`**; the source is declared only under `[tool.coverage.run] source =
+["src/mkobi"]` with `[tool.coverage.report] fail_under = 65` restating the floor.
+`pytest-cov` (7.1.0) registers its plugin only when `cov_source` is set, so a
+bare `pytest` run measures nothing and enforces no threshold, while `test-all`
+supplies `--cov=src/mkobi` and makes the 65% floor bite.
+
+#### mypy override note
+
+`pyproject.toml` carries `[[tool.mypy.overrides]] module = ["tests.*"]`, and mypy
+prints `pyproject.toml: note: unused section(s): module = ['tests.*']` on every
+run. It is inert because every invocation the project runs is scoped to `src/`
+(plus `alembic/env.py`) — `tests/` is never type-checked, so no module can match
+the override. It is **not** shadowed by `mkobi.*`; a `mkobi.*` pattern cannot
+match a `tests.*` module at all. The override is left in place because
+`warn_unused_ignores` would object if it were removed.
 
 ## Troubleshooting
 
