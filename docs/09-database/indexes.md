@@ -79,9 +79,9 @@ CREATE INDEX idx_aggregated_data_dashboard_graph ON aggregated_data(dashboard_id
 CREATE INDEX idx_aggregated_data_dims_gin ON aggregated_data USING GIN (dims);
 ```
 
-**Purpose:** Enables efficient JSONB containment queries (`@>`, `?`, `?|`, `?&`) on the `dims` column. Critical for filter application — when a user selects filter values, the backend queries `dims` using JSONB containment operators to find matching data points.
+**Purpose:** A GIN index declared on the `dims` column. It is currently **unused by the application**, and that is a recorded, accepted state — not a justification for the index. The backend does **not** emit JSONB containment operators; the query path extracts individual keys with `->>` equality per key, and `->>` does not reach a GIN index of this shape. `pg_stat_user_indexes` reports `idx_scan = 0, idx_tup_read = 0` for this index, so it is unreachable from either predicate form. The index is retained by decision; a separate decision record (`D-14-B`, plan 14) owns that and records the choice to keep it.
 
-**Note:** GIN indexes are specifically designed for multi-valued data types like JSONB, arrays, and full-text search. They are the optimal index type for JSONB column filtering.
+**Note:** GIN is not the optimal index type for the queries this schema runs. Neither `@>` (JSONB containment) nor `->>` (key extraction with equality) reaches this index in the measured workload, and the speed comparison that used to be quoted here does not reproduce. GIN index size tracks the number of distinct keys and distinct values per document rather than the row count, so no per-volume write-cost constant can be derived from it.
 
 ---
 
