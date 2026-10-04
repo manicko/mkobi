@@ -432,6 +432,7 @@ class TestLayoutsAPI:
         assert data["code"] == ErrorCode.DUPLICATE_RESOURCE
         assert data["status"] == status.HTTP_409_CONFLICT
         assert data["details"] == {"name": "duplicate_test_layout"}
+        assert "already exists" in data["detail"].lower()
 
     async def test_duplicate_name_409_leaves_session_usable(
         self, async_db_session: AsyncSession, authenticated_client: AsyncClient, test_user: dict
@@ -499,6 +500,7 @@ class TestLayoutsAPI:
         assert data["code"] == ErrorCode.DUPLICATE_RESOURCE
         assert data["status"] == status.HTTP_409_CONFLICT
         assert data["details"] == {"name": "rename_target_layout"}
+        assert "already exists" in data["detail"].lower()
 
     async def test_create_layout_duplicate_name_race_returns_409(
         self,

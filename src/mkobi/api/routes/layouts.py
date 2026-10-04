@@ -7,7 +7,7 @@ Access is restricted and requires authentication.
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -122,7 +122,7 @@ async def create_layout_endpoint(
         )
         raise AppException(
             code=ErrorCode.DUPLICATE_RESOURCE,
-            detail="Conflict: layout creation failed",
+            detail=f"A layout with the name '{layout.name}' already exists",
             details={"name": layout.name},
         ) from None
     except Exception as e:
@@ -152,6 +152,13 @@ async def get_layouts_endpoint(
     accessible_dashboards: list[UUID] | None = Depends(
         get_accessible_dashboard_ids
     ),
+    skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000,
+        description="Maximum number of records (max. 1000)",
+    ),
 ) -> list[LayoutRead]:
     """Get list of layouts.
 
@@ -163,6 +170,8 @@ async def get_layouts_endpoint(
         db: Database session.
         layout_service: Injected layout service.
         accessible_dashboards: Dashboard filter, or ``None`` for an admin.
+        skip: Number of records to skip (offset).
+        limit: Maximum number of records.
 
     Returns:
         list[LayoutRead]: List of layout models.
@@ -177,10 +186,10 @@ async def get_layouts_endpoint(
         # The unrestricted branch must stay get_all_layouts: a layout bound
         # to no dashboard is visible to an admin and to nobody else.
         layouts: list[LayoutRead] = (
-            await layout_service.get_all_layouts(db=db)
+            await layout_service.get_all_layouts(db=db, limit=limit, skip=skip)
             if accessible_dashboards is None
             else await layout_service.get_layouts_by_dashboard_ids(
-                dashboard_ids=accessible_dashboards, db=db
+                dashboard_ids=accessible_dashboards, db=db, limit=limit, skip=skip
             )
         )
         logger.info("Retrieved layouts: count=%s", len(layouts))
@@ -379,7 +388,7 @@ async def update_layout_endpoint(
         )
         raise AppException(
             code=ErrorCode.DUPLICATE_RESOURCE,
-            detail="Conflict: layout update failed",
+            detail=f"A layout with the name '{layout_update.name}' already exists",
             details={"name": layout_update.name},
         ) from None
     except AppException:
