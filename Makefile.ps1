@@ -37,6 +37,17 @@ $TestCompose = @('-p', $TestProject, '-f', 'docker/docker-compose.test.yml')
 $BackupDir   = 'backups'
 $UpTimeout   = 180
 
+# A restore database dump must be non-trivial: a truncated or empty artefact is
+# the exact failure this floor catches before it is handed to pg_restore. The
+# floor is named in the target's output so the operator sees the number that
+# was checked, not merely that a check happened.
+$MinDumpBytes = 1024
+
+# The rehearsal scratch database never collides with a live database or with the
+# conftest per-run databases (bidb_test_<token>). It is created and dropped
+# inside Invoke-RehearseRestore on the test cluster only.
+$RehearsalDbPrefix = 'mkobi_rehearse_'
+
 # /app is root:root 755 and unwritable by the non-root app user, so pytest's
 # default .pytest_cache write at rootdir fails with Errno 13. Relocate to /tmp.
 $PytestCacheArgs = @('-o', 'cache_dir=/tmp/pytest_cache')
@@ -95,6 +106,7 @@ function Show-Help {
     Write-Host "Backup:" -ForegroundColor Yellow
     Write-Host "  backup         pg_dump inside the container, cp out to ./backups/"
     Write-Host "  restore <file> Copy the dump in, then pg_restore"
+    Write-Host "  rehearse-restore yes [file]  Restore into a throwaway TEST database (proves the path)"
     Write-Host "  prune-backups  Delete ./backups/*.dump older than 7 days"
     Write-Host ""
     Write-Host "Host-native:" -ForegroundColor Yellow
@@ -297,6 +309,36 @@ function Invoke-PsqlC {
 # ---------------------------------------------------------------------------
 # Backup
 # ---------------------------------------------------------------------------
+#
+# Every step in these targets reads its own result and returns non-zero before
+# the success line is reached, so the success line is unreachable on failure.
+# Write-Host does not reset $LASTEXITCODE: a failed copy followed by a
+# successful rm used to let the script exit zero with an unconditional success
+# message (OPS-005). The guards below close that gap.
+#
+# Artefact movement always goes through `docker compose cp`; the database
+# service writes the file inside its container. Nothing is ever piped through a
+# host shell redirection: PowerShell's binary redirection corrupts a dump.
+
+# A fresh restore artefact must exist and reach the size floor before it is
+# handed to pg_restore. Returns $true only when both hold.
+function Assert-DumpArtefact {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Label
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-Host "Assertion failed: $Label does not exist: $Path" -ForegroundColor Red
+        return $false
+    }
+    $len = (Get-Item -LiteralPath $Path).Length
+    if ($len -lt $MinDumpBytes) {
+        Write-Host "Assertion failed: $Label is $len bytes, below the $MinDumpBytes-byte floor: $Path" -ForegroundColor Red
+        return $false
+    }
+    Write-Host "Asserted: $Label exists and is $len bytes (floor $MinDumpBytes): $Path" -ForegroundColor DarkGray
+    return $true
+}
 
 function Invoke-Backup {
     if (-not (Test-Path $BackupDir)) {
@@ -305,26 +347,162 @@ function Invoke-Backup {
     $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
     $dest = Join-Path $BackupDir "bidb-$stamp.dump"
     docker compose @DevCompose exec -T db pg_dump -U postgres -d bidb -F c -f /tmp/mkobi.dump
-    if ($LASTEXITCODE -ne 0) { return }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Backup failed: pg_dump returned $LASTEXITCODE." -ForegroundColor Red
+        return
+    }
     docker compose @DevCompose cp db:/tmp/mkobi.dump $dest
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Backup failed: copying the dump out of the container returned $LASTEXITCODE." -ForegroundColor Red
+        return
+    }
+    if (-not (Assert-DumpArtefact -Path $dest -Label 'database dump')) { return }
     docker compose @DevCompose exec -T db rm -f /tmp/mkobi.dump
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Backup failed: removing the in-container temp dump returned $LASTEXITCODE." -ForegroundColor Red
+        return
+    }
     Write-Host "Backup created: $dest" -ForegroundColor Green
 }
 
+# The restore target. Reads every step's result so the completion line is
+# unreachable on failure, and asserts the artefact is non-trivial before it is
+# handed to pg_restore.
 function Invoke-Restore {
     if (-not $Rest -or -not $Rest[0]) {
-        Write-Host "Usage: .\Makefile.ps1 restore <file>" -ForegroundColor Red
+        Write-Host "Usage: .\Makefile.ps1 restore <file.dump>" -ForegroundColor Red
         return
     }
     $source = $Rest[0]
-    if (-not (Test-Path $source)) {
+    if (-not (Test-Path -LiteralPath $source)) {
         Write-Host "Error: backup file not found: $source" -ForegroundColor Red
         return
     }
+    if (-not (Assert-DumpArtefact -Path $source -Label 'database dump')) { return }
+
     docker compose @DevCompose cp $source db:/tmp/mkobi-restore.dump
-    if ($LASTEXITCODE -ne 0) { return }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Restore failed: copying the dump into the container returned $LASTEXITCODE." -ForegroundColor Red
+        return
+    }
+    # pg_restore's exit status is read here; --exit-on-error is deliberately not
+    # passed, because it changes where the tool stops, not whether it reports.
     docker compose @DevCompose exec -T db pg_restore -U postgres -d bidb --clean --if-exists /tmp/mkobi-restore.dump
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Restore failed: pg_restore returned $LASTEXITCODE." -ForegroundColor Red
+        return
+    }
     docker compose @DevCompose exec -T db rm -f /tmp/mkobi-restore.dump
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Restore failed: removing the in-container temp dump returned $LASTEXITCODE." -ForegroundColor Red
+        return
+    }
+    Write-Host "Restore completed: $source" -ForegroundColor Green
+}
+
+# Rehearsal: prove the restore path works against a database that serves no
+# traffic. It runs entirely on the test stack (test-db, project mkobi-test) and
+# never touches the dev database bidb or any bidb_test* database. The scratch
+# database is dropped on every exit path, including failure.
+function Invoke-RehearseRestore {
+    # Explicit operator action. The target is destructive to a scratch database
+    # and must not run by accident, so it requires the literal 'yes' argument.
+    if (-not $Rest -or -not $Rest[0] -or $Rest[0] -ne 'yes') {
+        Write-Host "Usage: .\Makefile.ps1 rehearse-restore yes [artifact.dump]" -ForegroundColor Red
+        Write-Host "This rehearses a restore into a throwaway database on the TEST stack." -ForegroundColor Red
+        Write-Host "Passing 'yes' is the explicit operator action that allows it to run." -ForegroundColor Red
+        return
+    }
+    $explicitSource = if ($Rest.Count -gt 1) { $Rest[1] } else { $null }
+
+    if (-not (Test-Path $BackupDir)) { New-Item -ItemType Directory -Path $BackupDir | Out-Null }
+
+    $ownedArtifact = $null
+    if ($explicitSource) {
+        $artifact = $explicitSource
+        if (-not (Test-Path -LiteralPath $artifact)) {
+            Write-Host "Rehearsal failed: artefact not found: $artifact" -ForegroundColor Red
+            return
+        }
+    } else {
+        # A fresh artefact: rehearsal must exercise the whole pipeline, not a
+        # stale file. This writes one dump inside the dev db container and copies
+        # it out; it never restores anything into the dev database.
+        $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+        $artifact = Join-Path $BackupDir "rehearsal-$stamp.dump"
+        docker compose @DevCompose exec -T db pg_dump -U postgres -d bidb -F c -f /tmp/mkobi-rehearsal.dump
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Rehearsal failed: pg_dump returned $LASTEXITCODE." -ForegroundColor Red
+            return
+        }
+        docker compose @DevCompose cp db:/tmp/mkobi-rehearsal.dump $artifact
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Rehearsal failed: copying the fresh artefact out returned $LASTEXITCODE." -ForegroundColor Red
+            return
+        }
+        docker compose @DevCompose exec -T db rm -f /tmp/mkobi-rehearsal.dump
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Rehearsal failed: removing the in-container temp dump returned $LASTEXITCODE." -ForegroundColor Red
+            return
+        }
+        $ownedArtifact = $artifact
+    }
+
+    $scratchDb = "$RehearsalDbPrefix$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+    Write-Host "Rehearsing restore of '$artifact' into scratch database '$scratchDb' on the test stack." -ForegroundColor Cyan
+    Write-Host "RPO 24h / RTO 4h: this run proves the 4h recovery-time path against a database that serves no traffic." -ForegroundColor Cyan
+
+    $rc = 0
+    try {
+        if (-not (Assert-DumpArtefact -Path $artifact -Label 'rehearsal artefact')) { $rc = 1; return }
+
+        docker compose @TestCompose exec -T test-db psql -U postgres -d postgres -c "CREATE DATABASE `"$scratchDb`""
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Rehearsal failed: creating scratch database returned $LASTEXITCODE." -ForegroundColor Red
+            $rc = 1; return
+        }
+
+        docker compose @TestCompose cp $artifact test-db:/tmp/mkobi-rehearse.dump
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Rehearsal failed: copying the artefact into test-db returned $LASTEXITCODE." -ForegroundColor Red
+            $rc = 1; return
+        }
+
+        # The corrupted-artefact case lands here: a truncated dump makes
+        # pg_restore exit non-zero and the rehearsal reports it. --exit-on-error
+        # is deliberately NOT passed; the exit status of pg_restore is the signal.
+        docker compose @TestCompose exec -T test-db pg_restore -U postgres -d $scratchDb --clean --if-exists /tmp/mkobi-rehearse.dump
+        $restoreExit = $LASTEXITCODE
+        docker compose @TestCompose exec -T test-db rm -f /tmp/mkobi-rehearse.dump
+        if ($restoreExit -ne 0) {
+            Write-Host "Rehearsal failed: pg_restore into scratch database returned $restoreExit." -ForegroundColor Red
+            $rc = 1; return
+        }
+
+        # alembic_version is read from the RESTORED database (the scratch one),
+        # never from the dev database, whose state the operator already had.
+        $rev = (docker compose @TestCompose exec -T test-db psql -U postgres -d $scratchDb -tAc "SELECT version_num FROM alembic_version LIMIT 1") -join ''
+        if ($LASTEXITCODE -ne 0 -or -not $rev) {
+            Write-Host "Rehearsal failed: could not read alembic_version from the restored scratch database." -ForegroundColor Red
+            $rc = 1; return
+        }
+        Write-Host "Rehearsal succeeded: restored alembic_version = $($rev.Trim()) (read from the restored database)." -ForegroundColor Green
+        Write-Host "RPO 24h (daily backup) / RTO 4h: the restore path completed against a non-serving database." -ForegroundColor Green
+    }
+    finally {
+        # Drop the scratch database on every exit path, including failure. The
+        # drop is attempted even when creation failed; IF EXISTS makes it safe.
+        docker compose @TestCompose exec -T test-db psql -U postgres -d postgres -c "DROP DATABASE IF EXISTS `"$scratchDb`" WITH (FORCE)" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Warning: could not drop scratch database '$scratchDb'; remove it manually." -ForegroundColor Yellow
+        } else {
+            Write-Host "Scratch database '$scratchDb' dropped." -ForegroundColor DarkGray
+        }
+        if ($ownedArtifact -and (Test-Path -LiteralPath $ownedArtifact)) {
+            Remove-Item -LiteralPath $ownedArtifact -Force
+        }
+        $global:LASTEXITCODE = $rc
+    }
 }
 
 function Invoke-PruneBackups {
@@ -333,7 +511,11 @@ function Invoke-PruneBackups {
         return
     }
     $cutoff = (Get-Date).AddDays(-7)
-    Get-ChildItem -Path $BackupDir -Filter '*.dump' |
+    # Match every artefact kind a run emits as one set, not just *.dump. A
+    # narrower filter would let the non-dump artefacts of a run accumulate
+    # forever; a run must leave only whole sets or nothing.
+    Get-ChildItem -Path $BackupDir -File |
+        Where-Object { $_.Name -match '^bidb-[0-9_]+\.(dump|globals\.sql)$' -or $_.Name -match '^bidb-[0-9_]+\.redis\.rdb$' } |
         Where-Object { $_.LastWriteTime -lt $cutoff } |
         ForEach-Object {
             Remove-Item -LiteralPath $_.FullName -Force
@@ -444,6 +626,7 @@ switch ($Target.ToLower()) {
     'psql-c'           { Invoke-PsqlC }
     'backup'           { Invoke-Backup }
     'restore'          { Invoke-Restore }
+    'rehearse-restore' { Invoke-RehearseRestore }
     'prune-backups'    { Invoke-PruneBackups }
     'uv-sync'          { Invoke-UvSync }
     'fe-install'       { Invoke-FeInstall }
