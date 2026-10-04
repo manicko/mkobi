@@ -159,39 +159,48 @@ class TestDeleteAccount:
         """
         repo = UserRepository()
 
-        # Clean the slate: delete all existing users
-        all_users = await repo.get_all(async_db_session)
-        for user in all_users:
-            await repo.delete(user.id, async_db_session)
-        await async_db_session.commit()
-
-        # Verify cleanup
-        remaining = await repo.get_all(async_db_session)
-        assert len(remaining) == 0, "Database cleanup failed"
-
         # Create a sole admin user
+        admin_email = f"sole_admin_{uuid.uuid4().hex[:8]}@example.com"
         admin_user = await repo.create(
             db=async_db_session,
-            email=f"sole_admin_{uuid.uuid4().hex[:8]}@example.com",
+            email=admin_email,
             password_hash=hash_password("AdminPass123!"),
             role=UserRole.ADMIN,
         )
         await async_db_session.commit()
 
         # Create a non-admin user
+        viewer_email = f"viewer_{uuid.uuid4().hex[:8]}@example.com"
         await repo.create(
             db=async_db_session,
-            email=f"viewer_{uuid.uuid4().hex[:8]}@example.com",
+            email=viewer_email,
             password_hash=hash_password("ViewerPass123!"),
             role=UserRole.VIEWER,
         )
         await async_db_session.commit()
 
-        # Verify state: 2 users, 1 admin
+        # Verify state scoped to this test's own rows: both exist, exactly one
+        # admin. Selecting by the uuid-suffixed addresses avoids asserting on a
+        # global row count, which other tests share and mutate concurrently.
         all_after = await repo.get_all(async_db_session)
-        admins = [u for u in all_after if u.role == UserRole.ADMIN]
-        assert len(all_after) == 2, f"Expected 2 users, got {len(all_after)}"
-        assert len(admins) == 1, f"Expected 1 admin, got {len(admins)}"
+        own_rows = [u for u in all_after if u.email in (admin_email, viewer_email)]
+        own_admins = [u for u in own_rows if u.role == UserRole.ADMIN]
+        assert len(own_rows) == 2, f"Expected 2 own users, got {len(own_rows)}"
+        assert len(own_admins) == 1, f"Expected 1 own admin, got {len(own_admins)}"
+
+        # The production guard reads global state: it forbids deleting an admin
+        # only while this admin is the sole admin in the whole users table. Other
+        # tests in the session commit their own admin rows, so this test must
+        # make its admin the only admin relative to the guard's global read.
+        # Delete only foreign ADMIN rows, and deliberately DO NOT commit: the
+        # request shares this session, so the guard sees the pending deletes,
+        # while the fixture's SAVEPOINT rollback at teardown restores those rows
+        # for any later test. The precondition is constructed, not persisted; no
+        # global state is destroyed. Non-admin rows and this test's own admin are
+        # never touched.
+        for existing in await repo.get_all(async_db_session):
+            if existing.role == UserRole.ADMIN and existing.id != admin_user.id:
+                await repo.delete(existing.id, async_db_session)
 
         # Login as the admin
         login_resp = await async_client.post(
