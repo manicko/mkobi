@@ -1,119 +1,123 @@
 """Tests for health check endpoints.
 
 Tests for /health and /health/detailed endpoints.
+
+``SECB-4`` gates ``/health/detailed`` behind the admin dependency and reduces its
+body: the absolute bundle path and both raw driver exception texts are gone. These
+tests use the conftest ``async_client`` (which installs the database and Redis
+dependency overrides) and reach the root-mounted health paths with absolute URLs,
+because that client's base path is ``/api/v1``.
 """
 
-import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import AsyncClient
 
-from mkobi.app import create_app
+from mkobi.core.security import create_access_token, hash_password
+from mkobi.db.repositories.user_repo import UserRepository
+from mkobi.models.enums import UserRole
+
+# The root-mounted health paths live outside the conftest client's /api/v1 base
+# path, so they are requested as absolute URLs on the same test transport.
+_HEALTH_URL = "http://testserver/health"
+_DETAILED_HEALTH_URL = "http://testserver/health/detailed"
 
 
 class TestHealthEndpoint:
     """Tests for basic health check endpoint."""
 
-    @pytest.fixture
-    async def health_client(self, setup_test_database) -> AsyncClient:
-        """Create HTTP client for health endpoint testing.
-
-        /health reports the database component, so these tests depend on the
-        test database being created and migrated; the fixture is requested
-        explicitly rather than relied upon as an autouse side effect.
-        """
-        import os
-
-        os.environ.setdefault("ENV", "test")
-        os.environ.setdefault("JWT__SECRET_KEY", "test_secret_key_change_in_production")
-        os.environ.setdefault("DATABASE__HOST", "localhost")
-        os.environ.setdefault("DATABASE__PORT", "5434")
-        os.environ.setdefault("DATABASE__DBNAME", "bidb_test")
-        os.environ.setdefault("DATABASE__USER", "mkobi_app")
-        os.environ.setdefault("DATABASE__PASSWORD", "StrongDbP@ss123!")
-        os.environ.setdefault("DATABASE__ADMIN_USER", "postgres")
-        os.environ.setdefault("DATABASE__ADMIN_PASSWORD", "StrongT3stP@ss!")
-
-        from mkobi.config import clear_config_cache
-
-        clear_config_cache()
-
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-            yield client
-
-    async def test_health_endpoint_returns_200(self, health_client: AsyncClient) -> None:
+    async def test_health_endpoint_returns_200(self, async_client: AsyncClient) -> None:
         """GET /health returns 200 status code."""
-        response = await health_client.get("/health")
+        response = await async_client.get(_HEALTH_URL)
         assert response.status_code == 200
 
     async def test_health_endpoint_returns_healthy_status(
-        self, health_client: AsyncClient
+        self, async_client: AsyncClient
     ) -> None:
         """GET /health returns status 'healthy' when database is connected."""
-        response = await health_client.get("/health")
+        response = await async_client.get(_HEALTH_URL)
         data = response.json()
         assert data["status"] == "healthy"
 
     async def test_health_endpoint_returns_database_connected(
-        self, health_client: AsyncClient
+        self, async_client: AsyncClient
     ) -> None:
         """GET /health returns database 'connected' status."""
-        response = await health_client.get("/health")
+        response = await async_client.get(_HEALTH_URL)
         data = response.json()
         assert data["database"] == "connected"
 
+    async def test_health_stays_exactly_two_keys(
+        self, async_client: AsyncClient
+    ) -> None:
+        """/health keeps its exact two-key body; SECB-4 does not touch it."""
+        response = await async_client.get(_HEALTH_URL)
+        assert response.status_code == 200
+        assert response.json() == {"status": "healthy", "database": "connected"}
+
+
+class TestHealthDetailedAuthorisation:
+    """SECB-4: /health/detailed requires an administrator."""
+
+    async def test_anonymous_caller_gets_401(
+        self, async_client: AsyncClient
+    ) -> None:
+        """An unauthenticated caller receives 401 via the RFC 7807 path."""
+        response = await async_client.get(_DETAILED_HEALTH_URL)
+        assert response.status_code == 401
+        assert response.json()["code"] == "AUTHENTICATION_FAILED"
+
+    async def test_authenticated_non_admin_gets_403(
+        self, async_client: AsyncClient, async_db_session
+    ) -> None:
+        """An authenticated viewer receives 403 via the RFC 7807 path."""
+        repo = UserRepository()
+        viewer = await repo.create(
+            db=async_db_session,
+            email=f"health_viewer_{__import__('uuid').uuid4().hex[:8]}@example.com",
+            password_hash=hash_password("ViewerPass123!"),
+            role=UserRole.VIEWER,
+        )
+        await async_db_session.commit()
+        token = create_access_token(
+            {"user_id": str(viewer.id), "email": viewer.email}
+        )
+
+        response = await async_client.get(
+            _DETAILED_HEALTH_URL,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 403
+        assert response.json()["code"] == "INSUFFICIENT_PERMISSIONS"
+
 
 class TestHealthDetailedEndpoint:
-    """Tests for detailed health check endpoint."""
-
-    @pytest.fixture
-    async def detailed_health_client(self, setup_test_database) -> AsyncClient:
-        """Create HTTP client for detailed health endpoint testing.
-
-        /health/detailed reports a database component whose status is asserted,
-        so the test database must exist; the fixture is requested explicitly.
-        """
-        import os
-
-        os.environ.setdefault("ENV", "test")
-        os.environ.setdefault("JWT__SECRET_KEY", "test_secret_key_change_in_production")
-        os.environ.setdefault("DATABASE__HOST", "localhost")
-        os.environ.setdefault("DATABASE__PORT", "5434")
-        os.environ.setdefault("DATABASE__DBNAME", "bidb_test")
-        os.environ.setdefault("DATABASE__USER", "mkobi_app")
-        os.environ.setdefault("DATABASE__PASSWORD", "StrongDbP@ss123!")
-        os.environ.setdefault("DATABASE__ADMIN_USER", "postgres")
-        os.environ.setdefault("DATABASE__ADMIN_PASSWORD", "StrongT3stP@ss!")
-
-        from mkobi.config import clear_config_cache
-
-        clear_config_cache()
-
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-            yield client
+    """Tests for detailed health check endpoint (administrator)."""
 
     async def test_health_detailed_endpoint_returns_200(
-        self, detailed_health_client: AsyncClient
+        self, async_client: AsyncClient, auth_headers: dict[str, str]
     ) -> None:
-        """GET /health/detailed returns 200 status code."""
-        response = await detailed_health_client.get("/health/detailed")
+        """GET /health/detailed returns 200 for an administrator."""
+        response = await async_client.get(
+            _DETAILED_HEALTH_URL, headers=auth_headers
+        )
         assert response.status_code == 200
 
     async def test_health_detailed_endpoint_returns_healthy_status(
-        self, detailed_health_client: AsyncClient
+        self, async_client: AsyncClient, auth_headers: dict[str, str]
     ) -> None:
-        """GET /health/detailed returns status 'healthy' when all components are healthy."""
-        response = await detailed_health_client.get("/health/detailed")
+        """GET /health/detailed returns status 'healthy' when components are healthy."""
+        response = await async_client.get(
+            _DETAILED_HEALTH_URL, headers=auth_headers
+        )
         data = response.json()
         assert data["status"] == "healthy"
 
     async def test_health_detailed_endpoint_returns_components(
-        self, detailed_health_client: AsyncClient
+        self, async_client: AsyncClient, auth_headers: dict[str, str]
     ) -> None:
-        """GET /health/detailed returns component statuses."""
-        response = await detailed_health_client.get("/health/detailed")
+        """GET /health/detailed returns component statuses without the bundle path."""
+        response = await async_client.get(
+            _DETAILED_HEALTH_URL, headers=auth_headers
+        )
         data = response.json()
 
         assert "components" in data
@@ -124,41 +128,37 @@ class TestHealthDetailedEndpoint:
         assert components["database"]["type"] == "postgresql"
 
         assert "static_files" in components
-        assert "status" in components["static_files"]
-        assert "path" in components["static_files"]
+        assert components["static_files"]["status"] in {"available", "unavailable"}
+        # The absolute filesystem path is no longer disclosed (SECB-4).
+        assert "path" not in components["static_files"]
+
+    async def test_admin_response_still_reports_all_components(
+        self, async_client: AsyncClient, auth_headers: dict[str, str]
+    ) -> None:
+        """The reduced body still earns the endpoint's name: every component is present."""
+        response = await async_client.get(
+            _DETAILED_HEALTH_URL, headers=auth_headers
+        )
+        assert response.status_code == 200
+        components = response.json()["components"]
+        assert set(components) == {
+            "database",
+            "static_files",
+            "redis",
+            "stale_processing_reconciler",
+        }
 
 
 class TestDetailedHealthReconcilerComponent:
     """The /health/detailed endpoint reports the reconciler component."""
 
-    @pytest.fixture
-    async def detailed_client(self) -> AsyncClient:
-        """Create a client for the detailed health endpoint with shared app state."""
-        import os
-
-        os.environ.setdefault("ENV", "test")
-        os.environ.setdefault("JWT__SECRET_KEY", "test_secret_key_change_in_production")
-        os.environ.setdefault("DATABASE__HOST", "localhost")
-        os.environ.setdefault("DATABASE__PORT", "5434")
-        os.environ.setdefault("DATABASE__DBNAME", "bidb_test")
-        os.environ.setdefault("DATABASE__USER", "mkobi_app")
-        os.environ.setdefault("DATABASE__PASSWORD", "StrongDbP@ss123!")
-        os.environ.setdefault("DATABASE__ADMIN_USER", "postgres")
-        os.environ.setdefault("DATABASE__ADMIN_PASSWORD", "StrongT3stP@ss!")
-
-        from mkobi.config import clear_config_cache
-
-        clear_config_cache()
-
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-            yield client, app
-
-    async def test_status_unknown_without_started_reconciler(self, detailed_client) -> None:
+    async def test_status_unknown_without_started_reconciler(
+        self, async_client: AsyncClient, auth_headers: dict[str, str]
+    ) -> None:
         """Before lifespan runs the component reports not_started, never a wrong state."""
-        client, _app = detailed_client
-        response = await client.get("/health/detailed")
+        response = await async_client.get(
+            _DETAILED_HEALTH_URL, headers=auth_headers
+        )
         assert response.status_code == 200
         data = response.json()
         component = data["components"]["stale_processing_reconciler"]
@@ -166,21 +166,25 @@ class TestDetailedHealthReconcilerComponent:
         assert component["lease_state"] == "unknown"
         assert component["last_success_at"] is None
 
-    async def test_component_reflects_shared_state(self, detailed_client) -> None:
+    async def test_component_reflects_shared_state(
+        self, async_client: AsyncClient, auth_headers: dict[str, str]
+    ) -> None:
         """The component reflects the ReconcilerStatus published on app.state."""
         from datetime import UTC, datetime
 
         from mkobi.core.reconciler_lease import ReconcilerStatus
+        from mkobi.main import app
         from mkobi.models.enums import ReconcilerLeaseState
 
-        client, app = detailed_client
         status = ReconcilerStatus()
         status.lease_state = ReconcilerLeaseState.UNPROTECTED
         status.last_success_at = datetime.now(UTC)
         status.record_success(0)
         app.state.reconciler_status = status
 
-        response = await client.get("/health/detailed")
+        response = await async_client.get(
+            _DETAILED_HEALTH_URL, headers=auth_headers
+        )
         assert response.status_code == 200
         component = response.json()["components"]["stale_processing_reconciler"]
         assert component["status"] == "ok"
@@ -193,31 +197,8 @@ class TestDetailedHealthReconcilerComponent:
 class TestDetailedHealthRedisComponent:
     """The redis component reports a degraded Redis without moving liveness."""
 
-    @pytest.fixture
-    async def client(self, setup_test_database) -> AsyncClient:
-        import os
-
-        os.environ.setdefault("ENV", "test")
-        os.environ.setdefault("JWT__SECRET_KEY", "test_secret_key_change_in_production")
-        os.environ.setdefault("DATABASE__HOST", "localhost")
-        os.environ.setdefault("DATABASE__PORT", "5434")
-        os.environ.setdefault("DATABASE__DBNAME", "bidb_test")
-        os.environ.setdefault("DATABASE__USER", "mkobi_app")
-        os.environ.setdefault("DATABASE__PASSWORD", "StrongDbP@ss123!")
-        os.environ.setdefault("DATABASE__ADMIN_USER", "postgres")
-        os.environ.setdefault("DATABASE__ADMIN_PASSWORD", "StrongT3stP@ss!")
-
-        from mkobi.config import clear_config_cache
-
-        clear_config_cache()
-
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
-            yield http_client
-
     async def test_redis_down_reported_and_liveness_unchanged(
-        self, client, monkeypatch
+        self, async_client: AsyncClient, auth_headers: dict[str, str], monkeypatch
     ) -> None:
         """A Redis outage is reported on /health/detailed without moving liveness (DP-1)."""
         import mkobi.app as app_module
@@ -229,15 +210,21 @@ class TestDetailedHealthRedisComponent:
             app_module, "get_async_redis_client", lambda: _UnreachableRedis()
         )
 
-        response = await client.get("/health/detailed")
+        response = await async_client.get(
+            _DETAILED_HEALTH_URL, headers=auth_headers
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "healthy"
         redis_component = data["components"]["redis"]
         assert redis_component["status"] == "disconnected"
         assert redis_component["type"] == "redis"
+        # The raw driver exception text is no longer disclosed (SECB-4).
+        assert "error" not in redis_component
 
-    async def test_redis_healthy_reported(self, client, monkeypatch) -> None:
+    async def test_redis_healthy_reported(
+        self, async_client: AsyncClient, auth_headers: dict[str, str], monkeypatch
+    ) -> None:
         """A reachable Redis is reported connected, so the degraded test cannot pass by accident."""
         import mkobi.app as app_module
 
@@ -245,14 +232,16 @@ class TestDetailedHealthRedisComponent:
             app_module, "get_async_redis_client", lambda: _ReachableRedis()
         )
 
-        response = await client.get("/health/detailed")
+        response = await async_client.get(
+            _DETAILED_HEALTH_URL, headers=auth_headers
+        )
         assert response.status_code == 200
         redis_component = response.json()["components"]["redis"]
         assert redis_component["status"] == "connected"
         assert redis_component["type"] == "redis"
 
     async def test_health_stays_two_key_shape_when_redis_down(
-        self, client, monkeypatch
+        self, async_client: AsyncClient, monkeypatch
     ) -> None:
         """/health keeps its exact two-key shape while Redis is unreachable."""
         import mkobi.app as app_module
@@ -261,12 +250,44 @@ class TestDetailedHealthRedisComponent:
             app_module, "get_async_redis_client", lambda: _UnreachableRedis()
         )
 
-        response = await client.get("/health")
+        response = await async_client.get(_HEALTH_URL)
         assert response.status_code == 200
         assert response.json() == {"status": "healthy", "database": "connected"}
 
+    async def test_database_failure_hides_driver_error(
+        self, async_client: AsyncClient, auth_headers: dict[str, str], monkeypatch
+    ) -> None:
+        """A database failure reports the component without the raw driver text."""
+        import mkobi.app as app_module
+
+        class _FailingSession:
+            async def execute(self, *args, **kwargs):
+                raise RuntimeError("SENTINEL-DRIVER-ENDPOINT-MUST-NOT-LEAK")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        def failing_get_session():
+            return _FailingSession()
+
+        monkeypatch.setattr(app_module, "get_session", failing_get_session)
+
+        response = await async_client.get(
+            _DETAILED_HEALTH_URL, headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "unhealthy"
+        database_component = data["components"]["database"]
+        assert database_component["status"] == "disconnected"
+        assert "error" not in database_component
+        assert "SENTINEL-DRIVER-ENDPOINT-MUST-NOT-LEAK" not in response.text
+
     async def test_existing_components_survive_alongside_redis(
-        self, client, monkeypatch
+        self, async_client: AsyncClient, auth_headers: dict[str, str], monkeypatch
     ) -> None:
         """The database, static_files and reconciler components still compose with redis."""
         import mkobi.app as app_module
@@ -275,17 +296,21 @@ class TestDetailedHealthRedisComponent:
             app_module, "get_async_redis_client", lambda: _ReachableRedis()
         )
 
-        response = await client.get("/health/detailed")
+        response = await async_client.get(
+            _DETAILED_HEALTH_URL, headers=auth_headers
+        )
         assert response.status_code == 200
         components = response.json()["components"]
         assert components["database"]["status"] == "connected"
         assert components["database"]["type"] == "postgresql"
-        assert "status" in components["static_files"]
-        assert "path" in components["static_files"]
+        assert components["static_files"]["status"] in {"available", "unavailable"}
+        assert "path" not in components["static_files"]
         assert "stale_processing_reconciler" in components
         assert components["redis"]["status"] == "connected"
 
-    async def test_redis_client_closed_exactly_once(self, client, monkeypatch) -> None:
+    async def test_redis_client_closed_exactly_once(
+        self, async_client: AsyncClient, auth_headers: dict[str, str], monkeypatch
+    ) -> None:
         """Each health poll closes the client it built, so no pool leaks per poll."""
         import mkobi.app as app_module
 
@@ -298,7 +323,9 @@ class TestDetailedHealthRedisComponent:
 
         monkeypatch.setattr(app_module, "get_async_redis_client", build_and_track)
 
-        response = await client.get("/health/detailed")
+        response = await async_client.get(
+            _DETAILED_HEALTH_URL, headers=auth_headers
+        )
         assert response.status_code == 200
         assert len(closed) == 1
 
@@ -306,48 +333,25 @@ class TestDetailedHealthRedisComponent:
 class TestHealthWithRedisDown:
     """A Redis outage must not drag down /health or the overall detailed status."""
 
-    @pytest.fixture
-    async def client(self, setup_test_database) -> AsyncClient:
-        import os
-
-        os.environ.setdefault("ENV", "test")
-        os.environ.setdefault("JWT__SECRET_KEY", "test_secret_key_change_in_production")
-        os.environ.setdefault("DATABASE__HOST", "localhost")
-        os.environ.setdefault("DATABASE__PORT", "5434")
-        os.environ.setdefault("DATABASE__DBNAME", "bidb_test")
-        os.environ.setdefault("DATABASE__USER", "mkobi_app")
-        os.environ.setdefault("DATABASE__PASSWORD", "StrongDbP@ss123!")
-        os.environ.setdefault("DATABASE__ADMIN_USER", "postgres")
-        os.environ.setdefault("DATABASE__ADMIN_PASSWORD", "StrongT3stP@ss!")
-
-        from mkobi.config import clear_config_cache
-
-        clear_config_cache()
-
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
-            yield http_client
-
-    async def test_health_still_healthy_when_redis_down(self, client, monkeypatch) -> None:
+    async def test_health_still_healthy_when_redis_down(
+        self, async_client: AsyncClient, auth_headers: dict[str, str], monkeypatch
+    ) -> None:
         """/health stays 200 with database connected even if Redis cannot be reached."""
         import mkobi.core.redis_client as redis_client_module
         import mkobi.app as app_module
-
-        # Force every Redis access to fail, as an outage would.
-        async def unreachable_client():
-            raise OSError("redis unavailable")
 
         monkeypatch.setattr(
             app_module, "get_async_redis_client", lambda: _UnreachableRedis()
         )
         monkeypatch.setattr(redis_client_module, "get_async_redis_client", lambda: _UnreachableRedis())
 
-        response = await client.get("/health")
+        response = await async_client.get(_HEALTH_URL)
         assert response.status_code == 200
         assert response.json() == {"status": "healthy", "database": "connected"}
 
-        detailed = await client.get("/health/detailed")
+        detailed = await async_client.get(
+            _DETAILED_HEALTH_URL, headers=auth_headers
+        )
         assert detailed.status_code == 200
         assert detailed.json()["status"] == "healthy"
         assert detailed.json()["components"]["database"]["status"] == "connected"

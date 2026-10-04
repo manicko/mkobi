@@ -7,6 +7,11 @@ this fix the mount required that pair while health checked the directory alone,
 so a ``dist`` without ``index.html`` produced a route table identical to an
 absent bundle while health reported ``available``.
 
+``SECB-4`` gates ``/health/detailed`` behind the admin dependency and reduces its
+body: the component now reports only the servability verdict and never the
+absolute bundle path. These tests satisfy the gate at the dependency seam (see
+``_authorise_admin``) and assert the path's absence.
+
 Every test that manipulates the bundle points ``FRONTEND__DIST_DIR`` at a tmp
 directory, so no test creates a real ``frontend/dist`` in the ambient working
 directory and changes another test's verdict.
@@ -20,9 +25,36 @@ from httpx import ASGITransport, AsyncClient
 from starlette.routing import Mount
 
 import mkobi.app as app_module
+from mkobi.api.deps import require_admin_role
 from mkobi.app import create_app, resolve_frontend_bundle
 
 from mkobi.config import clear_config_cache
+from mkobi.models.enums import UserRole
+from mkobi.models.user import UserRead
+
+# SECB-4 gates ``/health/detailed`` behind the admin dependency. These tests
+# build a fresh app through ``create_app()`` rather than the shared conftest
+# client, so they install the same FastAPI ``dependency_overrides`` mechanism
+# conftest uses (``tests/conftest.py``) and stub the admin dependency with an
+# administrator identity. No credential is minted; the gate is satisfied at the
+# dependency seam exactly as the conftest overrides satisfy the DB/Redis deps.
+_ADMIN_USER = UserRead(
+    id=__import__("uuid").UUID("00000000-0000-0000-0000-00000000ad11"),
+    email="health_static_admin@example.com",
+    role=UserRole.ADMIN,
+    is_active=True,
+    created_at=__import__("datetime").datetime(2026, 1, 1, tzinfo=__import__("datetime").UTC),
+    updated_at=None,
+)
+
+
+def _authorise_admin(application) -> None:
+    """Override the admin dependency on a freshly built app (SECB-4)."""
+
+    async def _stub_admin() -> UserRead:
+        return _ADMIN_USER
+
+    application.dependency_overrides[require_admin_role] = _stub_admin
 
 # The pre-FAB-7 health predicate checked the CWD-relative literal string
 # ``frontend/dist``. Pinning the configured directory here (and asserting below
@@ -97,6 +129,7 @@ async def client_for_state(bundle_root):
     async def _make(state: str):
         bundle_root(state)
         app = create_app()
+        _authorise_admin(app)
         transport = ASGITransport(app=app)
         client = AsyncClient(transport=transport, base_url="http://testserver")
         clients.append(client)
@@ -178,7 +211,7 @@ class TestPresenceStatesServed:
 
 
 class TestStaticFilesHealthComponent:
-    """The health component reports the one predicate and the resolved path."""
+    """The health component reports the servability verdict, not the path."""
 
     async def test_absent_reports_unavailable(
         self, client_for_state, bundle_root
@@ -192,9 +225,13 @@ class TestStaticFilesHealthComponent:
         assert not configured.exists()
         assert not _CWD_RELATIVE_BUNDLE_LITERAL.exists()
         _app, client = await client_for_state("absent")
-        data = (await client.get("/health/detailed")).json()
-        assert data["components"]["static_files"]["status"] == "unavailable"
-        assert data["components"]["static_files"]["path"] == str(configured.resolve())
+        response = await client.get("/health/detailed")
+        data = response.json()
+        components = data["components"]
+        assert components["static_files"]["status"] == "unavailable"
+        # SECB-4: the absolute filesystem path is not disclosed.
+        assert "path" not in components["static_files"]
+        assert str(configured.resolve()) not in response.text
 
     async def test_present_but_wrong_reports_unavailable(
         self, client_for_state, bundle_root
@@ -214,26 +251,22 @@ class TestStaticFilesHealthComponent:
         # reason (the old predicate would find this literal and say available).
         assert _CWD_RELATIVE_BUNDLE_LITERAL.resolve() != configured.resolve()
         _app, client = await client_for_state("present_but_wrong")
-        data = (await client.get("/health/detailed")).json()
-        assert data["components"]["static_files"]["status"] == "unavailable"
-        assert data["components"]["static_files"]["path"] == str(configured.resolve())
+        response = await client.get("/health/detailed")
+        data = response.json()
+        components = data["components"]
+        assert components["static_files"]["status"] == "unavailable"
+        # SECB-4: the absolute filesystem path is not disclosed.
+        assert "path" not in components["static_files"]
+        assert str(configured.resolve()) not in response.text
 
     async def test_correct_reports_available(self, client_for_state) -> None:
         """A dist with index.html reports available."""
         _application, client = await client_for_state("correct")
-        data = (await client.get("/health/detailed")).json()
-        assert data["components"]["static_files"]["status"] == "available"
-
-    async def test_path_reports_resolved_absolute_path(self, bundle_root) -> None:
-        """The reported path is the resolved absolute directory, not a literal."""
-        configured = bundle_root("present_but_wrong")
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-            data = (await client.get("/health/detailed")).json()
-        reported = data["components"]["static_files"]["path"]
-        assert reported == str(configured.resolve())
-        assert Path(reported).is_absolute()
+        response = await client.get("/health/detailed")
+        components = response.json()["components"]
+        assert components["static_files"]["status"] == "available"
+        # SECB-4: the absolute filesystem path is not disclosed.
+        assert "path" not in components["static_files"]
 
     async def test_health_verdict_tracks_the_shared_helper(
         self, bundle_root, monkeypatch: pytest.MonkeyPatch
@@ -251,6 +284,7 @@ class TestStaticFilesHealthComponent:
             app_module, "resolve_frontend_bundle", lambda: (configured.resolve(), False)
         )
         app = create_app()
+        _authorise_admin(app)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as client:
             data = (await client.get("/health/detailed")).json()

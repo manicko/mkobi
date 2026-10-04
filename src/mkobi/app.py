@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -18,6 +18,7 @@ from sqlalchemy import text
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from mkobi.api import routes
+from mkobi.api.deps import require_admin_role
 from mkobi.config import get_config
 from mkobi.core.logging_config import setup_logging
 from mkobi.core.redis_client import get_async_redis_client
@@ -351,11 +352,17 @@ def create_app() -> FastAPI:
             )
 
     @application.get("/health/detailed", tags=["health"])
-    async def detailed_health_check(request: Request) -> dict[str, Any]:
-        """Detailed health check with component status.
+    async def detailed_health_check(
+        request: Request,
+        _admin: Any = Depends(require_admin_role),
+    ) -> dict[str, Any]:
+        """Detailed health check with component status. Administrator only.
 
-        Checks database connectivity and returns detailed status information.
-        This endpoint is intended for admin use and monitoring systems.
+        Checks database connectivity and returns per-component status. The body
+        is reduced to non-sensitive signals: no absolute filesystem path and no
+        raw driver exception text (an unhandled connection error would otherwise
+        disclose the host, port and database URL). The component structure and
+        the operationally useful counters are kept.
         """
         health_status: dict[str, Any] = {
             "status": "healthy",
@@ -373,20 +380,22 @@ def create_app() -> FastAPI:
                 "type": "postgresql",
             }
         except Exception as e:
+            # Log the driver text server-side; never echo it in the body. It can
+            # carry the host, port and connection string.
             logger.error("Database health check failed: %s", e)
             health_status["status"] = "unhealthy"
             components["database"] = {
                 "status": "disconnected",
-                "error": str(e),
+                "type": "postgresql",
             }
 
         # Check if static files are mounted. The path and the verdict come from
         # the one helper the mount itself uses, so this component can never
-        # report a directory the mount does not serve (ART-007).
-        bundle_dir, bundle_available = resolve_frontend_bundle()
+        # report a directory the mount does not serve (ART-007). The absolute
+        # path is not disclosed; only the servability verdict.
+        _bundle_dir, bundle_available = resolve_frontend_bundle()
         components["static_files"] = {
             "status": "available" if bundle_available else "unavailable",
-            "path": str(bundle_dir),
         }
 
         # Check Redis connectivity. Redis is a hard dependency of every
@@ -407,12 +416,12 @@ def create_app() -> FastAPI:
             }
         except Exception as e:
             # warning, not error: Redis is degraded here, not a hard dependency
-            # failure like the database. The asymmetry is deliberate.
+            # failure like the database. The asymmetry is deliberate. The driver
+            # text stays in the log, not the body.
             logger.warning("Redis health check failed: %s", e)
             components["redis"] = {
                 "status": "disconnected",
                 "type": "redis",
-                "error": str(e),
             }
         finally:
             if redis_client is not None:

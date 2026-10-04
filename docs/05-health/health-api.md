@@ -23,7 +23,7 @@ The health check API provides endpoints for monitoring application availability 
 
 **Base path:** `/`
 
-**Auth level:** Public for `/health`. `/health/detailed` is **also public today**: the administrator requirement below is stated ahead of the code and is **not yet enforced** (see [below](#2-detailed-health-check)).
+**Auth level:** Public for `/health`. `/health/detailed` **requires an administrator** (`D-15-G` / `SECB-4`): an unauthenticated caller receives `401` and an authenticated non-admin receives `403`, both via the RFC 7807 error path.
 
 ---
 
@@ -75,9 +75,9 @@ Returns the overall application status along with per-component health informati
 | -------------- | ------------------------------------------------- |
 | **Method**     | `GET`                                             |
 | **Path**       | `/health/detailed`                                |
-| **Auth level** | Public today; an administrator is required from phase 15 (`D-15-G` / `SECB-4`), not yet enforced |
+| **Auth level** | Administrator only (`D-15-G` / `SECB-4`); `401` unauthenticated, `403` non-admin |
 
-> **Documentation-ahead-of-code.** `/health/detailed` **answers anonymously today**: the handler in `app.py::detailed_health_check` declares no authentication dependency, so no credential is examined. The administrator requirement is stated here ahead of the code and is **not built in this document's release**; it is implemented by phase 15's `D-15-G` / `SECB-4`. The same phase's `D-15-H` moves the reconciler counters (`lease_state`, `unprotected_ticks`) out of the anonymous body. This is a deliberate documentation-ahead-of-code hazard, accepted by the `DP-1` ruling — every "requires an administrator" statement in this document is therefore forward-looking, not a description of the running service.
+> **Reduced body (`D-15-H` / `SECB-4`).** The response no longer discloses the absolute filesystem path of the client bundle or any raw database/Redis driver exception text, because that text can carry a host, port or connection string. The component structure and the operationally useful signals (component name, status, timings, counters, lease state) are kept.
 
 **Response** (`200 OK`):
 
@@ -90,8 +90,7 @@ Returns the overall application status along with per-component health informati
       "type": "postgresql"
     },
     "static_files": {
-      "status": "available",
-      "path": "/app/frontend/dist"
+      "status": "available"
     },
     "redis": {
       "status": "connected",
@@ -119,11 +118,10 @@ Returned when one or more components are unavailable. The overall `status` field
   "components": {
     "database": {
       "status": "disconnected",
-      "error": "connection refused"
+      "type": "postgresql"
     },
     "static_files": {
-      "status": "unavailable",
-      "path": "/app/frontend/dist"
+      "status": "unavailable"
     }
   }
 }
@@ -139,9 +137,9 @@ Returned when one or more components are unavailable. The overall `status` field
 | `stale_processing_reconciler` | Reports the background reconciler's lease state and last completed sweep | Observability only |
 
 **Behavior:**
-- Database check: same connectivity test as the basic endpoint; includes the error message in the response on failure
-- Static files check: verifies the configured bundle directory (default `frontend/dist`, populated by `npm run build`) exists **and** contains an `index.html`; reports `"available"` only for that predicate, otherwise `"unavailable"`, and the `path` field carries the **resolved absolute path** rather than the configured literal. A `dist` directory without an `index.html` is reported `"unavailable"` because the app registers no catch-all routes in that state — the check and the SPA mount are driven by the same helper, so the health verdict and the route table cannot disagree
-- Redis check: sends a `PING` on a client built fresh from `get_async_redis_client()`, mirrors the `database` component's vocabulary (`"connected"` / `"disconnected"`, with `type: "redis"` and an `error` field on failure), and **always closes the client it built** so a health poll cannot leak a connection pool. The transport is bounded (see the [Configuration](../06-backend/configuration.md) note on the Redis socket timeouts), so a blackholed Redis reports the outage in roughly one second rather than blocking for a minute
+- Database check: same connectivity test as the basic endpoint; the driver exception is logged server-side and is **not** echoed in the response
+- Static files check: verifies the configured bundle directory (default `frontend/dist`, populated by `npm run build`) exists **and** contains an `index.html`; reports `"available"` only for that predicate, otherwise `"unavailable"`. The absolute path is **not** disclosed. A `dist` directory without an `index.html` is reported `"unavailable"` because the app registers no catch-all routes in that state — the check and the SPA mount are driven by the same helper, so the health verdict and the route table cannot disagree
+- Redis check: sends a `PING` on a client built fresh from `get_async_redis_client()`, mirrors the `database` component's vocabulary (`"connected"` / `"disconnected"`, with `type: "redis"`); the driver exception is logged server-side and is **not** echoed in the response. The client it built is **always closed** so a health poll cannot leak a connection pool. The transport is bounded (see the [Configuration](../06-backend/configuration.md) note on the Redis socket timeouts), so a blackholed Redis reports the outage in roughly one second rather than blocking for a minute
 - The overall `status` is computed from the `database` component only: it is `"unhealthy"` if and only if the database check fails. `static_files`, `redis` and the reconciler never change it, and `/health/detailed` always returns `200`
 - The reconciler component never changes the overall `status` — see [below](#22-health-is-deliberately-unchanged)
 - Redis never changes the overall `status` either: a degraded Redis is reported as `"disconnected"` while the overall `status` stays `"healthy"`. This is the `DP-1` ruling (2026-10-03): Redis is a *detailed* component that never moves liveness
@@ -181,7 +179,7 @@ The lease is a load-and-observability optimisation, never a correctness gate: on
   "status": "healthy",
   "components": {
     "database": { "status": "connected", "type": "postgresql" },
-    "static_files": { "status": "available", "path": "/app/frontend/dist" },
+    "static_files": { "status": "available" },
     "redis": { "status": "connected", "type": "redis" },
     "stale_processing_reconciler": {
       "status": "ok",
@@ -205,11 +203,11 @@ The lease is a load-and-observability optimisation, never a correctness gate: on
 
 `/health` is what the container healthcheck curls and what `nginx` gates on via `depends_on: app: condition: service_healthy`. If reconciler or lease state fed that endpoint, then during any Redis blip three of the four workers would report unhealthy and the reverse proxy would refuse to start — turning a degraded background sweep into a total outage of the API. `/health` therefore keeps meaning one thing only: *the database is reachable*. Redis is deliberately **not** a key on `/health` either, even though every authenticated request depends on it (revocation reads fail closed, so a Redis outage is what makes `GET /api/v1/auth/me` answer `503`). Everything else belongs on `/health/detailed`, which returns `200` regardless and never withholds a component.
 
-**Release coupling (`DP-1`, 2026-10-03) — a consequence phase 15 must decide, not a shipped behaviour.** Because `/health/detailed` is to require an administrator (see [above](#2-detailed-health-check)), an unauthenticated external monitor will no longer be able to use it once that gate lands: such a monitor will have to poll `/health` or authenticate. **Today it can still use `/health/detailed`, because the gate does not exist yet.** `/health` remains the only endpoint that is unconditionally anonymous.
+**An unauthenticated external monitor must poll `/health` or authenticate.** `/health/detailed` now requires an administrator (`D-15-G` / `SECB-4`): an unauthenticated caller receives `401` and a non-admin `403`. `/health` remains the only endpoint that is unconditionally anonymous.
 
-**The gate is Redis-dependent — phase 15 owns the fork.** The usable gate is `api/deps.py::require_admin_role` (not `require_dashboard_admin_access`, which requires a `dashboard_id` path parameter this endpoint has no way to supply). That dependency resolves the current user, which reads the revocation store from Redis: `require_admin_role` → `get_current_user_dependency` → `get_redis_client_dependency` → `RevocationStoreUnavailableError` → `503`. A gate built on it unchanged would therefore answer **`503` during the very Redis outage it exists to report** — while `/health` keeps answering `200`. Whoever implements `D-15-G` / `SECB-4` must choose between accepting that 503 and authenticating without a Redis revocation read (a deliberate, if small, weakening). Phase 07 records the choice and does not make it.
+**The gate is Redis-dependent — a known, accepted consequence (`SECB-4`).** The gate is `api/deps.py::require_admin_role` (not `require_dashboard_admin_access`, which requires a `dashboard_id` path parameter this endpoint has no way to supply). That dependency resolves the current user, which reads the revocation store from Redis: `require_admin_role` → `get_current_user_dependency` → `get_redis_client_dependency` → `RevocationStoreUnavailableError` → `503`. The gate therefore answers **`503` during a full Redis outage** — while `/health` keeps answering `200`. The chosen implementation accepts that 503 rather than authenticating without a Redis revocation read: weakening revocation to keep one probe usable is the larger risk, and `/health` already covers liveness.
 
-**On the nginx layer.** The health `location` block forwards to the application and overrides only the `Host` header, so an application-level gate on `/health/detailed` **is** effective through nginx; there is no separate nginx access control to change. What becomes stale once the gate lands is nginx's own "no auth required" comment near that block — a phase-12 hand-over, not a claim that production is controlled by nginx rather than the application.
+**On the nginx layer.** The health `location` block forwards to the application and overrides only the `Host` header, so an application-level gate on `/health/detailed` **is** effective through nginx; there is no separate nginx access control to change. nginx's own "no auth required" comment near that block is now stale — a phase-12 hand-over, not a claim that production is controlled by nginx rather than the application.
 
 ---
 
@@ -254,7 +252,7 @@ Both `/health` and `/health/detailed` verify database connectivity by executing 
 | Database does not exist | 503         | `disconnected`        |
 | Normal operation        | 200         | `connected`           |
 
-On failure, the exception message is included in the detailed health check response and logged server-side at `ERROR` level.
+On failure, the exception is logged server-side at `ERROR` level and the raw driver text is **not** included in the detailed health check response.
 
 ---
 
@@ -265,7 +263,7 @@ These endpoints are designed for integration with:
 - **Kubernetes:** Configure as `livenessProbe` and `readinessProbe` targets
 - **Load balancers:** Use `/health` for health check pings to determine instance availability
 - **Uptime monitors:** Poll `/health` at regular intervals; alert on non-200 responses
-- **Admin dashboards:** Use `/health/detailed` for a component-level status overview. It answers anonymously today; once phase 15's `D-15-G` / `SECB-4` gate lands it will require an administrator, and an anonymous uptime monitor will have to poll `/health` or authenticate (see [above](#22-health-is-deliberately-unchanged))
+- **Admin dashboards:** Use `/health/detailed` for a component-level status overview. It requires an administrator (`D-15-G` / `SECB-4`); an anonymous uptime monitor must poll `/health` or authenticate (see [above](#22-health-is-deliberately-unchanged))
 
 **Recommended polling interval:** 10–30 seconds for `/health`.
 
