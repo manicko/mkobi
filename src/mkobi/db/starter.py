@@ -80,9 +80,13 @@ class UnsafeTestDatabaseRecreationError(Exception):
 
 
 # Test database naming convention shared with tests/conftest.py: the base name
-# is 'bidb_test' and pytest-xdist workers append a '_<worker_id>' suffix, e.g.
-# 'bidb_test_gw0'. Recreation is refused unless the target name matches.
-TEST_DATABASE_NAME_PATTERN = re.compile(r"^bidb_test(_[A-Za-z0-9]+)?$")
+# is 'bidb_test' and per-run (and pytest-xdist worker) isolation appends a
+# single '_<token>' suffix, e.g. 'bidb_test_a1b2c3d4'. Recreation is refused
+# unless the target name matches. The pattern is anchored with '\Z' rather than
+# '$': Python's '$' also matches immediately before a trailing newline, so
+# '$' would accept 'bidb_test\n', while '\Z' matches only at the true end of
+# the string.
+TEST_DATABASE_NAME_PATTERN = re.compile(r"^bidb_test(_[A-Za-z0-9]+)?\Z")
 
 
 class DatabaseStarterConfig:
@@ -282,7 +286,9 @@ class DatabaseStarter:
             )
 
         # Validate database name against safe pattern to prevent SQL injection.
-        if not re.match(r"^[a-zA-Z0-9_]+$", str(db_name)):
+        # '\Z' anchors at the true end of the string; '\Z' is required because
+        # '$' would let a trailing newline through.
+        if not re.match(r"^[a-zA-Z0-9_]+\Z", str(db_name)):
             raise ValueError(f"Invalid database name: {db_name}")
 
         logger.info("Recreating test database...")
