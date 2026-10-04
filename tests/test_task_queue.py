@@ -113,3 +113,37 @@ class TestServicesDoNotImportRq:
             "Service modules must not import rq; the submission seam is "
             f"mkobi.core.task_queue. Offenders: {offenders}"
         )
+
+
+
+class TestEnqueueFailureSurface:
+    """SECB-6: an enqueue failure must not return the store endpoint.
+
+    The caught Redis/connection error's text carries the host, port and URL of
+    the broker. Returning it to the caller is infrastructure disclosure, so the
+    raised ``AppException`` carries a fixed message and preserves the cause only
+    through chaining.
+    """
+
+    async def test_enqueue_failure_detail_is_fixed_and_hides_endpoint(
+        self, monkeypatch
+    ):
+        """The response detail is fixed and contains no endpoint; the cause is chained."""
+
+        def unreachable_queue():
+            raise redis.exceptions.ConnectionError(
+                "Error 111 connecting to redis-internal.example:6379. Connection refused."
+            )
+
+        # Target the single module the seam builds the queue through.
+        monkeypatch.setattr(task_queue, "get_rq_queue", unreachable_queue)
+
+        with pytest.raises(task_queue.AppException) as exc_info:
+            await task_queue.enqueue_job(lambda: None)
+
+        exc = exc_info.value
+        assert exc.detail == "Failed to enqueue processing job"
+        assert "redis-internal.example" not in exc.detail
+        assert "6379" not in exc.detail
+        assert exc.__cause__ is not None
+        assert isinstance(exc.__cause__, redis.exceptions.ConnectionError)

@@ -72,8 +72,12 @@ async def enqueue_job(
         job = await asyncio.to_thread(queue.enqueue, func, *args, **kwargs)
         return str(job.id)
     except Exception as e:
-        logger.error("Failed to enqueue job: %s", e)
+        # Keep the broker endpoint in the operator log only. The caller gets a
+        # fixed message: the Redis connection error's text carries the host,
+        # port and URL, which is infrastructure detail that must not surface in
+        # an API response.
+        logger.exception("Failed to enqueue job: %s", e)
         raise AppException(
             code=ErrorCode.FILE_PROCESSING_ERROR,
-            detail=f"Failed to enqueue processing job: {e}",
+            detail="Failed to enqueue processing job",
         ) from e
