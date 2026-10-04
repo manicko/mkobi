@@ -41,7 +41,7 @@ from mkobi.utils.exceptions import AppException
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/graphs", tags=["graphs"], redirect_slashes=False)
+router = APIRouter(prefix="/graphs", tags=["graphs"])
 
 
 # --- Global graph endpoints ---

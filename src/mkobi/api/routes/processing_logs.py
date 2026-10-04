@@ -25,7 +25,7 @@ from mkobi.models.user import UserRead
 from mkobi.services.processing_log_service import ProcessingLogService
 from mkobi.utils.exceptions import AppException
 
-router = APIRouter(prefix="/admin/logs", tags=["admin", "processing_logs"], redirect_slashes=False)
+router = APIRouter(prefix="/admin/logs", tags=["admin", "processing_logs"])
 
 logger = get_logger(__name__)
 

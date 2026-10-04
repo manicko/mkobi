@@ -17,7 +17,7 @@ from mkobi.api.routes.dashboards_graphs import router as graphs_router
 from mkobi.api.routes.filter_values import router as filter_values_router
 
 # Create combined router that includes all sub-routers
-router = APIRouter(prefix="/dashboards", tags=["dashboards"], redirect_slashes=False)
+router = APIRouter(prefix="/dashboards")
 router.include_router(crud_router)
 router.include_router(access_router)
 router.include_router(filters_router)

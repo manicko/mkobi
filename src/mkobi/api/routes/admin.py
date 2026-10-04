@@ -35,7 +35,7 @@ from mkobi.core.temp_password_store import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/admin", tags=["admin"], redirect_slashes=False)
+router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 # --- User Management ---

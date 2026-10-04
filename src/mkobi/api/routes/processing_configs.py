@@ -30,7 +30,7 @@ from mkobi.services.processing_config_service import ProcessingConfigService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/processing-configs", tags=["processing_configs"], redirect_slashes=False)
+router = APIRouter(prefix="/processing-configs", tags=["processing_configs"])
 
 
 @router.get(

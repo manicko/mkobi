@@ -69,7 +69,7 @@ from mkobi.utils.exceptions import AppException
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/auth", tags=["auth"], redirect_slashes=False)
+router = APIRouter(prefix="/auth", tags=["auth"])
 
 # Sentinel peer used when the request has no usable client address. It still
 # rate-limits, so a malformed or absent peer cannot become a bypass.

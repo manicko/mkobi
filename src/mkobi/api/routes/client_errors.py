@@ -24,7 +24,7 @@ from mkobi.utils.exceptions import AppException
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/client-errors", tags=["client-errors"], redirect_slashes=False)
+router = APIRouter(prefix="/client-errors", tags=["client-errors"])
 
 
 async def enforce_declared_content_length(request: Request) -> None:

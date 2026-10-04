@@ -34,7 +34,7 @@ from mkobi.utils.exceptions import AppException
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/users", tags=["users"], redirect_slashes=False)
+router = APIRouter(prefix="/users", tags=["users"])
 
 
 @router.post(

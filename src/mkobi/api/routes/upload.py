@@ -45,7 +45,7 @@ from mkobi.models.enums import ErrorCode, UploadMode
 from mkobi.services.data_service import DataService
 from mkobi.utils.exceptions import AppException
 
-router = APIRouter(prefix="/upload", tags=["upload"], redirect_slashes=False)
+router = APIRouter(prefix="/upload", tags=["upload"])
 
 logger = get_logger(__name__)
 

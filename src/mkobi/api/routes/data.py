@@ -33,7 +33,7 @@ from mkobi.utils.exceptions import AppException
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/data", tags=["data"], redirect_slashes=False)
+router = APIRouter(prefix="/data", tags=["data"])
 
 
 @router.get(
