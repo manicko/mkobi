@@ -113,6 +113,8 @@ class TestAggregateRowCaps:
         graph = body["graphs"][0]
         assert graph["total_rows"] == caps.max_rows_per_graph + 50
         assert graph["rows_truncated"] is True
+        # DP-13-C: the server reports how many rows it actually returned.
+        assert graph["returned_rows"] == caps.max_rows_per_graph
         assert len(graph["data"]) == caps.max_rows_per_graph
 
     async def test_bound_respected_per_graph_and_total(
@@ -169,6 +171,7 @@ class TestAggregateRowCaps:
         graph = body["graphs"][0]
         assert graph["rows_truncated"] is False
         assert graph["total_rows"] == 5
+        assert graph["returned_rows"] == 5
         assert len(graph["data"]) == 5
 
     async def test_determinism(

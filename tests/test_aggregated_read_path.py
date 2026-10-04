@@ -261,7 +261,7 @@ class TestAggregateResponseShape:
         graph = body["graphs"][0]
         assert set(graph.keys()) == {
             "graph_id", "type", "name", "data",
-            "total_rows", "rows_truncated", "layout", "config",
+            "returned_rows", "total_rows", "rows_truncated", "layout", "config",
         }
         assert graph["graph_id"] == str(graph_id)
         assert graph["type"] == "bar"
@@ -271,6 +271,9 @@ class TestAggregateResponseShape:
         # Two stored rows: under both caps, so nothing is truncated.
         assert body["truncated"] is False
         assert body["total_rows"] == 2
+        # DP-13-C: the server supplies the returned-row count the client
+        # renders; it is not the client's `data.length`.
+        assert graph["returned_rows"] == 2
         assert graph["total_rows"] == 2
         assert graph["rows_truncated"] is False
 

@@ -167,6 +167,29 @@ class TestAggregatedDataResponseCarriesTruncationContract:
         assert "total_rows" in component["required"]
         assert "rows_truncated" in component["properties"]
 
+    def test_graph_response_declares_a_server_supplied_returned_count(self) -> None:
+        """``GraphDataResponse.returned_rows`` is a required integer property.
+
+        ``DP-13-C``: the displayed lower bound of "Showing N of M" must come
+        from the server, not from a client-side count of ``data``. This pins
+        the field in the published schema so the server signal cannot be
+        removed without failing here.
+        """
+        from mkobi.main import app
+        from mkobi.models.data import GraphDataResponse
+
+        field = GraphDataResponse.model_fields["returned_rows"]
+        assert field.is_required(), "returned_rows must stay a required field"
+        assert field.annotation is int, (
+            f"returned_rows annotation changed from int to {field.annotation!r}"
+        )
+
+        schema = app.openapi()
+        component = schema["components"]["schemas"]["GraphDataResponse"]
+        returned_schema = component["properties"]["returned_rows"]
+        assert returned_schema.get("type") == "integer"
+        assert "returned_rows" in component["required"]
+
     def test_aggregated_response_declares_a_total_and_truncation_flag(self) -> None:
         """``AggregatedDataResponse`` declares ``total_rows`` and ``truncated``."""
         from mkobi.main import app

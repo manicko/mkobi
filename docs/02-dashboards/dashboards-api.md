@@ -1017,6 +1017,7 @@ untruncated counts alongside the bounded rows:
       "type": "bar",
       "name": "Sales by Category",
       "data": [ {"category": "A", "revenue": 1000} ],
+      "returned_rows": 1,
       "total_rows": 5000,
       "rows_truncated": true
     }
@@ -1026,6 +1027,10 @@ untruncated counts alongside the bounded rows:
 }
 ```
 
+- `GraphDataResponse.returned_rows` — the number of rows the server placed in
+  `data`. The lower bound of "Showing N of M" renders from this field
+  (`DP-13-C`): a client-side `data.length` would stop describing what the
+  server sent once the client transforms the array. **Mandatory**.
 - `GraphDataResponse.total_rows` — the graph's true row count, from a
   `COUNT(*)` query, never the length of the bounded page. **Mandatory**
   (`DP-11-B`).
@@ -1040,8 +1045,8 @@ back is **deterministic**: the `ORDER BY aggregated_data.id` order is
 preserved, so identical requests return the identical slice. The server does
 **not** aggregate to fit the cap — the row content and its shape are unchanged;
 only the number of rows is bounded. The client renders "Showing N of M" from
-the server's `total_rows`/`rows_truncated` fields (`DP-13-C`), not from any
-client-side count.
+the server's `returned_rows`/`total_rows`/`rows_truncated` fields (`DP-13-C`),
+not from any client-side count.
 
 ---
 

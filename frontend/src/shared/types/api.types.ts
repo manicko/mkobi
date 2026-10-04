@@ -210,6 +210,13 @@ export interface GraphDataWithConfig {
   name: string
   data: Data[]
   /**
+   * The number of rows the server actually placed in `data`. The lower bound
+   * of the "Showing N of M" status line renders from this field. It is supplied
+   * by the server so the number describes what the server sent even if the
+   * client later transforms `data`.
+   */
+  returned_rows: number
+  /**
    * The graph's true, untruncated row count, supplied by the server. The
    * "Showing N of M" status line renders from this field — never from a
    * client-side count of `data`, which would be an invented signal.

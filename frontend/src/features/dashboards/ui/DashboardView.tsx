@@ -198,7 +198,7 @@ const { id } = useParams()
                       component="p"
                       sx={{ mb: 1 }}
                     >
-                      Showing {graph.data.length} of {graph.total_rows}
+                      Showing {graph.returned_rows} of {graph.total_rows}
                     </Typography>
                   )}
                   <Stack sx={{ height: 400 }}>

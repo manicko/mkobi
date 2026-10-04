@@ -150,14 +150,15 @@ async def get_aggregated_data_endpoint(
                 filters=parsed_filters,
             )
             data_points = _flatten_points(records)
-            rows_truncated = total_rows > len(data_points)
+            returned_rows = len(data_points)
+            rows_truncated = total_rows > returned_rows
 
             logger.info(
                 "Aggregated data retrieved: dashboard_id=%s, graph_id=%s, "
                 "returned=%d, total=%d, truncated=%s",
                 dashboard_id,
                 graph_id,
-                len(data_points),
+                returned_rows,
                 total_rows,
                 rows_truncated,
             )
@@ -169,6 +170,7 @@ async def get_aggregated_data_endpoint(
                         type=single_graph.type,
                         name=single_graph.name,
                         data=data_points,
+                        returned_rows=returned_rows,
                         total_rows=total_rows,
                         rows_truncated=rows_truncated,
                         config=single_graph.config,
@@ -193,8 +195,9 @@ async def get_aggregated_data_endpoint(
                 filters=parsed_filters,
             )
             data_points = _flatten_points(records)
-            remaining_budget -= len(data_points)
-            rows_truncated = total_rows > len(data_points)
+            returned_rows = len(data_points)
+            remaining_budget -= returned_rows
+            rows_truncated = total_rows > returned_rows
             any_truncated = any_truncated or rows_truncated
 
             logger.info(
@@ -202,7 +205,7 @@ async def get_aggregated_data_endpoint(
                 "returned=%d, total=%d, truncated=%s",
                 dashboard_id,
                 graph_item.id,
-                len(data_points),
+                returned_rows,
                 total_rows,
                 rows_truncated,
             )
@@ -213,6 +216,7 @@ async def get_aggregated_data_endpoint(
                     type=graph_item.type,
                     name=graph_item.name,
                     data=data_points,
+                    returned_rows=returned_rows,
                     total_rows=total_rows,
                     rows_truncated=rows_truncated,
                     config=graph_item.config,

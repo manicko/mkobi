@@ -42,6 +42,7 @@ let mockAggregatedData: {
     type: string
     name: string
     data: unknown[]
+    returned_rows: number
     total_rows: number
     rows_truncated: boolean
   }>
@@ -54,6 +55,7 @@ let mockAggregatedData: {
       type: 'bar',
       name: 'Sales by Category',
       data: [{ x: ['A', 'B', 'C'], y: [1, 2, 3], type: 'bar' }],
+      returned_rows: 1,
       total_rows: 1,
       rows_truncated: false,
     },
@@ -62,6 +64,7 @@ let mockAggregatedData: {
       type: 'line',
       name: 'Trend Over Time',
       data: [{ x: [1, 2, 3], y: [10, 20, 30], type: 'scatter', mode: 'lines' }],
+      returned_rows: 1,
       total_rows: 1,
       rows_truncated: false,
     },
@@ -70,6 +73,7 @@ let mockAggregatedData: {
       type: 'table',
       name: 'Data Table',
       data: [{ category: 'A', value: 100 }, { category: 'B', value: 200 }],
+      returned_rows: 2,
       total_rows: 2,
       rows_truncated: false,
     },
@@ -130,6 +134,7 @@ const defaultGraphs = (): typeof mockAggregatedData => ({
       type: 'bar',
       name: 'Sales by Category',
       data: [{ x: ['A', 'B', 'C'], y: [1, 2, 3], type: 'bar' }],
+      returned_rows: 1,
       total_rows: 1,
       rows_truncated: false,
     },
@@ -138,6 +143,7 @@ const defaultGraphs = (): typeof mockAggregatedData => ({
       type: 'line',
       name: 'Trend Over Time',
       data: [{ x: [1, 2, 3], y: [10, 20, 30], type: 'scatter', mode: 'lines' }],
+      returned_rows: 1,
       total_rows: 1,
       rows_truncated: false,
     },
@@ -146,6 +152,7 @@ const defaultGraphs = (): typeof mockAggregatedData => ({
       type: 'table',
       name: 'Data Table',
       data: [{ category: 'A', value: 100 }, { category: 'B', value: 200 }],
+      returned_rows: 2,
       total_rows: 2,
       rows_truncated: false,
     },
@@ -255,9 +262,10 @@ describe('DashboardView', () => {
   })
 
   it('renders the status line from the server counts, not a client count', async () => {
-    // The server says the graph has 5000 rows and returned 3. A client that
-    // invented the upper bound from `data.length` would render "3 of 3" and
-    // never say "truncated"; this pins the server field as the source.
+    // The server says the graph has 5000 rows and returned 42. The fixture's
+    // `data` deliberately holds a single point, so a client that invented the
+    // lower bound from `data.length` would render "1 of 5000". The assertion
+    // pins the server's `returned_rows` as the source of the displayed count.
     mockAggregatedData = {
       graphs: [
         {
@@ -265,6 +273,7 @@ describe('DashboardView', () => {
           type: 'bar',
           name: 'Sales by Category',
           data: [{ x: ['A'], y: [1], type: 'bar' }],
+          returned_rows: 42,
           total_rows: 5000,
           rows_truncated: true,
         },
@@ -281,9 +290,9 @@ describe('DashboardView', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByText('Showing 1 of 5000')).toBeInTheDocument()
+      expect(screen.getByText('Showing 42 of 5000')).toBeInTheDocument()
     })
-    expect(screen.queryByText('Showing 1 of 1')).not.toBeInTheDocument()
+    expect(screen.queryByText('Showing 1 of 5000')).not.toBeInTheDocument()
   })
 
   it('renders no status line when the graph is not truncated', async () => {
