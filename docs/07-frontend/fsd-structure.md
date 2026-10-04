@@ -217,7 +217,20 @@ features/dashboards/ui/charts/
 
 ## Enum Synchronization
 
-Frontend enums in `shared/types/enums.ts` mirror the backend `StrEnum` values defined in `src/mkobi/models/enums.py`. This ensures type safety across the API boundary. The frontend uses `as const` objects with derived union types instead of TypeScript enums for `erasableSyntaxOnly` compatibility.
+The frontend does **not** mirror the backend enum surface wholesale. `src/mkobi/models/enums.py` declares **20** `StrEnum` classes; `shared/types/enums.ts` declares **10** families. **Nine** of those ten mirror a backend class one-for-one — `UserRole`, `DashboardPermission`, `GraphType`, `FilterType`, `RegistrationStatus`, `UploadMode`, `ProcessingStatus`, `BarmodeEnum` and `ErrorCode`. The tenth, `FileUploadStatus`, is **client-only** and has no backend counterpart.
+
+The remaining **11** backend classes are deliberately **not** mirrored, either because nothing on the client consumes them or because they are backend presentation vocabulary with no client counterpart — `ButtonVariant` and `ComponentSize` among them, which the server does not enforce (see [`SPEC.md`](../SPEC.md) row `3.42`). That leaves **9 mirrored + 11 unmirrored = 20**.
+
+The asymmetry is **two-directional** and is now declared, not implied. Two named allow-lists live beside the mirrors in `frontend/src/shared/types/enums.ts`:
+
+| Allow-list             | Contents                | Meaning                                                                                                    |
+| ---------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `SERVER_ONLY_FAMILIES` | 11 backend class names | A backend `StrEnum` with no mirror, recorded so the absence is an explicit decision rather than an oversight. |
+| `CLIENT_ONLY_FAMILIES` | `FileUploadStatus`      | A frontend family with no backend counterpart.                                                              |
+
+`shared/types/__tests__/enums.test.ts` asserts **exact sets** in both directions rather than membership: every member of every mirrored family matches the backend, every unmirrored backend class appears in `SERVER_ONLY_FAMILIES`, every client-only family appears in `CLIENT_ONLY_FAMILIES`, and neither allow-list may name a mirrored family. A newly added family on either tier therefore fails the suite until its placement is declared.
+
+The frontend uses `as const` objects with derived union types instead of TypeScript enums for `erasableSyntaxOnly` compatibility.
 
 ## Cross-References
 

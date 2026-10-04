@@ -328,7 +328,7 @@ Graphs define chart configurations within a dashboard. Each graph belongs to exa
 
 ### 11. List Graphs
 
-Returns graphs for dashboards the user has access to.
+Returns every graph on every dashboard the user can access. **This endpoint accepts no query parameters** — the dashboard scope is resolved from the caller's own access, not supplied by the client, and a caller holding the `admin` role is unrestricted. To list the graphs of one specific dashboard use [31. List Graphs for Dashboard](#31-list-graphs-for-dashboard) (`GET /api/v1/dashboards/{dashboard_id}/graphs`).
 
 | Attribute      | Value                          |
 | -------------- | ------------------------------ |
@@ -336,11 +336,7 @@ Returns graphs for dashboards the user has access to.
 | **Path**       | `/api/v1/graphs/`              |
 | **Auth level** | Any authenticated user         |
 
-**Query parameters:**
-
-| Parameter      | Type   | Required | Description                    |
-| -------------- | ------ | -------- | ------------------------------ |
-| `dashboard_id` | UUID   | No       | Filter by specific dashboard   |
+**Query parameters:** None. A `dashboard_id` filter is not accepted here; the parameter is ignored rather than rejected, so a client that sends one silently receives the unfiltered collection.
 
 **Response** (`200 OK`):
 

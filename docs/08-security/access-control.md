@@ -136,6 +136,7 @@ Access control is enforced on **all** dashboard-related endpoints, not just data
 | --- | --- | --- |
 | `GET /api/v1/graphs/` | Any authenticated | Graph definitions are filtered by dashboard access |
 | `GET /api/v1/graphs/:id` | Any authenticated | Validates access to the parent dashboard |
+| `GET /api/v1/layouts` | Any authenticated | Layout definitions are filtered by dashboard access; an `admin`-role caller is unrestricted |
 
 ### Access Management Endpoints
 
