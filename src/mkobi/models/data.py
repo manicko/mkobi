@@ -1,5 +1,6 @@
 from typing import Annotated, Any
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
+import json
 from datetime import datetime
 from uuid import UUID
 
@@ -33,6 +34,11 @@ __all__ = [
     "ChartConfig",
     "FilterState",
     "ProcessingResultData",
+    "AggregatedFiltersRequest",
+    "MAX_FILTER_KEYS",
+    "MAX_FILTER_KEY_LENGTH",
+    "MAX_FILTER_VALUE_LENGTH",
+    "MAX_FILTER_PAYLOAD_BYTES",
     "GraphDataResponse",
     "AggregatedDataResponse",
     "FilterValuesResponse",
@@ -472,8 +478,89 @@ class FilterState(BaseModel):
     )
 
 
-# ==================== Aggregated Data Response Types ====================
+# ==================== Filter Payload Bounds (PRF-5) ====================
 
+# The ``filters`` query-string parameter is a JSON-encoded object whose keys
+# become one ``->>`` equality each in the aggregate query. Nothing previously
+# bounded its width, so any caller could make the planner build an arbitrarily
+# large predicate set. Phase-1 measurement (authoritative) found that execution
+# time stays in a 16.4--33.1 ms band regardless of key count while *planning*
+# time grows from 0.889 ms at K=0 to 37.971 ms at K=1000 (43x). The bound below
+# is therefore about the plan, not the scan.
+#
+# Derivation: the edge applies nginx's default 8 KB request-line limit, and no
+# ``large_client_header_buffers`` directive exists repository-wide, so a payload
+# that reaches the application is already under roughly 8 KB. 20 keys with
+# realistic key/value lengths sit comfortably inside that ceiling while holding
+# planning time to roughly 1.6 ms instead of the 38 ms a thousand keys produce.
+MAX_FILTER_KEYS = 20
+MAX_FILTER_KEY_LENGTH = 64
+MAX_FILTER_VALUE_LENGTH = 256
+MAX_FILTER_PAYLOAD_BYTES = 4096
+
+
+class AggregatedFiltersRequest(BaseModel):
+    """Validated ``filters`` payload for the aggregated data endpoint.
+
+    Keys are dimension names compared with ``->>`` equality; values are coerced
+    to text by the repository. Four bounds apply (``PRF-5``): a maximum key
+    count, a maximum key-name length, a maximum value length, and a maximum
+    serialised payload size. See ``MAX_FILTER_*`` for the derivation.
+
+    The enforced limits reject with a Pydantic ``ValidationError``, which the
+    route maps to the same RFC 7807 ``VALIDATION_ERROR`` as malformed JSON.
+    """
+
+    filters: dict[str, str | int | float | bool]
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "example": {
+                "filters": {
+                    "year": 2023,
+                    "category": "Electronics",
+                }
+            }
+        },
+    )
+
+    @field_validator("filters")
+    @classmethod
+    def validate_filter_bounds(
+        cls, v: dict[str, str | int | float | bool]
+    ) -> dict[str, str | int | float | bool]:
+        """Enforce key-count, key-length, value-length and payload-size bounds."""
+        if len(v) > MAX_FILTER_KEYS:
+            raise ValueError(
+                f"filters accepts at most {MAX_FILTER_KEYS} keys, got {len(v)}"
+            )
+        for key, value in v.items():
+            if len(key) > MAX_FILTER_KEY_LENGTH:
+                raise ValueError(
+                    f"filter key names accept at most {MAX_FILTER_KEY_LENGTH} "
+                    f"characters, got {len(key)}"
+                )
+            if len(str(value)) > MAX_FILTER_VALUE_LENGTH:
+                raise ValueError(
+                    f"filter values accept at most {MAX_FILTER_VALUE_LENGTH} "
+                    f"characters, got {len(str(value))}"
+                )
+        serialised = json.dumps(v)
+        if len(serialised.encode("utf-8")) > MAX_FILTER_PAYLOAD_BYTES:
+            raise ValueError(
+                f"filters payload accepts at most {MAX_FILTER_PAYLOAD_BYTES} "
+                f"bytes, got {len(serialised.encode('utf-8'))}"
+            )
+        return v
+
+    @property
+    def parsed(self) -> dict[str, Any]:
+        """Return the filters as a plain mapping for the repository."""
+        return dict(self.filters)
+
+
+# ==================== Aggregated Data Response Types ====================
 
 class GraphDataResponse(BaseModel):
     """Model for individual graph data response.

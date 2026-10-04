@@ -234,7 +234,12 @@ When `source === "data"`, the frontend fetches values from `GET /api/v1/dashboar
 
 **Creating and binding filters:**
 
-1. Create a global filter via `POST /api/v1/filters`:
+Filter records are seeded directly into the `filters` table (the development
+seeder upserts them); there is **no global-filter creation HTTP endpoint** —
+the `/api/v1/filters` CRUD routes were removed as orphaned and
+`src/mkobi/api/routes/filters.py` is now a placeholder that holds no route.
+
+1. A filter row has this shape:
 
 ```json
 {

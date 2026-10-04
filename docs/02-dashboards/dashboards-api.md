@@ -502,6 +502,16 @@ Feature configuration is stored in the `config` JSONB field of the `graphs` tabl
 
 Filters are reusable across dashboards via the `dashboard_filters` many-to-many join table. They are applied globally to all graphs on a dashboard.
 
+> **The global filter CRUD routes are removed.** Endpoints 16–20 below
+> (`GET/POST/PUT/DELETE /api/v1/filters`) no longer exist: they were orphaned
+> (no frontend caller) and `src/mkobi/api/routes/filters.py` is now a
+> placeholder module that registers **no route**. Filter rows are seeded
+> directly into the `filters` table. The live filter surfaces are the
+> dashboard-scoped binding endpoints (27–29) and
+> `GET /api/v1/dashboards/{dashboard_id}/filter-values` (see *Filter Values*).
+> The entries below are retained only as a historical record of the removed
+> API.
+
 ### 16. List Filters
 
 Returns filters for dashboards the user has access to. Editor and above.
@@ -1047,6 +1057,40 @@ preserved, so identical requests return the identical slice. The server does
 only the number of rows is bounded. The client renders "Showing N of M" from
 the server's `returned_rows`/`total_rows`/`rows_truncated` fields (`DP-13-C`),
 not from any client-side count.
+
+---
+
+### Filter payload bounds (`PRF-5`)
+
+The `filters` query parameter is a JSON-encoded object. Each key becomes one
+`->>` equality in the aggregate query, and nothing previously bounded its
+width, so any caller could make the planner build an arbitrarily large
+predicate set. The application now validates the payload against four bounds
+(`src/mkobi/models/data.py`, `AggregatedFiltersRequest`):
+
+| Bound | Value | Constant |
+| --- | --- | --- |
+| Filter keys | 20 | `MAX_FILTER_KEYS` |
+| Key-name length | 64 characters | `MAX_FILTER_KEY_LENGTH` |
+| Value length | 256 characters | `MAX_FILTER_VALUE_LENGTH` |
+| Serialised payload | 4 KB | `MAX_FILTER_PAYLOAD_BYTES` |
+
+**Derivation.** Phase-1 measurement found that query *execution* time stays in
+a 16.4–33.1 ms band regardless of key count, with the plan node staying
+`Index Scan` at every key count; it is *planning* time that grows — 0.889 ms at
+zero keys to 37.971 ms at one thousand keys (43×). Bounding the payload is
+therefore about the plan, not the scan: 20 keys with realistic key/value
+lengths holds planning time to roughly 1.6 ms instead of the 38 ms a thousand
+keys produce. The edge applies nginx's default 8 KB request-line limit (no
+`large_client_header_buffers` directive exists repository-wide), so a payload
+that reaches the application is already under ~8 KB; 20 keys sit comfortably
+inside that ceiling. The bound is enforced in the application layer, not at the
+proxy.
+
+A payload that violates any bound is rejected with the same RFC 7807
+`VALIDATION_ERROR` (HTTP `422`) as malformed JSON, raised through
+`AppException`. The repository query is unchanged: `->>` equality per key, with
+no interpolation.
 
 ---
 

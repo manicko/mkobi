@@ -14,6 +14,7 @@ from typing import Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, status
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.api.deps import (
@@ -28,7 +29,11 @@ from mkobi.api.schemas.responses import (
 from mkobi.config import get_config
 from mkobi.core.permissions import check_dashboard_access, DashboardPermissionError
 from mkobi.db.repositories.graph_repo import GraphRepository
-from mkobi.models.data import AggregatedDataResponse, GraphDataResponse
+from mkobi.models.data import (
+    AggregatedDataResponse,
+    AggregatedFiltersRequest,
+    GraphDataResponse,
+)
 from mkobi.models.enums import DashboardPermission, ErrorCode
 from mkobi.services.data_service import DataService
 from mkobi.utils.exceptions import AppException
@@ -120,12 +125,14 @@ async def get_aggregated_data_endpoint(
         parsed_filters: dict[str, Any] | None = None
         if filters:
             try:
-                parsed_filters = json.loads(filters)
-            except json.JSONDecodeError as e:
-                logger.warning("Invalid JSON in filters")
+                parsed_filters = AggregatedFiltersRequest(
+                    filters=json.loads(filters)
+                ).parsed
+            except (json.JSONDecodeError, ValidationError) as e:
+                logger.warning("Invalid filters payload")
                 raise AppException(
                     code=ErrorCode.VALIDATION_ERROR,
-                    detail="Invalid JSON in filters",
+                    detail="Invalid filters payload",
                 ) from e
 
         caps = get_config().data
@@ -232,6 +239,13 @@ async def get_aggregated_data_endpoint(
             truncated=any_truncated,
         )
 
+    except AppException:
+        # Propagate application exceptions untouched so their RFC 7807 code
+        # and status (e.g. VALIDATION_ERROR from an invalid filters payload)
+        # reach the client instead of being wrapped as INTERNAL_ERROR. The
+        # broad handler below previously swallowed this route's own
+        # AppException, so an invalid filters payload answered 500.
+        raise
     except ValueError as e:
         logger.warning("Error getting data: %s", e)
         raise AppException(
