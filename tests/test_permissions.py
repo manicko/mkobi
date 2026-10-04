@@ -8,10 +8,8 @@ from uuid import uuid4
 import pytest
 
 from mkobi.core.permissions import (
-    AuthenticationError,
     check_dashboard_access,
     check_role,
-    get_current_user,
 )
 from mkobi.db.session import get_db
 from mkobi.models.enums import UserRole
@@ -387,64 +385,6 @@ class TestCheckDashboardAccessPermissionVocabulary:
                 required_permission="read",  # type: ignore[arg-type]
                 db=async_db_session,
             )
-
-
-class TestGetCurrentUser:
-    """Tests for get_current_user function with real db session."""
-
-    @pytest.mark.asyncio
-    async def test_valid_token(self, async_db_session):
-        """Valid token returns UserRead."""
-        from mkobi.core.security import create_access_token, hash_password
-        from mkobi.db.repositories.user_repo import UserRepository
-        from mkobi.models.user import UserRead
-
-        # Create user
-        user_repo = UserRepository()
-        user = await user_repo.create(
-            db=async_db_session,
-            email="valid_token@example.com",
-            password_hash=hash_password("Pass123!"),
-            role=UserRole.VIEWER,
-        )
-        await async_db_session.commit()
-
-        # Create token
-        token = create_access_token({"user_id": str(user.id), "email": user.email})
-
-        # Get current user
-        result = await get_current_user(token=token, db=async_db_session)
-
-        assert isinstance(result, UserRead)
-        assert result.email == user.email
-        assert result.role == UserRole.VIEWER
-
-    @pytest.mark.asyncio
-    async def test_invalid_token(self, async_db_session):
-        """Invalid token raises AuthenticationError."""
-        with pytest.raises(AuthenticationError, match="Invalid token"):
-            await get_current_user(token="invalid.token.here", db=async_db_session)
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, async_db_session):
-        """Valid token but deleted user raises AuthenticationError."""
-        from uuid import uuid4
-
-        # Create token for non-existent user
-        fake_user_id = uuid4()
-        from mkobi.core.security import create_access_token
-
-        token = create_access_token({"user_id": str(fake_user_id), "email": "ghost@example.com"})
-
-        # Should raise AuthenticationError
-        with pytest.raises(AuthenticationError, match="User not found"):
-            await get_current_user(token=token, db=async_db_session)
-
-    @pytest.mark.asyncio
-    async def test_empty_token(self, async_db_session):
-        """Empty token raises AuthenticationError."""
-        with pytest.raises(AuthenticationError, match="Invalid token"):
-            await get_current_user(token="", db=async_db_session)
 
 
 class TestGetDb:

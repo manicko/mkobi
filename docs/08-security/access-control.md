@@ -190,18 +190,6 @@ The `check_dashboard_access` function is the central enforcement mechanism:
 
 ---
 
-## Second Identity Path (Not a Live Gate)
-
-`src/mkobi/core/permissions.py::_get_current_user_with_session` (and its public wrapper `get_current_user`) is a second token-to-user path that mirrors part of the dependency's logic. It has **no production caller** — the only callers are its own wrapper and direct unit tests (`tests/test_permissions.py::TestGetCurrentUser`). It is **not** a second live gate:
-
-- It is never invoked by any route or dependency in `src/mkobi/`; the live gate is `get_current_user_dependency`.
-- Therefore the `force_password_change` gate described above is **not** enforced on this path, and cannot be, because nothing reaches it.
-- Another phase plans to **delete** both `_get_current_user_with_session` and `get_current_user`; this document records the situation rather than assuming a hidden enforcement point.
-
-> Do not treat this module as an alternative enforcement point when auditing access control. The authoritative identity path is `api/deps.py::get_current_user_dependency`.
-
----
-
 ## Frontend Enforcement
 
 The frontend provides UX-level access control that mirrors the backend:
