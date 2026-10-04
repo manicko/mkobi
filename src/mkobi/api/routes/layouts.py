@@ -14,6 +14,7 @@ from mkobi.api.deps import (
     get_db_dependency,
     CurrentUser,
     get_layout_service,
+    get_accessible_dashboard_ids,
 )
 from mkobi.api.schemas.responses import (
     auth_protected_responses,
@@ -25,7 +26,6 @@ from mkobi.api.schemas.responses import (
     error_500,
 )
 from mkobi.core.permissions import check_dashboard_access
-from mkobi.db.repositories.access_repo import AccessRepository
 from mkobi.models.enums import DashboardPermission, ErrorCode, UserRole
 from mkobi.models.layout import (
     LayoutRead,
@@ -131,6 +131,9 @@ async def get_layouts_endpoint(
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db_dependency),
     layout_service: LayoutService = Depends(get_layout_service),
+    accessible_dashboards: list[UUID] | None = Depends(
+        get_accessible_dashboard_ids
+    ),
 ) -> list[LayoutRead]:
     """Get list of layouts.
 
@@ -141,6 +144,7 @@ async def get_layouts_endpoint(
         current_user: Current authenticated user.
         db: Database session.
         layout_service: Injected layout service.
+        accessible_dashboards: Dashboard filter, or ``None`` for an admin.
 
     Returns:
         list[LayoutRead]: List of layout models.
@@ -151,19 +155,16 @@ async def get_layouts_endpoint(
     logger.info("Getting layout list for user_id=%s", current_user.id)
 
     try:
-        if current_user.role == UserRole.ADMIN:
-            layouts: list[LayoutRead] = await layout_service.get_all_layouts(db=db)
-        else:
-            # Non-admin users: get only layouts from accessible dashboards
-            access_repo = AccessRepository()
-            accessible_dashboards = [
-                d.id for d in await access_repo.get_user_dashboards(
-                    user_id=current_user.id, db=db
-                )
-            ]
-            layouts = await layout_service.get_layouts_by_dashboard_ids(
+        # None means the caller holds the admin role and is unrestricted.
+        # The unrestricted branch must stay get_all_layouts: a layout bound
+        # to no dashboard is visible to an admin and to nobody else.
+        layouts: list[LayoutRead] = (
+            await layout_service.get_all_layouts(db=db)
+            if accessible_dashboards is None
+            else await layout_service.get_layouts_by_dashboard_ids(
                 dashboard_ids=accessible_dashboards, db=db
             )
+        )
         logger.info("Retrieved layouts: count=%s", len(layouts))
         return layouts
     except Exception as e:

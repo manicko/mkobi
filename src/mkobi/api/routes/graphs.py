@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mkobi.api.deps import (
     get_db_dependency as get_db,
     get_graph_repository,
+    get_accessible_dashboard_ids,
     CurrentUser,
     check_dashboard_access,
 )
@@ -35,7 +36,7 @@ from mkobi.models.graph import (
     GraphRead,
     GraphUpdate,
 )
-from mkobi.models.enums import DashboardPermission, ErrorCode, UserRole
+from mkobi.models.enums import DashboardPermission, ErrorCode
 from mkobi.utils.exceptions import AppException
 
 logger = logging.getLogger(__name__)
@@ -165,6 +166,9 @@ async def create_graph_endpoint(
 async def get_graphs_endpoint(
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
+    accessible_dashboards: list[UUID] | None = Depends(
+        get_accessible_dashboard_ids
+    ),
 ) -> list[GraphRead]:
     """Get graphs accessible to current user.
 
@@ -174,6 +178,7 @@ async def get_graphs_endpoint(
     Args:
         current_user: Current authenticated user.
         db: Database session.
+        accessible_dashboards: Dashboard filter, or ``None`` for an admin.
 
     Returns:
         list[GraphRead]: List of graph models.
@@ -185,19 +190,13 @@ async def get_graphs_endpoint(
 
     try:
         graph_repo = get_graph_repository()
-        # Admin bypass is handled inside check_dashboard_access
-        if current_user.role != UserRole.ADMIN:
-            # Non-admin: get only graphs from accessible dashboards
-            from mkobi.db.repositories.access_repo import AccessRepository
-            access_repo = AccessRepository()
-            accessible_dashboards = [
-                d.id for d in await access_repo.get_user_dashboards(
-                    user_id=current_user.id, db=db
-                )
-            ]
-            graphs = await graph_repo.get_by_dashboard_ids(accessible_dashboards, db)
-        else:
-            graphs = await graph_repo.get_all(db=db)
+        # None means the caller holds the admin role and is unrestricted;
+        # an empty list means no grant and yields no graphs.
+        graphs = (
+            await graph_repo.get_all(db=db)
+            if accessible_dashboards is None
+            else await graph_repo.get_by_dashboard_ids(accessible_dashboards, db)
+        )
         return [GraphRead.model_validate(g) for g in graphs]
     except Exception as e:
         logger.error("Error getting graphs: %s", e)

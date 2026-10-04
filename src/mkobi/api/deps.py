@@ -71,6 +71,7 @@ __all__ = [
     "EditorUser",
     "ViewerUser",
     "get_dashboard_permissions",
+    "get_accessible_dashboard_ids",
     "get_user_repository",
     "get_dashboard_repository",
     "get_access_repository",
@@ -910,6 +911,49 @@ async def require_dashboard_admin_access(
             detail="You do not have admin access to this dashboard",
         )
     return user
+
+
+async def get_accessible_dashboard_ids(
+    user: UserRead = Depends(get_current_user_dependency),
+    db: AsyncSession = Depends(get_db_dependency),
+    dashboard_service: Any = Depends(get_dashboard_service),
+) -> list[UUID] | None:
+    """Resolve the dashboard filter a collection route must apply.
+
+    A collection route has no ``dashboard_id`` to bind, so it cannot
+    resolve ``require_dashboard_read_access`` or ``check_dashboard_access``:
+    both answer a per-dashboard question. This dependency answers the
+    set-shaped one, and it is the only place the collection rule is
+    written.
+
+    The admin bypass lives here rather than arriving through
+    ``check_dashboard_access``, because a collection route never reaches
+    ``_check_access_with_session``.
+
+    Args:
+        user: Current authenticated user.
+        db: Async database session.
+        dashboard_service: Injected dashboard service.
+
+    Returns:
+        ``None`` when no dashboard filter applies, meaning the caller
+        holds the ``admin`` role and is unrestricted. Otherwise the ids of
+        the dashboards the caller may see; an empty list means no grant,
+        which is an empty collection and not an error.
+    """
+    if user.role == UserRole.ADMIN:
+        logger.info(
+            "Accessible dashboards unrestricted by admin bypass: user_id=%s",
+            user.id,
+        )
+        return None
+
+    dashboards = await dashboard_service.get_user_dashboards(
+        user_id=user.id,
+        user_role=user.role,
+        db=db,
+    )
+    return [dashboard.id for dashboard in dashboards]
 
 
 # --- Combined dependencies ---
