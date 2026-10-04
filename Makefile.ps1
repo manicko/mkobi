@@ -37,8 +37,8 @@ $TestCompose = @('-p', $TestProject, '-f', 'docker/docker-compose.test.yml')
 $BackupDir   = 'backups'
 $UpTimeout   = 180
 
-# /app is root:root 755 and unwritable by uid 100, so pytest's default
-# .pytest_cache write at rootdir fails with Errno 13. Relocate to /tmp.
+# /app is root:root 755 and unwritable by the non-root app user, so pytest's
+# default .pytest_cache write at rootdir fails with Errno 13. Relocate to /tmp.
 $PytestCacheArgs = @('-o', 'cache_dir=/tmp/pytest_cache')
 
 # ---------------------------------------------------------------------------
