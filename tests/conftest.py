@@ -39,6 +39,12 @@ def _compute_test_db_name() -> str:
     is imported: ``TEST_ASYNC_DB_URL`` (a module-level constant) is built from
     the memoised ``get_config()`` singleton, so both ``DATABASE__DBNAME`` and
     ``DATABASE__TEST_DBNAME`` must be in ``os.environ`` before that import.
+
+    Warning: ``MKOBI_TEST_RUN_ID`` lets a caller force two runs onto the same
+    database. Two concurrent runs sharing one value are mutually destructive:
+    the first to finish drops the database the second is still using, because
+    the teardown guard proves only that this process created the database, not
+    that it is the sole user. Give concurrent runs distinct tokens.
     """
     run_token = os.environ.get("MKOBI_TEST_RUN_ID") or uuid4().hex[:8]
     worker_id = _get_worker_db_suffix().lstrip("_")
