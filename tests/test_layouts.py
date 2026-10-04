@@ -433,6 +433,39 @@ class TestLayoutsAPI:
         assert data["status"] == status.HTTP_409_CONFLICT
         assert data["details"] == {"name": "duplicate_test_layout"}
 
+    async def test_duplicate_name_409_leaves_session_usable(
+        self, async_db_session: AsyncSession, authenticated_client: AsyncClient, test_user: dict
+    ) -> None:
+        """A 409 must not poison the session for the next request.
+
+        A duplicate-key ``IntegrityError`` aborts the transaction, so the next
+        statement on the same session raises ``PendingRollbackError`` unless the
+        route rolls back. The fixture's teardown issues a ``ROLLBACK`` that
+        would clear the aborted transaction anyway, so a follow-up request on
+        the same client -- and therefore the same session -- is the only way to
+        observe whether the route's own rollback happened. The follow-up GET is
+        an ordinary, unambiguous request that cannot itself trip a duplicate
+        check.
+        """
+        repo = LayoutRepository()
+        await repo.create(
+            db=async_db_session,
+            name="session_survival_layout",
+            definition={"grid": []},
+        )
+        await async_db_session.flush()
+
+        conflict = await authenticated_client.post(
+            "/layouts",
+            json={"name": "session_survival_layout", "definition": {"grid": []}},
+        )
+        assert conflict.status_code == status.HTTP_409_CONFLICT
+
+        # Same client, same session: a poisoned transaction would answer 500.
+        follow_up = await authenticated_client.get("/layouts")
+        assert follow_up.status_code == status.HTTP_200_OK
+        assert isinstance(follow_up.json(), list)
+
     async def test_update_layout_rename_onto_existing_name_returns_409(
         self, async_db_session: AsyncSession, authenticated_client: AsyncClient, test_user: dict
     ) -> None:
