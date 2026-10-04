@@ -379,8 +379,11 @@ class TestRateLimiting:
 
         # Make requests up to limit (5 attempts), all should succeed
         for i in range(5):
-            result = await limiter.check_rate_limit("login:test_ip", max_attempts=5, ttl=300)
-            assert result is True, f"Attempt {i + 1} should be allowed"
+            allowed, retry_after = await limiter.check_rate_limit(
+                "login:test_ip", max_attempts=5, ttl=300
+            )
+            assert allowed is True, f"Attempt {i + 1} should be allowed"
+            assert retry_after is None
 
     @pytest.mark.asyncio
     async def test_rate_limiter_blocks_over_limit(self, strict_redis) -> None:
@@ -392,12 +395,18 @@ class TestRateLimiting:
 
         # Make 5 allowed requests (at the limit)
         for i in range(5):
-            result = await limiter.check_rate_limit("login:test_ip", max_attempts=5, ttl=300)
-            assert result is True, f"Attempt {i + 1} should be allowed"
+            allowed, retry_after = await limiter.check_rate_limit(
+                "login:test_ip", max_attempts=5, ttl=300
+            )
+            assert allowed is True, f"Attempt {i + 1} should be allowed"
+            assert retry_after is None
 
         # 6th request should be blocked
-        result = await limiter.check_rate_limit("login:test_ip", max_attempts=5, ttl=300)
-        assert result is False, "Request over limit should be blocked"
+        allowed, retry_after = await limiter.check_rate_limit(
+            "login:test_ip", max_attempts=5, ttl=300
+        )
+        assert allowed is False, "Request over limit should be blocked"
+        assert retry_after is not None and retry_after > 0
 
     @pytest.mark.asyncio
     async def test_rate_limiter_fail_open_on_redis_error(self, monkeypatch) -> None:
@@ -433,8 +442,11 @@ class TestRateLimiting:
         limiter = AsyncRateLimiter(failing_redis, fail_closed=False)
 
         # With fail-open behavior (default), requests should still succeed despite Redis failure
-        result = await limiter.check_rate_limit("login:test_ip", max_attempts=5, ttl=300)
-        assert result is True, "Fail-open should allow requests when Redis is unavailable"
+        allowed, retry_after = await limiter.check_rate_limit(
+            "login:test_ip", max_attempts=5, ttl=300
+        )
+        assert allowed is True, "Fail-open should allow requests when Redis is unavailable"
+        assert retry_after is None
 
     @pytest.mark.asyncio
     async def test_rate_limiter_fail_closed_on_redis_error(self) -> None:
@@ -469,9 +481,13 @@ class TestRateLimiting:
         failing_redis = FailingRedisClient()
         limiter = AsyncRateLimiter(failing_redis, fail_closed=True)
 
-        # With fail-closed behavior, requests should be blocked when Redis is unavailable
-        result = await limiter.check_rate_limit("login:test_ip", max_attempts=5, ttl=300)
-        assert result is False, "Fail-closed should block requests when Redis is unavailable"
+        # With fail-closed behavior, requests should be blocked when Redis is unavailable.
+        # The limiter guarantees the configured ttl is returned as the retry hint.
+        allowed, retry_after = await limiter.check_rate_limit(
+            "login:test_ip", max_attempts=5, ttl=300
+        )
+        assert allowed is False, "Fail-closed should block requests when Redis is unavailable"
+        assert retry_after == 300
 
     @pytest.mark.asyncio
     async def test_rate_limiter_different_ips_independent(
@@ -485,13 +501,22 @@ class TestRateLimiting:
 
         # Make 5 requests from IP1
         for i in range(5):
-            result = await limiter.check_rate_limit("login:ip1", max_attempts=5, ttl=300)
-            assert result is True, f"IP1 attempt {i + 1} should be allowed"
+            allowed, retry_after = await limiter.check_rate_limit(
+                "login:ip1", max_attempts=5, ttl=300
+            )
+            assert allowed is True, f"IP1 attempt {i + 1} should be allowed"
+            assert retry_after is None
 
         # IP1 should be blocked
-        result = await limiter.check_rate_limit("login:ip1", max_attempts=5, ttl=300)
-        assert result is False, "IP1 should be rate limited"
+        allowed, retry_after = await limiter.check_rate_limit(
+            "login:ip1", max_attempts=5, ttl=300
+        )
+        assert allowed is False, "IP1 should be rate limited"
+        assert retry_after is not None and retry_after > 0
 
         # IP2 should still be allowed (independent counter)
-        result = await limiter.check_rate_limit("login:ip2", max_attempts=5, ttl=300)
-        assert result is True, "IP2 should be allowed (different rate limit key)"
+        allowed, retry_after = await limiter.check_rate_limit(
+            "login:ip2", max_attempts=5, ttl=300
+        )
+        assert allowed is True, "IP2 should be allowed (different rate limit key)"
+        assert retry_after is None
