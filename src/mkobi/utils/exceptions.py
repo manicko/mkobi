@@ -268,10 +268,31 @@ def add_exception_handlers(app: FastAPI) -> None:
 
         Produces RFC 7807 format with additional 'errors' array containing
         field-level validation details.
+
+        Each entry is rebuilt from an allow-list so it can never carry the
+        offending raw value: Pydantic's ``errors()`` includes an ``input`` key
+        holding the submitted value, and password fields are plain strings, so
+        echoing it would leak a submitted plaintext password into both the log
+        record and the response body. ``url`` is dropped for the same reason:
+        it can echo request context. Only ``loc``, ``msg``, ``type`` and the
+        stringified ``ctx["error"]`` are retained.
         """
+        safe_errors = [
+            {
+                "loc": list(err.get("loc", ())),
+                "msg": err.get("msg", ""),
+                "type": err.get("type", ""),
+                **(
+                    {"ctx": {"error": str(err["ctx"]["error"])}}
+                    if "ctx" in err and "error" in err["ctx"]
+                    else {}
+                ),
+            }
+            for err in exc.errors()
+        ]
         logger.error(
             "RequestValidationError raised: %s",
-            exc.errors(),
+            safe_errors,
         )
         response = ErrorResponse(
             type="https://api.mkobi.com/errors/validation_error",
@@ -281,18 +302,11 @@ def add_exception_handlers(app: FastAPI) -> None:
             code=ErrorCode.VALIDATION_ERROR,
             details=None,
         )
-        # Convert errors to serializable format
-        serializable_errors = []
-        for err in exc.errors():
-            clean_err = dict(err)
-            if "ctx" in clean_err and "error" in clean_err["ctx"]:
-                clean_err["ctx"] = {"error": str(clean_err["ctx"]["error"])}
-            serializable_errors.append(clean_err)
         return JSONResponse(
             status_code=HTTP_422_UNPROCESSABLE_CONTENT,
             content={
                 **response.model_dump(),
-                "errors": serializable_errors,
+                "errors": safe_errors,
             },
         )
 
