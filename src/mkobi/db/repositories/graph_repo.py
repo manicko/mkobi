@@ -52,23 +52,26 @@ class GraphRepository(IGraphRepository):
             raise
 
     async def get_by_dashboard_id(
-        self, dashboard_id: UUID, db: AsyncSession
+        self, dashboard_id: UUID, db: AsyncSession, limit: int | None = None, skip: int = 0
     ) -> list[graph_model.Graph]:
-        """Get all graphs for dashboard.
+        """Get graphs for dashboard, optionally bounded.
 
         Args:
             dashboard_id: Dashboard identifier (UUID).
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
             List of dashboard graphs.
         """
         try:
-            result = await db.execute(
-                select(graph_model.Graph).where(
-                    graph_model.Graph.dashboard_id == dashboard_id
-                )
+            query = select(graph_model.Graph).where(
+                graph_model.Graph.dashboard_id == dashboard_id
             )
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             graphs = list(result.scalars().all())
             logger.info(
                 "Graphs retrieved for dashboard_id=%s, count: %s",
@@ -81,13 +84,16 @@ class GraphRepository(IGraphRepository):
             raise
 
     async def get_by_dashboard_ids(
-        self, dashboard_ids: list[UUID], db: AsyncSession
+        self, dashboard_ids: list[UUID], db: AsyncSession,
+        limit: int | None = None, skip: int = 0,
     ) -> list[graph_model.Graph]:
-        """Get all graphs for multiple dashboards.
+        """Get graphs for multiple dashboards, optionally bounded.
 
         Args:
             dashboard_ids: List of dashboard identifiers (UUID).
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
             List of graphs from the specified dashboards.
@@ -96,11 +102,12 @@ class GraphRepository(IGraphRepository):
         if not dashboard_ids:
             return []
         try:
-            result = await db.execute(
-                select(graph_model.Graph).where(
-                    graph_model.Graph.dashboard_id.in_(dashboard_ids)
-                )
+            query = select(graph_model.Graph).where(
+                graph_model.Graph.dashboard_id.in_(dashboard_ids)
             )
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             graphs = list(result.scalars().all())
             logger.info(
                 "Graphs retrieved for %d dashboard_ids, count: %s",
@@ -191,17 +198,24 @@ class GraphRepository(IGraphRepository):
             logger.error("Error deleting graph id=%s: %s", id, e)
             raise
 
-    async def get_all(self, db: AsyncSession) -> list[graph_model.Graph]:
-        """Get all graphs.
+    async def get_all(
+        self, db: AsyncSession, limit: int | None = None, skip: int = 0
+    ) -> list[graph_model.Graph]:
+        """Get graphs, optionally bounded.
 
         Args:
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
-            List of all graphs.
+            List of graphs.
         """
         try:
-            result = await db.execute(select(graph_model.Graph))
+            query = select(graph_model.Graph)
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             graphs = list(result.scalars().all())
             logger.info("Graphs list retrieved, count: %s", len(graphs))
             return graphs

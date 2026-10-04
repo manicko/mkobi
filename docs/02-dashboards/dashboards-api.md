@@ -41,6 +41,13 @@ Retrieve all dashboards the current user has access to.
 | **Path**       | `/api/v1/dashboards/my`        |
 | **Auth level** | Any authenticated user         |
 
+**Query parameters:**
+
+| Parameter | Type | Default | Bounds | Description |
+| --------- | ---- | ------- | ------ | ----------- |
+| `skip`    | int  | `0`     | `>= 0` | Records to skip (offset). |
+| `limit`   | int  | `100`   | `1..1000` | Maximum records returned. |
+
 **Request:** Requires `Authorization: Bearer <token>` header.
 
 **Response** (`200 OK`):
@@ -225,6 +232,13 @@ Layouts define the UI composition (grid, graph positions, filter bindings) witho
 | **Path**       | `/api/v1/layouts`              |
 | **Auth level** | Any authenticated user         |
 
+**Query parameters:**
+
+| Parameter | Type | Default | Bounds | Description |
+| --------- | ---- | ------- | ------ | ----------- |
+| `skip`    | int  | `0`     | `>= 0` | Records to skip (offset). |
+| `limit`   | int  | `100`   | `1..1000` | Maximum records returned. |
+
 **Response** (`200 OK`):
 
 ```json
@@ -353,7 +367,7 @@ Graphs define chart configurations within a dashboard. Each graph belongs to exa
 
 ### 11. List Graphs
 
-Returns every graph on every dashboard the user can access. **This endpoint accepts no query parameters** — the dashboard scope is resolved from the caller's own access, not supplied by the client, and a caller holding the `admin` role is unrestricted. To list the graphs of one specific dashboard use [31. List Graphs for Dashboard](#31-list-graphs-for-dashboard) (`GET /api/v1/dashboards/{dashboard_id}/graphs`).
+Returns every graph on every dashboard the user can access. A `dashboard_id` filter is **not** accepted here — the dashboard scope is resolved from the caller's own access, not supplied by the client, and a caller holding the `admin` role is unrestricted. To list the graphs of one specific dashboard use [31. List Graphs for Dashboard](#31-list-graphs-for-dashboard) (`GET /api/v1/dashboards/{dashboard_id}/graphs`).
 
 | Attribute      | Value                          |
 | -------------- | ------------------------------ |
@@ -361,7 +375,14 @@ Returns every graph on every dashboard the user can access. **This endpoint acce
 | **Path**       | `/api/v1/graphs/`              |
 | **Auth level** | Any authenticated user         |
 
-**Query parameters:** None. A `dashboard_id` filter is not accepted here; the parameter is ignored rather than rejected, so a client that sends one silently receives the unfiltered collection.
+**Query parameters:**
+
+| Parameter | Type | Default | Bounds | Description |
+| --------- | ---- | ------- | ------ | ----------- |
+| `skip`    | int  | `0`     | `>= 0` | Records to skip (offset). |
+| `limit`   | int  | `100`   | `1..1000` | Maximum records returned. |
+
+A `dashboard_id` parameter is ignored rather than rejected, so a client that sends one silently receives the unfiltered, bounded collection.
 
 **Response** (`200 OK`):
 
@@ -527,6 +548,8 @@ Returns filters for dashboards the user has access to. Editor and above.
 | Parameter      | Type   | Required | Description                    |
 | -------------- | ------ | -------- | ------------------------------ |
 | `dashboard_id` | UUID   | No       | Filter by specific dashboard   |
+| `skip`         | int    | No       | Records to skip (offset), `>= 0`. Default `0`. |
+| `limit`        | int    | No       | Maximum records returned, `1..1000`. Default `100`. |
 
 **Response** (`200 OK`):
 
@@ -673,12 +696,23 @@ Returns distinct values for a specific filter/dimension of a dashboard. Values a
 | **Auth level** | Any authenticated user (with dashboard access)     |
 | **Query param**| `filter_name` — Name of the filter/dimension       |
 
+**Query parameters:**
+
+| Parameter | Type | Default | Bounds | Description |
+| --------- | ---- | ------- | ------ | ----------- |
+| `filter_name` | str | — | — | Name of the filter/dimension. |
+| `skip`    | int  | `0`     | `>= 0` | Values to skip (offset). |
+| `limit`   | int  | `100`   | `1..1000` | Maximum values returned. |
+
+`total_values` is the **true, untruncated** distinct-value count, reported from a `COUNT(*)` query rather than the length of the possibly bounded `values` list.
+
 **Response** (`200 OK`):
 
 ```json
 {
   "filter_name": "category",
-  "values": ["Electronics", "Food", "Services"]
+  "values": ["Electronics", "Food", "Services"],
+  "total_values": 3
 }
 ```
 
@@ -827,6 +861,13 @@ The absent-dashboard case is role-dependent: an admitted caller (owner or admini
 | **Path**       | `/api/v1/dashboards/{dashboard_id}/access`         |
 | **Auth level** | Owner or administrator                             |
 
+**Query parameters:**
+
+| Parameter | Type | Default | Bounds | Description |
+| --------- | ---- | ------- | ------ | ----------- |
+| `skip`    | int  | `0`     | `>= 0` | Records to skip (offset). |
+| `limit`   | int  | `100`   | `1..1000` | Maximum records returned. |
+
 **Response** (`200 OK`): List of access records with user_id, permission level. An admitted caller (owner or administrator) receives `200` with an empty list when the dashboard has no access records; a caller outside the audience receives `403` whether or not the dashboard exists.
 
 **Error responses:**
@@ -925,6 +966,13 @@ Filters are linked to dashboards via the `dashboard_filters` many-to-many join t
 | **Path**       | `/api/v1/dashboards/{dashboard_id}/filters`        |
 | **Auth level** | Any authenticated user (with dashboard access)     |
 
+**Query parameters:**
+
+| Parameter | Type | Default | Bounds | Description |
+| --------- | ---- | ------- | ------ | ----------- |
+| `skip`    | int  | `0`     | `>= 0` | Records to skip (offset). |
+| `limit`   | int  | `100`   | `1..1000` | Maximum records returned. |
+
 **Response** (`200 OK`): List of filter IDs bound to the dashboard.
 
 ---
@@ -960,6 +1008,13 @@ In addition to the global graph endpoints, graphs can be created and listed via 
 | **Method**     | `GET`                                              |
 | **Path**       | `/api/v1/dashboards/{dashboard_id}/graphs`         |
 | **Auth level** | Any authenticated user (with dashboard access)     |
+
+**Query parameters:**
+
+| Parameter | Type | Default | Bounds | Description |
+| --------- | ---- | ------- | ------ | ----------- |
+| `skip`    | int  | `0`     | `>= 0` | Records to skip (offset). |
+| `limit`   | int  | `100`   | `1..1000` | Maximum records returned. |
 
 **Response** (`200 OK`): List of graph objects for the dashboard.
 

@@ -154,17 +154,24 @@ class ProcessingConfigRepository(IProcessingConfigRepository):
                 "Error deleting config dashboard_id=%s: %s", id, e
             )
             raise
-    async def get_all(self, db: AsyncSession) -> list[processing_config_model.ProcessingConfig]:
-        """Get all processing configs.
+    async def get_all(
+        self, db: AsyncSession, limit: int | None = None, skip: int = 0
+    ) -> list[processing_config_model.ProcessingConfig]:
+        """Get processing configs, optionally bounded.
 
         Args:
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
-            List of all processing configs.
+            List of processing configs.
         """
         try:
-            result = await db.execute(select(processing_config_model.ProcessingConfig))
+            query = select(processing_config_model.ProcessingConfig)
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             configs = list(result.scalars().all())
             logger.info("Processing configs list retrieved, count: %s", len(configs))
             return configs

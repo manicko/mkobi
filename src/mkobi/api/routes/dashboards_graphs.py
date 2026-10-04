@@ -8,7 +8,7 @@ import logging
 from typing import cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -152,6 +152,13 @@ async def get_dashboard_graphs_endpoint(
     current_user: UserRead = Depends(require_dashboard_read_access),
     db: AsyncSession = Depends(get_db_dependency),
     graph_repo: GraphRepository = Depends(get_graph_repository),
+    skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000,
+        description="Maximum number of records (max. 1000)",
+    ),
 ) -> list[GraphRead]:
     """Get all graphs for a dashboard.
 
@@ -159,6 +166,8 @@ async def get_dashboard_graphs_endpoint(
         dashboard_id: Dashboard ID.
         current_user: Current authenticated user.
         db: Database session.
+        skip: Number of records to skip (offset).
+        limit: Maximum number of records.
 
     Returns:
         list[GraphRead]: List of graph models.
@@ -171,7 +180,7 @@ async def get_dashboard_graphs_endpoint(
 
     try:
         graphs = await graph_repo.get_by_dashboard_id(
-            dashboard_id=dashboard_id, db=db
+            dashboard_id=dashboard_id, db=db, limit=limit, skip=skip
         )
         return [GraphRead.model_validate(g) for g in graphs]
     except Exception as e:

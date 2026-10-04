@@ -184,27 +184,35 @@ class GraphService(IGraphService):
         return result
 
     async def list_by_dashboard(
-        self, dashboard_id: UUID, db: AsyncSession
+        self, dashboard_id: UUID, db: AsyncSession,
+        limit: int | None = None, skip: int = 0,
     ) -> list[GraphRead]:
-        """Get graphs by dashboard ID.
+        """Get graphs by dashboard ID, optionally bounded.
 
         Args:
             dashboard_id: Dashboard identifier.
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
             List of graphs for the dashboard.
         """
         logger.info("Getting graphs for dashboard: dashboard_id=%s", dashboard_id)
 
-        graph_objs = await self.graph_repo.get_by_dashboard_id(dashboard_id, db)
+        graph_objs = await self.graph_repo.get_by_dashboard_id(
+            dashboard_id, db, limit=limit, skip=skip
+        )
         return [await self._to_read_model(obj) for obj in graph_objs]
 
     async def get_graphs_by_dashboard(
-        self, dashboard_id: UUID, db: AsyncSession
+        self, dashboard_id: UUID, db: AsyncSession,
+        limit: int | None = None, skip: int = 0,
     ) -> list[GraphRead]:
         """Get graphs by dashboard ID (IGraphService interface method)."""
-        return await self.list_by_dashboard(dashboard_id, db=db)
+        return await self.list_by_dashboard(
+            dashboard_id, db=db, limit=limit, skip=skip
+        )
 
     async def create_graph(
         self,

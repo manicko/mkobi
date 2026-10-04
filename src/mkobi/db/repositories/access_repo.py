@@ -232,23 +232,28 @@ class AccessRepository(IAccessRepository):
             raise
 
     async def get_user_dashboards(
-        self, user_id: UUID, db: AsyncSession
+        self, user_id: UUID, db: AsyncSession, limit: int | None = None, skip: int = 0
     ) -> list[dashboard_model.Dashboard]:
-        """Get all dashboards available to user.
+        """Get dashboards available to user, optionally bounded.
 
         Args:
             user_id: User identifier (UUID).
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
             List of dashboards available to user.
         """
         try:
-            result = await db.execute(
+            query = (
                 select(dashboard_model.Dashboard)
                 .join(access_model.DashboardAccess)
                 .where(access_model.DashboardAccess.user_id == user_id)
             )
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             dashboards = list(result.scalars().all())
             logger.info(
                 "Dashboards retrieved for user id=%s, count: %s",
@@ -283,23 +288,26 @@ class AccessRepository(IAccessRepository):
             raise
 
     async def get_by_dashboard(
-        self, dashboard_id: UUID, db: AsyncSession
+        self, dashboard_id: UUID, db: AsyncSession, limit: int | None = None, skip: int = 0
     ) -> list[access_model.DashboardAccess]:
-        """Get all access records for a dashboard.
+        """Get access records for a dashboard, optionally bounded.
 
         Args:
             dashboard_id: Dashboard identifier (UUID).
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
             List of access records for the dashboard.
         """
         try:
-            result = await db.execute(
-                select(access_model.DashboardAccess).where(
-                    access_model.DashboardAccess.dashboard_id == dashboard_id
-                )
+            query = select(access_model.DashboardAccess).where(
+                access_model.DashboardAccess.dashboard_id == dashboard_id
             )
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             access_list = list(result.scalars().all())
             logger.info(
                 "Access list retrieved for dashboard id=%s, count: %s",

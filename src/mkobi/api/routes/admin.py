@@ -4,7 +4,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.api.deps import (
@@ -54,11 +54,18 @@ async def get_users_admin_endpoint(
     admin_user: AdminUser,
     user_service: IUserService = Depends(get_user_service),
     db: AsyncSession = Depends(get_db_dependency),
+    skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000,
+        description="Maximum number of records (max. 1000)",
+    ),
 ) -> list[UserRead]:
     """Get all users (admin endpoint)."""
     logger.info("Admin: getting all users")
     try:
-        return await user_service.get_all_users(db=db)
+        return await user_service.get_all_users(db=db, limit=limit, skip=skip)
     except Exception as e:
         logger.error("Error getting users: %s", e)
         raise AppException(
@@ -325,11 +332,18 @@ async def get_registration_requests_admin_endpoint(
     admin_user: AdminUser,
     db: AsyncSession = Depends(get_db_dependency),
     repo: RegistrationRequestRepository = Depends(get_registration_request_repository),
+    skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000,
+        description="Maximum number of records (max. 1000)",
+    ),
 ) -> list[RegistrationRequestItem]:
     """Get all registration requests (admin endpoint)."""
     logger.info("Admin: getting registration requests")
     try:
-        requests = await repo.get_all(db)
+        requests = await repo.get_all(db, limit=limit, skip=skip)
         return [RegistrationRequestItem.model_validate(req) for req in requests]
     except Exception as e:
         logger.error("Error getting registration requests: %s", e)

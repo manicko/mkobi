@@ -8,7 +8,7 @@ import logging
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,20 +28,23 @@ class DashboardFilterValuesRepository(IDashboardFilterValuesRepository):
     """
 
     async def get_filter_values(
-        self, dashboard_id: UUID, filter_name: str, db: AsyncSession
+        self, dashboard_id: UUID, filter_name: str, db: AsyncSession,
+        limit: int | None = None, skip: int = 0,
     ) -> list[str]:
-        """Get filter values by dashboard ID and filter name.
+        """Get filter values by dashboard ID and filter name, optionally bounded.
 
         Args:
             dashboard_id: Dashboard identifier (UUID).
             filter_name: Name of the filter.
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
             List of filter_value strings, ordered by filter_value.
         """
         try:
-            result = await db.execute(
+            query = (
                 select(DashboardFilterValue.filter_value)
                 .where(
                     DashboardFilterValue.dashboard_id == dashboard_id,
@@ -49,6 +52,9 @@ class DashboardFilterValuesRepository(IDashboardFilterValuesRepository):
                 )
                 .order_by(DashboardFilterValue.filter_value)
             )
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             values = cast(list[str], result.scalars().all())
             logger.info(
                 "Filter values retrieved: dashboard_id=%s, filter_name=%s, count=%s",
@@ -60,6 +66,41 @@ class DashboardFilterValuesRepository(IDashboardFilterValuesRepository):
         except SQLAlchemyError as e:
             logger.error(
                 "Error getting filter values: dashboard_id=%s, filter_name=%s: %s",
+                dashboard_id,
+                filter_name,
+                e,
+            )
+            raise
+
+    async def count_filter_values(
+        self, dashboard_id: UUID, filter_name: str, db: AsyncSession
+    ) -> int:
+        """Return the true, untruncated count of values for a filter.
+
+        A single ``COUNT(*)`` over the same predicate as ``get_filter_values``,
+        so the reported total can never disagree with the values returned.
+
+        Args:
+            dashboard_id: Dashboard identifier (UUID).
+            filter_name: Name of the filter.
+            db: Async database session.
+
+        Returns:
+            int: The number of stored values for the filter.
+        """
+        try:
+            result = await db.execute(
+                select(func.count())
+                .select_from(DashboardFilterValue)
+                .where(
+                    DashboardFilterValue.dashboard_id == dashboard_id,
+                    DashboardFilterValue.filter_name == filter_name,
+                )
+            )
+            return int(result.scalar_one())
+        except SQLAlchemyError as e:
+            logger.error(
+                "Error counting filter values: dashboard_id=%s, filter_name=%s: %s",
                 dashboard_id,
                 filter_name,
                 e,

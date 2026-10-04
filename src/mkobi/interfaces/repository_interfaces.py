@@ -24,8 +24,10 @@ class IRepository(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def get_all(self, db: AsyncSession) -> list[Any]:
-        """Get all objects."""
+    async def get_all(
+        self, db: AsyncSession, limit: int | None = None, skip: int = 0
+    ) -> list[Any]:
+        """Get objects, optionally bounded (``limit``/``skip``)."""
         pass
 
     @abc.abstractmethod
@@ -68,9 +70,14 @@ class IDashboardRepository(IRepository):
 
     @abc.abstractmethod
     async def get_by_user(
-        self, user_id: UUID, db: AsyncSession, is_admin: bool = False
+        self,
+        user_id: UUID,
+        db: AsyncSession,
+        is_admin: bool = False,
+        limit: int | None = None,
+        skip: int = 0,
     ) -> list[tuple[Any, str | None]]:
-        """Get dashboards by user (dashboards available to user) with permission."""
+        """Get dashboards by user with permission, optionally bounded."""
         pass
 
     @abc.abstractmethod
@@ -120,8 +127,10 @@ class IAccessRepository(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def get_user_dashboards(self, user_id: UUID, db: AsyncSession) -> list[Any]:
-        """Get all dashboards available to user."""
+    async def get_user_dashboards(
+        self, user_id: UUID, db: AsyncSession, limit: int | None = None, skip: int = 0
+    ) -> list[Any]:
+        """Get dashboards available to user, optionally bounded."""
         pass
 
     @abc.abstractmethod
@@ -131,9 +140,9 @@ class IAccessRepository(abc.ABC):
 
     @abc.abstractmethod
     async def get_by_dashboard(
-        self, dashboard_id: UUID, db: AsyncSession
+        self, dashboard_id: UUID, db: AsyncSession, limit: int | None = None, skip: int = 0
     ) -> list[Any]:
-        """Get all access records for a dashboard."""
+        """Get access records for a dashboard, optionally bounded."""
         pass
 
 
@@ -158,8 +167,10 @@ class IRegistrationRequestRepository(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def get_all(self, db: AsyncSession) -> list[Any]:
-        """Get all registration requests."""
+    async def get_all(
+        self, db: AsyncSession, limit: int | None = None, skip: int = 0
+    ) -> list[Any]:
+        """Get registration requests, optionally bounded."""
         pass
 
     @abc.abstractmethod
@@ -263,8 +274,20 @@ class IAggregatedDataRepository(abc.ABC):
         graph_id: UUID,
         dim_name: str,
         db: AsyncSession,
+        limit: int | None = None,
+        skip: int = 0,
     ) -> list[str]:
-        """Get unique dimension values for graph."""
+        """Get unique dimension values for graph, optionally bounded."""
+        pass
+
+    @abc.abstractmethod
+    async def count_dims_values(
+        self,
+        graph_id: UUID,
+        dim_name: str,
+        db: AsyncSession,
+    ) -> int:
+        """Return the true, untruncated count of distinct dimension values."""
         pass
 
 
@@ -293,13 +316,16 @@ class ILayoutRepository(IRepository):
 
     @abc.abstractmethod
     async def get_layouts_by_dashboard_ids(
-        self, dashboard_ids: list[UUID], db: AsyncSession
+        self, dashboard_ids: list[UUID], db: AsyncSession,
+        limit: int | None = None, skip: int = 0,
     ) -> list[Any]:
-        """Get layouts by dashboard IDs.
+        """Get layouts by dashboard IDs, optionally bounded.
 
         Args:
             dashboard_ids: List of dashboard IDs.
             db: Async database session.
+            limit: Optional maximum number of rows.
+            skip: Number of rows to skip (offset).
 
         Returns:
             List of layout models.
@@ -321,16 +347,17 @@ class IGraphRepository(IRepository):
 
     @abc.abstractmethod
     async def get_by_dashboard_id(
-        self, dashboard_id: UUID, db: AsyncSession
+        self, dashboard_id: UUID, db: AsyncSession, limit: int | None = None, skip: int = 0
     ) -> list[Any]:
-        """Get graphs by dashboard ID."""
+        """Get graphs by dashboard ID, optionally bounded."""
         pass
 
     @abc.abstractmethod
     async def get_by_dashboard_ids(
-        self, dashboard_ids: list[UUID], db: AsyncSession
+        self, dashboard_ids: list[UUID], db: AsyncSession,
+        limit: int | None = None, skip: int = 0,
     ) -> list[Any]:
-        """Get graphs by multiple dashboard IDs."""
+        """Get graphs by multiple dashboard IDs, optionally bounded."""
         pass
 
     @abc.abstractmethod
@@ -346,9 +373,17 @@ class IDashboardFilterValuesRepository(abc.ABC):
 
     @abc.abstractmethod
     async def get_filter_values(
-        self, dashboard_id: UUID, filter_name: str, db: AsyncSession
+        self, dashboard_id: UUID, filter_name: str, db: AsyncSession,
+        limit: int | None = None, skip: int = 0,
     ) -> list[str]:
-        """Get filter values by dashboard ID and filter name."""
+        """Get filter values by dashboard ID and filter name, optionally bounded."""
+        pass
+
+    @abc.abstractmethod
+    async def count_filter_values(
+        self, dashboard_id: UUID, filter_name: str, db: AsyncSession
+    ) -> int:
+        """Return the true, untruncated count of values for a filter."""
         pass
 
     @abc.abstractmethod

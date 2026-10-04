@@ -8,7 +8,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.api.deps import (
@@ -142,6 +142,13 @@ async def get_dashboard_access_endpoint(
     current_user: UserRead = Depends(require_dashboard_admin_access),
     db: AsyncSession = Depends(get_db_dependency),
     dashboard_service: DashboardService = Depends(get_dashboard_service),
+    skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000,
+        description="Maximum number of records (max. 1000)",
+    ),
 ) -> list[dict[str, Any]]:
     """Get all access records for a dashboard.
 
@@ -150,6 +157,8 @@ async def get_dashboard_access_endpoint(
         current_user: Current authenticated user who passed the dashboard admin-access gate.
         db: Database session.
         dashboard_service: Injected dashboard service.
+        skip: Number of records to skip (offset).
+        limit: Maximum number of records.
 
     Returns:
         list[dict]: List of access records.
@@ -157,7 +166,7 @@ async def get_dashboard_access_endpoint(
     logger.info("Getting access list for dashboard: dashboard_id=%s", dashboard_id)
     try:
         access_list = await dashboard_service.get_dashboard_access_list(
-            dashboard_id=dashboard_id, db=db
+            dashboard_id=dashboard_id, db=db, limit=limit, skip=skip
         )
         return access_list
     except Exception as e:

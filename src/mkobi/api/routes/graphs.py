@@ -10,7 +10,7 @@ from typing import Any, cast
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -169,6 +169,13 @@ async def get_graphs_endpoint(
     accessible_dashboards: list[UUID] | None = Depends(
         get_accessible_dashboard_ids
     ),
+    skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000,
+        description="Maximum number of records (max. 1000)",
+    ),
 ) -> list[GraphRead]:
     """Get graphs accessible to current user.
 
@@ -179,6 +186,8 @@ async def get_graphs_endpoint(
         current_user: Current authenticated user.
         db: Database session.
         accessible_dashboards: Dashboard filter, or ``None`` for an admin.
+        skip: Number of records to skip (offset).
+        limit: Maximum number of records.
 
     Returns:
         list[GraphRead]: List of graph models.
@@ -193,9 +202,11 @@ async def get_graphs_endpoint(
         # None means the caller holds the admin role and is unrestricted;
         # an empty list means no grant and yields no graphs.
         graphs = (
-            await graph_repo.get_all(db=db)
+            await graph_repo.get_all(db=db, limit=limit, skip=skip)
             if accessible_dashboards is None
-            else await graph_repo.get_by_dashboard_ids(accessible_dashboards, db)
+            else await graph_repo.get_by_dashboard_ids(
+                accessible_dashboards, db, limit=limit, skip=skip
+            )
         )
         return [GraphRead.model_validate(g) for g in graphs]
     except Exception as e:

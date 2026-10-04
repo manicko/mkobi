@@ -40,6 +40,13 @@ Retrieve a list of all registered users. Admin only.
 | **Path**       | `/api/v1/users/`               |
 | **Auth level** | Admin                          |
 
+**Query parameters:**
+
+| Parameter | Type | Default | Bounds | Description |
+| --------- | ---- | ------- | ------ | ----------- |
+| `skip`    | int  | `0`     | `>= 0` | Records to skip (offset). |
+| `limit`   | int  | `100`   | `1..1000` | Maximum records returned. |
+
 **Response** (`200 OK`):
 
 ```json
@@ -291,6 +298,8 @@ Admin-specific user listing (alternative to `/api/v1/users/`).
 | **Path**       | `/api/v1/admin/users`          |
 | **Auth level** | Admin                          |
 
+**Query parameters:** Same as [List All Users](#1-list-all-users) — `skip` (default `0`, `>= 0`) and `limit` (default `100`, `1..1000`).
+
 **Response** (`200 OK`): Same format as [List All Users](#1-list-all-users).
 
 ---
@@ -346,6 +355,8 @@ Retrieve all registration requests, optionally filtered by status.
 | Parameter | Type   | Required | Description                                |
 | --------- | ------ | -------- | ------------------------------------------ |
 | `status`  | string | No       | Filter by status: `pending`, `approved`, `rejected` |
+| `skip`    | int    | No       | Records to skip (offset), `>= 0`. Default `0`. |
+| `limit`   | int    | No       | Maximum records returned, `1..1000`. Default `100`. |
 
 **Response** (`200 OK`):
 

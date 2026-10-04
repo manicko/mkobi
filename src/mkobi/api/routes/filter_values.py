@@ -55,6 +55,13 @@ async def get_filter_values_endpoint(
     current_user: UserRead = Depends(require_dashboard_read_access),
     db: AsyncSession = Depends(get_db_dependency),
     filter_values_service: FilterValuesService = Depends(get_filter_values_service),
+    skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000,
+        description="Maximum number of records (max. 1000)",
+    ),
 ) -> FilterValuesResponse:
     """Get filter values for a dashboard.
 
@@ -64,9 +71,11 @@ async def get_filter_values_endpoint(
         current_user: Current authenticated user with read access.
         db: Database session.
         filter_values_service: Injected filter values service.
+        skip: Number of values to skip (offset).
+        limit: Maximum number of values.
 
     Returns:
-        FilterValuesResponse with filter_name and values list.
+        FilterValuesResponse with filter_name, values list and total_values.
 
     Raises:
         AppException 500: On database error.
@@ -77,10 +86,13 @@ async def get_filter_values_endpoint(
         filter_name,
     )
     try:
-        values = await filter_values_service.get_filter_values(
-            dashboard_id=dashboard_id, filter_name=filter_name, db=db
+        values, total_values = await filter_values_service.get_filter_values(
+            dashboard_id=dashboard_id, filter_name=filter_name, db=db,
+            limit=limit, skip=skip,
         )
-        return FilterValuesResponse(filter_name=filter_name, values=values)
+        return FilterValuesResponse(
+            filter_name=filter_name, values=values, total_values=total_values
+        )
     except Exception:
         logger.error(
             "Error getting filter values: dashboard_id=%s, filter_name=%s",

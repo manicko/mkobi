@@ -124,13 +124,15 @@ class DashboardFilterRepository:
             )
             raise
     async def get_dashboard_filters(
-        self, dashboard_id: UUID, db: AsyncSession
+        self, dashboard_id: UUID, db: AsyncSession, limit: int | None = None, skip: int = 0
     ) -> list[UUID]:
-        """Get all filter IDs bound to a dashboard.
+        """Get filter IDs bound to a dashboard, optionally bounded.
 
         Args:
             dashboard_id: Dashboard ID (UUID).
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
             List of filter IDs.
@@ -139,11 +141,12 @@ class DashboardFilterRepository:
             SQLAlchemyError: On database error.
         """
         try:
-            result = await db.execute(
-                select(dashboard_filters.c.filter_id).where(
-                    dashboard_filters.c.dashboard_id == dashboard_id
-                )
+            query = select(dashboard_filters.c.filter_id).where(
+                dashboard_filters.c.dashboard_id == dashboard_id
             )
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             filter_ids = [row[0] for row in result.all()]
             logger.info(
                 "Got filters for dashboard: dashboard_id=%s, count=%s",

@@ -353,20 +353,24 @@ class UserService(IUserService):
 
         return result
 
-    async def get_all_users(self, db: AsyncSession) -> list[UserRead]:
-        """Get list of all users in the system.
+    async def get_all_users(
+        self, db: AsyncSession, limit: int | None = None, skip: int = 0
+    ) -> list[UserRead]:
+        """Get users in the system, optionally bounded.
 
         Args:
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
-            List of all users.
+            List of users.
 
         Raises:
             SQLAlchemyError: On database error.
         """
         logger.info("Getting all users")
 
-        users = await self.user_repo.get_all(db)
+        users = await self.user_repo.get_all(db, limit=limit, skip=skip)
         logger.info("Retrieved users: %s", len(users))
         return [UserRead.model_validate(user) for user in users]

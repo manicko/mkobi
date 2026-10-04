@@ -56,14 +56,21 @@ class DashboardRepository(IDashboardRepository):
             raise
 
     async def get_by_user(
-        self, user_id: UUID, db: AsyncSession, is_admin: bool = False
+        self,
+        user_id: UUID,
+        db: AsyncSession,
+        is_admin: bool = False,
+        limit: int | None = None,
+        skip: int = 0,
     ) -> list[tuple[dashboard_model.Dashboard, str | None]]:
-        """Get all dashboards available to user with their access permission.
+        """Get dashboards available to user with their access permission.
 
         Args:
             user_id: User identifier (UUID).
             db: Async database session.
             is_admin: If True, returns all dashboards (admin bypass).
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
             List of tuples (dashboard, permission) where permission is the user's
@@ -72,11 +79,12 @@ class DashboardRepository(IDashboardRepository):
         try:
             if is_admin:
                 # Admin bypass: return all dashboards without access check
-                result = await db.execute(
-                    select(dashboard_model.Dashboard).options(
-                        selectinload(dashboard_model.Dashboard.layout)
-                    )
+                query = select(dashboard_model.Dashboard).options(
+                    selectinload(dashboard_model.Dashboard.layout)
                 )
+                if limit is not None:
+                    query = query.offset(skip).limit(limit)
+                result = await db.execute(query)
                 dashboards = list(result.scalars().all())
                 logger.info(
                     "All dashboards retrieved for admin user",
@@ -85,12 +93,15 @@ class DashboardRepository(IDashboardRepository):
                 # For admin, permission is None (admin bypass)
                 return [(d, None) for d in dashboards]
 
-            result = await db.execute(
+            query = (
                 select(dashboard_model.Dashboard, access_model.DashboardAccess.permission)
                 .join(access_model.DashboardAccess)
                 .where(access_model.DashboardAccess.user_id == user_id)
                 .options(selectinload(dashboard_model.Dashboard.layout))
             )
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             results = result.all()
             dashboards = [(row[0], row[1]) for row in results]
             logger.info(
@@ -208,21 +219,26 @@ class DashboardRepository(IDashboardRepository):
             )
             raise
 
-    async def get_all(self, db: AsyncSession) -> list[dashboard_model.Dashboard]:
-        """Get all dashboards.
+    async def get_all(
+        self, db: AsyncSession, limit: int | None = None, skip: int = 0
+    ) -> list[dashboard_model.Dashboard]:
+        """Get dashboards, optionally bounded.
 
         Args:
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
-            List of all dashboards.
+            List of dashboards.
         """
         try:
-            result = await db.execute(
-                select(dashboard_model.Dashboard).options(
-                    selectinload(dashboard_model.Dashboard.layout)
-                )
+            query = select(dashboard_model.Dashboard).options(
+                selectinload(dashboard_model.Dashboard.layout)
             )
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             dashboards = list(result.scalars().all())
             logger.info(
                 "Dashboards list retrieved",

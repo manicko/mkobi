@@ -167,17 +167,24 @@ class RegistrationRequestRepository(IRegistrationRequestRepository):
             )
             raise
 
-    async def get_all(self, db: AsyncSession) -> list[RegistrationRequest]:
-        """Get all registration requests.
+    async def get_all(
+        self, db: AsyncSession, limit: int | None = None, skip: int = 0
+    ) -> list[RegistrationRequest]:
+        """Get registration requests, optionally bounded.
 
         Args:
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
-            List of all registration requests.
+            List of registration requests.
         """
         try:
-            result = await db.execute(select(RegistrationRequest))
+            query = select(RegistrationRequest)
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             requests = list(result.scalars().all())
             logger.info(
                 "Registration requests list retrieved",

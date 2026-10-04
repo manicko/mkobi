@@ -8,7 +8,7 @@ Create, update and delete operations are available only to owners.
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.api.deps import (
@@ -57,6 +57,13 @@ async def get_dashboards_admin_endpoint(
     admin_user: AdminUser,
     db: AsyncSession = Depends(get_db_dependency),
     dashboard_service: DashboardService = Depends(get_dashboard_service),
+    skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000,
+        description="Maximum number of records (max. 1000)",
+    ),
 ) -> list[DashboardAdmin]:
     """Get all dashboards for admin panel.
 
@@ -64,13 +71,17 @@ async def get_dashboards_admin_endpoint(
         admin_user: Authenticated admin user.
         db: Database session.
         dashboard_service: Injected dashboard service.
+        skip: Number of records to skip (offset).
+        limit: Maximum number of records.
 
     Returns:
         list[DashboardAdmin]: List of dashboards without full config.
     """
     logger.info("Admin: getting all dashboards")
     try:
-        dashboards = await dashboard_service.get_all_dashboards(db=db)
+        dashboards = await dashboard_service.get_all_dashboards(
+            db=db, limit=limit, skip=skip
+        )
         return [
             DashboardAdmin(
                 id=d.id,
@@ -174,6 +185,13 @@ async def get_my_dashboards_endpoint(
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db_dependency),
     dashboard_service: DashboardService = Depends(get_dashboard_service),
+    skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000,
+        description="Maximum number of records (max. 1000)",
+    ),
 ) -> list[DashboardSummary]:
     """Get user dashboards.
 
@@ -181,6 +199,8 @@ async def get_my_dashboards_endpoint(
         current_user: Current authenticated user.
         db: Database session.
         dashboard_service: Injected dashboard service.
+        skip: Number of records to skip (offset).
+        limit: Maximum number of records.
 
     Returns:
         list[DashboardSummary]: List of dashboards available to user with permission.
@@ -192,7 +212,8 @@ async def get_my_dashboards_endpoint(
 
     try:
         dashboards = await dashboard_service.get_user_dashboards(
-            user_id=current_user.id, user_role=current_user.role, db=db
+            user_id=current_user.id, user_role=current_user.role, db=db,
+            limit=limit, skip=skip,
         )
         logger.info(
             "Retrieved dashboards for user: user_id=%s, count=%s",

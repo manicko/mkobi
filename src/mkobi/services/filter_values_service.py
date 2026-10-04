@@ -30,22 +30,33 @@ class FilterValuesService:
         self._repo = repo
 
     async def get_filter_values(
-        self, dashboard_id: UUID, filter_name: str, db: AsyncSession
-    ) -> list[str]:
-        """Return distinct filter values for a dashboard filter.
+        self,
+        dashboard_id: UUID,
+        filter_name: str,
+        db: AsyncSession,
+        limit: int | None = None,
+        skip: int = 0,
+    ) -> tuple[list[str], int]:
+        """Return distinct filter values for a dashboard filter plus the total.
 
         Args:
             dashboard_id: Dashboard identifier.
             filter_name: Name of the filter to get values for.
             db: Async database session.
+            limit: Optional maximum number of values; ``None`` returns all.
+            skip: Number of values to skip (offset).
 
         Returns:
-            List of filter value strings.
+            tuple[list[str], int]: The (possibly bounded) values and the true,
+            untruncated distinct-value count.
         """
         logger.info(
             "Getting filter values: dashboard_id=%s, filter_name=%s",
             dashboard_id,
             filter_name,
         )
-        values = await self._repo.get_filter_values(dashboard_id, filter_name, db)
-        return values
+        values = await self._repo.get_filter_values(
+            dashboard_id, filter_name, db, limit=limit, skip=skip
+        )
+        total = await self._repo.count_filter_values(dashboard_id, filter_name, db)
+        return values, total

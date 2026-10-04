@@ -257,6 +257,8 @@ class DashboardService(IDashboardService):
         user_id: UUID,
         db: AsyncSession,
         user_role: str | None = None,
+        limit: int | None = None,
+        skip: int = 0,
     ) -> list[DashboardSummary]:
         """Get user dashboards with their access permission.
 
@@ -264,6 +266,8 @@ class DashboardService(IDashboardService):
             user_id: User ID.
             db: Async database session.
             user_role: User role (for admin bypass).
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
             list[DashboardSummary]: List of user dashboards with permission.
@@ -271,7 +275,7 @@ class DashboardService(IDashboardService):
         is_admin = user_role == UserRole.ADMIN
 
         dashboards_with_permission = await self.dashboard_repo.get_by_user(
-            user_id, db, is_admin=is_admin
+            user_id, db, is_admin=is_admin, limit=limit, skip=skip
         )
         result: list[DashboardSummary] = []
         for dashboard, permission in dashboards_with_permission:
@@ -368,16 +372,20 @@ class DashboardService(IDashboardService):
     async def get_all_dashboards(
         self,
         db: AsyncSession,
+        limit: int | None = None,
+        skip: int = 0,
     ) -> list[DashboardRead]:
-        """Get all dashboards.
+        """Get dashboards, optionally bounded.
 
         Args:
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
-            list[DashboardRead]: List of all dashboards.
+            list[DashboardRead]: List of dashboards.
         """
-        dashboards = await self.dashboard_repo.get_all(db)
+        dashboards = await self.dashboard_repo.get_all(db, limit=limit, skip=skip)
         result = []
         for dashboard in dashboards:
             result.append(await self._dashboard_to_read(dashboard, db, DashboardPermission.VIEW))
@@ -473,12 +481,16 @@ class DashboardService(IDashboardService):
         self,
         dashboard_id: UUID,
         db: AsyncSession,
+        limit: int | None = None,
+        skip: int = 0,
     ) -> list[dict[str, Any]]:
-        """Get all access records for a dashboard.
+        """Get access records for a dashboard, optionally bounded.
 
         Args:
             dashboard_id: Dashboard ID.
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
             List of access records as dictionaries.
@@ -488,7 +500,7 @@ class DashboardService(IDashboardService):
 
         try:
             access_records = await self.access_repo.get_by_dashboard(
-                dashboard_id=dashboard_id, db=db
+                dashboard_id=dashboard_id, db=db, limit=limit, skip=skip
             )
 
             return [

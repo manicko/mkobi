@@ -8,7 +8,7 @@ Delete and list all users operations are admin-only.
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.api.deps import (
@@ -102,6 +102,13 @@ async def get_users_endpoint(
     admin_user: AdminUser,
     user_service: UserService = Depends(get_user_service),
     db: AsyncSession = Depends(get_db_dependency),
+    skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000,
+        description="Maximum number of records (max. 1000)",
+    ),
 ) -> list[UserRead]:
     """Get list of all users in the system.
 
@@ -109,6 +116,8 @@ async def get_users_endpoint(
         _: User with admin role (verified via dependency).
         user_service: User service.
         db: Database session.
+        skip: Number of records to skip (offset).
+        limit: Maximum number of records.
 
     Returns:
         list[UserRead]: List of all users.
@@ -119,7 +128,7 @@ async def get_users_endpoint(
     logger.info("Getting all users")
 
     try:
-        users_data = await user_service.get_all_users(db=db)
+        users_data = await user_service.get_all_users(db=db, limit=limit, skip=skip)
         return users_data  # Already returns list[UserRead]
     except Exception as e:
         logger.error("Error getting user list: %s", e)

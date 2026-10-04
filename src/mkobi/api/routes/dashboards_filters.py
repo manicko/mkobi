@@ -8,7 +8,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.api.deps import (
@@ -142,12 +142,19 @@ async def get_dashboard_filters_endpoint(
     current_user: UserRead = Depends(require_dashboard_read_access),
     db: AsyncSession = Depends(get_db_dependency),
     dashboard_filter_repo: DashboardFilterRepository = Depends(get_dashboard_filter_repository),
+    skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000,
+        description="Maximum number of records (max. 1000)",
+    ),
 ) -> list[dict[str, Any]]:
     """Get all filters bound to a dashboard."""
     logger.info("Getting filters for dashboard: dashboard_id=%s", dashboard_id)
     try:
         filter_ids = await dashboard_filter_repo.get_dashboard_filters(
-            dashboard_id=dashboard_id, db=db
+            dashboard_id=dashboard_id, db=db, limit=limit, skip=skip
         )
         return [{"filter_id": str(fid)} for fid in filter_ids]
     except Exception as e:

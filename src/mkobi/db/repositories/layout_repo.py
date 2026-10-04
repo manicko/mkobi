@@ -81,20 +81,27 @@ class LayoutRepository(ILayoutRepository):
             logger.error("Error getting layout by name %s: %s", name, e)
             raise
 
-    async def get_all(self, db: AsyncSession) -> list[layout_model.Layout]:
-        """Get all layouts.
+    async def get_all(
+        self, db: AsyncSession, limit: int | None = None, skip: int = 0
+    ) -> list[layout_model.Layout]:
+        """Get layouts, optionally bounded.
 
         Args:
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
-            List of all layouts.
+            List of layouts.
 
         Raises:
             SQLAlchemyError: On database error.
         """
         try:
-            result = await db.execute(select(layout_model.Layout))
+            query = select(layout_model.Layout)
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             layouts = list(result.scalars().all())
             logger.info("Layouts list retrieved, count: %s", len(layouts))
             return layouts
@@ -231,13 +238,16 @@ class LayoutRepository(ILayoutRepository):
             raise
 
     async def get_layouts_by_dashboard_ids(
-        self, dashboard_ids: list[UUID], db: AsyncSession
+        self, dashboard_ids: list[UUID], db: AsyncSession,
+        limit: int | None = None, skip: int = 0,
     ) -> list[layout_model.Layout]:
-        """Get layouts by dashboard IDs.
+        """Get layouts by dashboard IDs, optionally bounded.
 
         Args:
             dashboard_ids: List of dashboard IDs.
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
             List of layout models.
@@ -247,11 +257,14 @@ class LayoutRepository(ILayoutRepository):
         """
         try:
             from mkobi.db.models.dashboard import Dashboard
-            result = await db.execute(
+            query = (
                 select(layout_model.Layout)
                 .join(Dashboard, layout_model.Layout.id == Dashboard.layout_id)
                 .where(Dashboard.id.in_(dashboard_ids))
             )
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             layouts = list(result.scalars().all())
             logger.info(
                 "Layouts retrieved for dashboards: count=%s", len(layouts)

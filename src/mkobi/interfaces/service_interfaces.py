@@ -194,8 +194,10 @@ class IUserService(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def get_all_users(self, db: AsyncSession) -> list[UserRead]:
-        """Get all users."""
+    async def get_all_users(
+        self, db: AsyncSession, limit: int | None = None, skip: int = 0
+    ) -> list[UserRead]:
+        """Get users, optionally bounded."""
         pass
 
 
@@ -241,8 +243,10 @@ class IDashboardService(abc.ABC):
         user_id: UUID,
         db: AsyncSession,
         user_role: str | None = None,
+        limit: int | None = None,
+        skip: int = 0,
     ) -> list[DashboardSummary]:
-        """Get user dashboards with permission."""
+        """Get user dashboards with permission, optionally bounded."""
         pass
 
     @abc.abstractmethod
@@ -270,8 +274,10 @@ class IDashboardService(abc.ABC):
     async def get_all_dashboards(
         self,
         db: AsyncSession,
+        limit: int | None = None,
+        skip: int = 0,
     ) -> list[DashboardRead]:
-        """Get all dashboards."""
+        """Get dashboards, optionally bounded."""
         pass
 
     @abc.abstractmethod
@@ -300,8 +306,10 @@ class IDashboardService(abc.ABC):
         self,
         dashboard_id: UUID,
         db: AsyncSession,
+        limit: int | None = None,
+        skip: int = 0,
     ) -> list[dict[str, Any]]:
-        """Get access list for dashboard."""
+        """Get access list for dashboard, optionally bounded."""
         pass
 
 
@@ -346,8 +354,10 @@ class IGraphService(abc.ABC):
         self,
         dashboard_id: UUID,
         db: AsyncSession,
+        limit: int | None = None,
+        skip: int = 0,
     ) -> list[GraphRead]:
-        """Get graphs by dashboard ID."""
+        """Get graphs by dashboard ID, optionally bounded."""
         pass
 
     @abc.abstractmethod
@@ -640,9 +650,9 @@ class ILayoutService(abc.ABC):
 
     @abc.abstractmethod
     async def get_all_layouts(
-        self, db: AsyncSession
+        self, db: AsyncSession, limit: int | None = None, skip: int = 0
     ) -> list[LayoutRead]:
-        """Get all layouts."""
+        """Get layouts, optionally bounded."""
         pass
 
     @abc.abstractmethod
@@ -679,13 +689,16 @@ class ILayoutService(abc.ABC):
 
     @abc.abstractmethod
     async def get_layouts_by_dashboard_ids(
-        self, dashboard_ids: list[UUID], db: AsyncSession
+        self, dashboard_ids: list[UUID], db: AsyncSession,
+        limit: int | None = None, skip: int = 0,
     ) -> list[LayoutRead]:
-        """Get layouts by dashboard IDs.
+        """Get layouts by dashboard IDs, optionally bounded.
 
         Args:
             dashboard_ids: List of dashboard IDs.
             db: Async database session.
+            limit: Optional maximum number of rows.
+            skip: Number of rows to skip (offset).
 
         Returns:
             List of layout models.

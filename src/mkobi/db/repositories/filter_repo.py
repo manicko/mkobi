@@ -160,17 +160,24 @@ class FilterRepository(IFilterRepository):
         except SQLAlchemyError as e:
             logger.error("Error deleting filter id=%s: %s", id, e)
             raise
-    async def get_all(self, db: AsyncSession) -> list[filter_model.Filter]:
-        """Get all filters.
+    async def get_all(
+        self, db: AsyncSession, limit: int | None = None, skip: int = 0
+    ) -> list[filter_model.Filter]:
+        """Get filters, optionally bounded.
 
         Args:
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
-            List of all filters.
+            List of filters.
         """
         try:
-            result = await db.execute(select(filter_model.Filter))
+            query = select(filter_model.Filter)
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             filters = list(result.scalars().all())
             logger.info("Filters list retrieved, count: %s", len(filters))
             return filters

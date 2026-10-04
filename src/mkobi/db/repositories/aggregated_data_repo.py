@@ -468,6 +468,8 @@ class AggregatedDataRepository(IAggregatedDataRepository):
         graph_id: UUID,
         dim_name: str,
         db: AsyncSession,
+        limit: int | None = None,
+        skip: int = 0,
     ) -> list[str]:
         """Get unique dimension values for graph, in stored chart order.
 
@@ -487,6 +489,9 @@ class AggregatedDataRepository(IAggregatedDataRepository):
             graph_id: Graph identifier.
             dim_name: Dimension name (field in JSONB dims).
             db: Async database session.
+            limit: Optional maximum number of distinct values; ``None`` returns
+                all.
+            skip: Number of distinct values to skip (offset).
 
         Returns:
             List of unique dimension values, in stored row order.
@@ -506,9 +511,10 @@ class AggregatedDataRepository(IAggregatedDataRepository):
                 .group_by(value_expr)
                 .subquery()
             )
-            result = await db.execute(
-                select(first_seen.c.value_name).order_by(first_seen.c.first_id)
-            )
+            query = select(first_seen.c.value_name).order_by(first_seen.c.first_id)
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             values = [row[0] for row in result if row[0] is not None]
             logger.info(
                 "Dimension values retrieved: graph_id=%s, dim_name=%s, count=%s",
@@ -520,6 +526,42 @@ class AggregatedDataRepository(IAggregatedDataRepository):
         except SQLAlchemyError as e:
             logger.error(
                 "Error getting dimension values graph_id=%s: %s",
+                graph_id,
+                e,
+            )
+            raise
+
+    async def count_dims_values(
+        self,
+        graph_id: UUID,
+        dim_name: str,
+        db: AsyncSession,
+    ) -> int:
+        """Return the true, untruncated count of distinct dimension values.
+
+        A single ``COUNT(DISTINCT ...)`` over the same predicate as
+        ``get_dims_values``, so the reported total can never disagree with the
+        values the same request is allowed to return.
+
+        Args:
+            graph_id: Graph identifier.
+            dim_name: Dimension name (field in JSONB dims).
+            db: Async database session.
+
+        Returns:
+            int: The number of distinct values for the dimension.
+        """
+        try:
+            value_expr = aggregated_data_model.AggregatedData.dims[dim_name].astext
+            result = await db.execute(
+                select(func.count(func.distinct(value_expr))).where(
+                    aggregated_data_model.AggregatedData.graph_id == graph_id
+                )
+            )
+            return int(result.scalar_one())
+        except SQLAlchemyError as e:
+            logger.error(
+                "Error counting dimension values graph_id=%s: %s",
                 graph_id,
                 e,
             )

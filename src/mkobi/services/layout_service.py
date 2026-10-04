@@ -93,19 +93,21 @@ class LayoutService(ILayoutService):
         return cast(LayoutRead, LayoutRead.model_validate(layout_obj))
 
     async def get_all_layouts(
-        self, db: AsyncSession
+        self, db: AsyncSession, limit: int | None = None, skip: int = 0
     ) -> list[LayoutRead]:
-        """Get all layouts.
+        """Get layouts, optionally bounded.
 
         Args:
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
-            List of all layouts.
+            List of layouts.
         """
         logger.info("Getting all layouts")
 
-        layout_objs = await self.layout_repo.get_all(db)
+        layout_objs = await self.layout_repo.get_all(db, limit=limit, skip=skip)
         return [LayoutRead.model_validate(layout_obj) for layout_obj in layout_objs]
 
     async def update_layout(
@@ -206,13 +208,16 @@ class LayoutService(ILayoutService):
         return await self.layout_repo.get_dashboard_id_for_layout(layout_id, db)
 
     async def get_layouts_by_dashboard_ids(
-        self, dashboard_ids: list[UUID], db: AsyncSession
+        self, dashboard_ids: list[UUID], db: AsyncSession,
+        limit: int | None = None, skip: int = 0,
     ) -> list[LayoutRead]:
-        """Get layouts by dashboard IDs.
+        """Get layouts by dashboard IDs, optionally bounded.
 
         Args:
             dashboard_ids: List of dashboard IDs.
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
             List of layout models.
@@ -222,6 +227,6 @@ class LayoutService(ILayoutService):
         )
 
         layout_objs = await self.layout_repo.get_layouts_by_dashboard_ids(
-            dashboard_ids, db
+            dashboard_ids, db, limit=limit, skip=skip
         )
         return [LayoutRead.model_validate(layout_obj) for layout_obj in layout_objs]

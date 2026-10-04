@@ -658,10 +658,16 @@ class FilterValuesResponse(BaseModel):
 
     Returned by the filter-values endpoint with distinct values
     for a specified dashboard filter.
+
+    ``total_values`` is the **true, untruncated** distinct-value count, reported
+    from a ``COUNT(*)`` query rather than the length of the (possibly bounded)
+    ``values`` list, so a bounded response can report its truncation honestly
+    (the same contract as the aggregate response's ``total_rows``).
     """
 
     filter_name: str
     values: list[str]
+    total_values: int
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -669,6 +675,7 @@ class FilterValuesResponse(BaseModel):
             "example": {
                 "filter_name": "category",
                 "values": ["Electronics", "Clothing", "Food"],
+                "total_values": 3,
             }
         },
     )

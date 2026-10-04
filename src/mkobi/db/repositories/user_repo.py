@@ -121,17 +121,24 @@ class UserRepository(IUserRepository):
             logger.error("Error getting user id=%s: %s", id, e)
             raise
 
-    async def get_all(self, db: AsyncSession) -> list[UserRead]:
-        """Get all users.
+    async def get_all(
+        self, db: AsyncSession, limit: int | None = None, skip: int = 0
+    ) -> list[UserRead]:
+        """Get users, optionally bounded.
 
         Args:
             db: Async database session.
+            limit: Optional maximum number of rows; ``None`` returns all.
+            skip: Number of rows to skip (offset).
 
         Returns:
-            List of all UserRead models.
+            List of UserRead models.
         """
         try:
-            result = await db.execute(select(user_model.User))
+            query = select(user_model.User)
+            if limit is not None:
+                query = query.offset(skip).limit(limit)
+            result = await db.execute(query)
             users = list(result.scalars().all())
             logger.info("Users list retrieved, count: %s", len(users))
             return [UserRead.model_validate(u) for u in users]
