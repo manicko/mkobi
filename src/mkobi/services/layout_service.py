@@ -50,14 +50,13 @@ class LayoutService(ILayoutService):
             LayoutRead: Model of the created layout.
 
         Raises:
-            ValueError: If layout with this name already exists.
+            IntegrityError: If a layout with this name already exists. The
+                unique index on ``layouts.name`` enforces the constraint at
+                flush time; the service deliberately does not pre-check, so
+                the database is the only detector and there is no TOCTOU
+                window.
         """
         logger.info("Creating layout: name=%s", name)
-
-        existing = await self.layout_repo.get_by_name(name, db)
-        if existing:
-            logger.error("Layout with this name already exists: name=%s", name)
-            raise ValueError(f"Layout with name '{name}' already exists")
 
         try:
             layout_obj = await self.layout_repo.create(db=db, name=name, definition=definition)
@@ -136,12 +135,9 @@ class LayoutService(ILayoutService):
             logger.warning("Layout not found for update: id=%s", layout_id)
             return None
 
-        # Check name uniqueness on update
-        if update_data.name and update_data.name != existing.name:
-            name_check = await self.layout_repo.get_by_name(update_data.name, db)
-            if name_check:
-                logger.error("Layout with this name already exists: name=%s", update_data.name)
-                raise ValueError(f"Layout with name '{update_data.name}' already exists")
+        # No name pre-check: the unique index on ``layouts.name`` detects a
+        # rename onto an existing name at flush time via IntegrityError, which
+        # keeps the check atomic and closes the TOCTOU window a read would open.
 
         # Use Pydantic v2's exclude_unset=True for partial updates
         update_data_dict = update_data.model_dump(exclude_unset=True)
