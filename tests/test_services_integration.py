@@ -7,7 +7,11 @@ without mocking. Every service method call explicitly passes db=async_db_session
 import pytest
 from uuid import uuid4
 
+from sqlalchemy import delete
+from sqlalchemy.exc import IntegrityError
+
 from mkobi.core.security import hash_password
+from mkobi.db.models.layout import Layout as LayoutModel
 from mkobi.db.repositories.user_repo import UserRepository
 from mkobi.db.repositories.dashboard_repo import DashboardRepository
 from mkobi.db.repositories.access_repo import AccessRepository
@@ -503,19 +507,32 @@ class TestLayoutServiceIntegration:
         assert result.name.startswith("New Layout")
 
     async def test_create_layout_duplicate_name(self, layout_service, async_db_session):
-        """Test layout creation with duplicate name raises."""
+        """Test layout creation propagates the unique-index violation.
+
+        The service no longer pre-checks the name, so the duplicate is detected
+        by the database and surfaces as an ``IntegrityError``.
+        """
         unique_name = f"Duplicate Layout {uuid4().hex[:8]}"
-        await layout_service.create_layout(
-            name=unique_name,
-            definition={"test": "def"},
-            db=async_db_session,
-        )
-        with pytest.raises(ValueError, match="already exists"):
+        try:
             await layout_service.create_layout(
                 name=unique_name,
-                definition={"test": "def2"},
+                definition={"test": "def"},
                 db=async_db_session,
             )
+            with pytest.raises(IntegrityError) as exc_info:
+                await layout_service.create_layout(
+                    name=unique_name,
+                    definition={"test": "def2"},
+                    db=async_db_session,
+                )
+            # The violation is the name unique index, not some other constraint.
+            assert "idx_layouts_name" in str(exc_info.value.orig)
+        finally:
+            # The first create committed; the fixture teardown cannot undo it.
+            await async_db_session.execute(
+                delete(LayoutModel).where(LayoutModel.name == unique_name)
+            )
+            await async_db_session.commit()
 
     async def test_get_layout_with_db(self, layout_service, async_db_session, layout):
         """Test getting layout by ID."""

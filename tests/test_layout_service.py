@@ -8,6 +8,8 @@ from uuid import uuid4
 
 import pytest
 
+from sqlalchemy.exc import IntegrityError
+
 from mkobi.models.layout import LayoutCreate, LayoutRead, LayoutUpdate
 from mkobi.services.layout_service import LayoutService
 
@@ -64,17 +66,24 @@ class TestLayoutService:
         assert call_args.kwargs["definition"] == {"grid": [{"columns": [{"graph_id": "g1", "width": 12}]}]}
 
     async def test_create_layout_duplicate_name_raises(self, layout_service, mock_layout_repo, mock_db):
-        """Test layout creation fails when name already exists."""
-        mock_layout_repo.get_by_name.return_value = self._make_layout_obj(name="existing_layout")
+        """Test layout creation propagates the database's duplicate-name error.
+
+        The service no longer pre-checks the name; it surfaces the repository's
+        ``IntegrityError`` unchanged so the HTTP layer can classify it.
+        """
+        mock_layout_repo.create.side_effect = IntegrityError(
+            "INSERT INTO layouts", {}, Exception("duplicate key value violates unique constraint")
+        )
 
         data = LayoutCreate(name="existing_layout", definition={"grid": []})
 
-        with pytest.raises(ValueError, match="Layout with name 'existing_layout' already exists"):
+        with pytest.raises(IntegrityError, match="duplicate key value violates unique constraint"):
             await layout_service.create_layout(
                 name=data.name,
                 definition=data.definition,
                 db=mock_db,
             )
+        mock_layout_repo.create.assert_called_once()
 
     async def test_create_layout_repo_returns_none_raises(self, layout_service, mock_layout_repo, mock_db):
         """Test layout creation fails when repo returns None."""
@@ -135,14 +144,20 @@ class TestLayoutService:
         assert result is None
 
     async def test_update_layout_duplicate_name_raises(self, layout_service, mock_layout_repo, mock_db):
-        """Test updating layout name fails when new name already exists."""
+        """Test update propagates the database's duplicate-name error.
+
+        As with creation, the service surfaces the repository's
+        ``IntegrityError`` rather than producing a domain error itself.
+        """
         layout_id = uuid4()
         mock_layout_repo.get.return_value = self._make_layout_obj(layout_id=layout_id, name="Old Name")
-        mock_layout_repo.get_by_name.return_value = self._make_layout_obj(name="Duplicate Name")
+        mock_layout_repo.update.side_effect = IntegrityError(
+            "UPDATE layouts", {}, Exception("duplicate key value violates unique constraint")
+        )
 
         data = LayoutUpdate(name="Duplicate Name")
 
-        with pytest.raises(ValueError, match="Layout with name 'Duplicate Name' already exists"):
+        with pytest.raises(IntegrityError, match="duplicate key value violates unique constraint"):
             await layout_service.update_layout(layout_id, data, db=mock_db)
 
     async def test_update_layout_partial(self, layout_service, mock_layout_repo, mock_db):
