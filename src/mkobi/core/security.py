@@ -269,8 +269,9 @@ def create_access_token(
     in epoch milliseconds, and a jti (JWT ID) for token revocation support. The
     iat claim lets the user-level revocation marker decide whether a token
     predates a revocation.
-    If expires_delta is not specified, uses value from config
-    (default 30 minutes).
+    If expires_delta is not specified, uses the configured lifetime
+    (default 15 minutes, from ``jwt.access_token_expire_minutes``, the source
+    of truth).
 
     Args:
         data: Data to include in the token (e.g., user_id, email).
