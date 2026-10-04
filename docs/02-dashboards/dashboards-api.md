@@ -298,6 +298,14 @@ Admin only.
 
 **Response** (`201 Created`): Layout object.
 
+**Error responses:**
+
+| Status | Condition                    | Detail                              |
+| ------ | ---------------------------- | ----------------------------------- |
+| `403`  | Caller is not admin          | `Only admins can create layouts`    |
+| `409`  | Duplicate name               | `Conflict: layout creation failed`  |
+| `422`  | Invalid request body         | Validation error                    |
+
 ---
 
 ### 9. Update Layout
@@ -313,6 +321,15 @@ Admin only.
 **Request body:** Same structure as Create Layout.
 
 **Response** (`200 OK`): Updated layout object.
+
+**Error responses:**
+
+| Status | Condition                    | Detail                            |
+| ------ | ---------------------------- | --------------------------------- |
+| `403`  | Caller is not admin          | `Only admins can update layouts`  |
+| `404`  | Layout not found             | `Layout not found`                |
+| `409`  | Duplicate name               | `Conflict: layout update failed`  |
+| `422`  | Invalid request body         | Validation error                  |
 
 ---
 
