@@ -504,6 +504,12 @@ async def _noop_apply_migrations(self, db_url: str) -> None:
     return None
 
 
+# Credentials and host here are inert. Every destructive test in this module
+# replaces the starter module's `create_async_engine` with a recording fake
+# (`_RecordingEngineFactory`), so no connection is ever opened and these values
+# are never used for anything: the config object simply requires a value. The
+# password `pw` in particular is a placeholder and is never authenticated
+# against, so it must not be read as a statement about the real test credentials.
 _TEST_DB_URL = "postgresql+asyncpg://mkobi_app:pw@localhost:5434/bidb_test"
 _TEST_ADMIN_URL = "postgresql+asyncpg://postgres:pw@localhost:5434/postgres"
 
