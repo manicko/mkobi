@@ -66,7 +66,10 @@ export function useAggregatedData(
 ) {
   const accessToken = useAuthToken()
   return useQuery({
-    queryKey: ['aggregatedData', dashboardId, filters],
+    // ``graphId`` is part of the key: two per-graph fetches for one dashboard
+    // with identical filters must not collide on a single cache entry.
+    // ``graphId ?? null`` keeps the key unambiguous when it is absent.
+    queryKey: ['aggregatedData', dashboardId, graphId ?? null, filters],
     queryFn: () =>
       dashboardApi.getAggregatedData({
         dashboard_id: dashboardId,
