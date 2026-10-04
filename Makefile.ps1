@@ -157,6 +157,10 @@ function Invoke-Restart {
 }
 
 function Invoke-Build {
+    # `docker compose build` tags each locally-built service with the image
+    # coordinate its compose file declares (mkobi/<service>:${IMAGE_TAG:-local}).
+    # The build and the compose tag therefore produce the identical string, and
+    # a rollback can select a previously built tag without any registry push.
     docker compose @DevCompose build
 }
 

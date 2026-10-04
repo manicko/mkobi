@@ -1340,6 +1340,98 @@ class TestRqWorkerComposeWiring:
 
 
 
+class TestLocallyBuiltImageIdentity:
+    """OPS-016/OPS-015(b): every locally-built service carries a real image tag.
+
+    These tests read docker/docker-compose.yml and docker/docker-compose.override.yml
+    directly. Without an ``image:`` coordinate the built services run as bare
+    ``:latest`` and there is no artefact a rollback can select. The tag must not
+    be ``latest`` (not selectable), and the base file and the dev override must
+    agree exactly, otherwise the artefact identity silently changes between
+    tiers. This is the tripwire that fails if someone removes the key.
+    """
+
+    # The services that build locally (the db/redis/nginx services pull a public
+    # image and are therefore out of scope for the locally-built identity).
+    _LOCALLY_BUILT = ("migrate", "app", "rq-worker")
+
+    @staticmethod
+    def _compose_files() -> dict:
+        from pathlib import Path
+
+        docker_dir = Path(__file__).resolve().parent.parent / "docker"
+        return {
+            "base": docker_dir / "docker-compose.yml",
+            "override": docker_dir / "docker-compose.override.yml",
+        }
+
+    @staticmethod
+    def _service_block(text: str, service: str) -> str:
+        """Return one top-level service block from a compose file's text."""
+        lines = text.splitlines()
+        start = None
+        for index, line in enumerate(lines):
+            if line.rstrip() == f"  {service}:":
+                start = index
+                break
+        assert start is not None, f"{service} service not found"
+        block = [lines[start]]
+        for line in lines[start + 1:]:
+            if line.startswith("  ") and not line.startswith("    ") and line.strip():
+                break
+            block.append(line)
+        return "\n".join(block)
+
+    @staticmethod
+    def _image_line(block: str) -> str | None:
+        """Return the ``image:`` line of a service block, or None if absent."""
+        for line in block.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("image:"):
+                return stripped
+        return None
+
+    def test_every_locally_built_service_declares_an_image(self) -> None:
+        """Both tiers declare an image coordinate for each locally-built service."""
+        for name, compose_path in self._compose_files().items():
+            text = compose_path.read_text(encoding="utf-8")
+            for service in self._LOCALLY_BUILT:
+                block = self._service_block(text, service)
+                image_line = self._image_line(block)
+                assert image_line is not None, f"{name}:{service} has no image:"
+                assert image_line != "image: latest", f"{name}:{service}"
+
+    def test_image_tag_is_not_latest(self) -> None:
+        """The tag is never a bare 'latest': latest is not a selectable rollback."""
+        for name, compose_path in self._compose_files().items():
+            text = compose_path.read_text(encoding="utf-8")
+            for service in self._LOCALLY_BUILT:
+                image_line = self._image_line(self._service_block(text, service))
+                assert image_line is not None, f"{name}:{service}"
+                assert ":latest" not in image_line, f"{name}:{service} -> {image_line}"
+                # The repository is the local store, so an honest local name.
+                assert image_line.startswith("image: mkobi/"), f"{name}:{service}"
+
+    def test_base_and_override_image_coordinates_agree(self) -> None:
+        """The dev override declares the identical image value as the base file.
+
+        An override that declared a different value for the same service is a
+        latent bug: the tag in the base file and the tag produced by a build
+        would diverge, and a rollback would select an artefact that no longer
+        matches the service definition.
+        """
+        files = self._compose_files()
+        base_text = files["base"].read_text(encoding="utf-8")
+        override_text = files["override"].read_text(encoding="utf-8")
+
+        for service in self._LOCALLY_BUILT:
+            base_image = self._image_line(self._service_block(base_text, service))
+            override_image = self._image_line(self._service_block(override_text, service))
+            assert base_image is not None, f"base:{service}"
+            assert override_image is not None, f"override:{service}"
+            assert base_image == override_image, f"{service}: {base_image} != {override_image}"
+
+
 class TestRateLimiterOverrideWiring:
     """SECB-9: the dev override must declare the limiter posture for both services.
 

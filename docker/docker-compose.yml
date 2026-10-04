@@ -52,6 +52,12 @@ services:
   # For improved security, consider creating a dedicated migration role
   # with DDL privileges only (not superuser) in production environments.
   migrate:
+    # Locally-built artefact. The repository is the local image store, not a
+    # registry: nothing is pushed anywhere, so a rollback selects a previously
+    # built tag from the local daemon. ``:latest`` is deliberately not used —
+    # latest is not a selectable rollback target. The tag is overridable from
+    # .env via IMAGE_TAG without touching this file.
+    image: mkobi/migrate:${IMAGE_TAG:-local}
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -91,6 +97,9 @@ services:
     restart: "no"
 
   app:
+    # Locally-built artefact consumed locally, never pushed to a registry. See
+    # the migrate service for the rollback rationale on a real tag.
+    image: mkobi/app:${IMAGE_TAG:-local}
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -198,6 +207,9 @@ services:
 
   # RQ worker for background task processing (file uploads, data aggregation)
   rq-worker:
+    # Locally-built artefact consumed locally, never pushed to a registry. See
+    # the migrate service for the rollback rationale on a real tag.
+    image: mkobi/rq-worker:${IMAGE_TAG:-local}
     build:
       context: ..
       dockerfile: docker/Dockerfile
