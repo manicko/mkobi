@@ -7,7 +7,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.db.repositories.layout_repo import LayoutRepository
-from mkobi.models.enums import UserRole
+from mkobi.models.enums import ErrorCode, UserRole
 
 
 @pytest.mark.asyncio
@@ -361,9 +361,13 @@ class TestLayoutsAPI:
         )
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         data = response.json()
-        assert "detail" in data
-        # FastAPI validation errors contain an errors array
-        errors = data["detail"]
+        # RFC 7807 Problem Details envelope.
+        for member in ("type", "title", "status", "detail", "code"):
+            assert member in data
+        assert data["code"] == ErrorCode.VALIDATION_ERROR
+        assert data["status"] == status.HTTP_422_UNPROCESSABLE_ENTITY
+        # Field-level validation errors live in the top-level 'errors' array.
+        errors = data["errors"]
         assert isinstance(errors, list)
         # Find the error for the 'name' field
         name_errors = [e for e in errors if "name" in e.get("loc", [])]
@@ -379,8 +383,13 @@ class TestLayoutsAPI:
         )
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         data = response.json()
-        assert "detail" in data
-        errors = data["detail"]
+        # RFC 7807 Problem Details envelope.
+        for member in ("type", "title", "status", "detail", "code"):
+            assert member in data
+        assert data["code"] == ErrorCode.VALIDATION_ERROR
+        assert data["status"] == status.HTTP_422_UNPROCESSABLE_ENTITY
+        # Field-level validation errors live in the top-level 'errors' array.
+        errors = data["errors"]
         assert isinstance(errors, list)
         # Find the error for the 'definition' field
         definition_errors = [e for e in errors if "definition" in e.get("loc", [])]
