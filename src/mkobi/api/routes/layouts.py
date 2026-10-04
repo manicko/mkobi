@@ -8,6 +8,7 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.api.deps import (
@@ -21,6 +22,7 @@ from mkobi.api.schemas.responses import (
     error_401,
     error_403,
     error_404,
+    error_409,
     error_422,
     error_429,
     error_500,
@@ -49,6 +51,7 @@ router = APIRouter(prefix="/layouts", tags=["layouts"])
     responses={
         401: error_401,
         403: error_403,
+        409: error_409,
         422: error_422,
         429: error_429,
         500: error_500,
@@ -73,6 +76,7 @@ async def create_layout_endpoint(
 
     Raises:
         AppException 403: If user is not an admin.
+        AppException 409: If a layout with this name already exists.
         AppException 422: If data validation failed.
         AppException 500: On database error.
     """
@@ -107,6 +111,20 @@ async def create_layout_endpoint(
             code=ErrorCode.VALIDATION_ERROR,
             detail=str(e),
         ) from e
+    except IntegrityError:
+        # A flush-time integrity error leaves the transaction aborted, so the
+        # next statement on this session would raise PendingRollbackError.
+        await db.rollback()
+        logger.error(
+            "Integrity error creating layout name=%s",
+            layout.name,
+            exc_info=True,
+        )
+        raise AppException(
+            code=ErrorCode.DUPLICATE_RESOURCE,
+            detail="Conflict: layout creation failed",
+            details={"name": layout.name},
+        ) from None
     except Exception as e:
         logger.error(
             "Error creating layout name=%s",
@@ -279,6 +297,7 @@ async def get_layout_endpoint(
         401: error_401,
         403: error_403,
         404: error_404,
+        409: error_409,
         422: error_422,
         429: error_429,
         500: error_500,
@@ -308,6 +327,7 @@ async def update_layout_endpoint(
     Raises:
         AppException 403: If user is not an admin.
         AppException 404: If layout not found.
+        AppException 409: If a layout with this name already exists.
         AppException 422: If data validation failed.
         AppException 500: On database error.
     """
@@ -348,6 +368,20 @@ async def update_layout_endpoint(
             code=ErrorCode.VALIDATION_ERROR,
             detail=str(e),
         ) from e
+    except IntegrityError:
+        # A flush-time integrity error leaves the transaction aborted, so the
+        # next statement on this session would raise PendingRollbackError.
+        await db.rollback()
+        logger.error(
+            "Integrity error updating layout id=%s",
+            layout_id,
+            exc_info=True,
+        )
+        raise AppException(
+            code=ErrorCode.DUPLICATE_RESOURCE,
+            detail="Conflict: layout update failed",
+            details={"name": layout_update.name},
+        ) from None
     except AppException:
         raise
     except Exception as e:
