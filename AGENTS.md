@@ -118,7 +118,7 @@ alwaysApply: true
 ## 5. Основной Data Flow
 
 1. Upload (`POST /upload/{dashboard_id}`)
-2. Сохранение во временную папку (`platformdirs`)
+2. Сохранение в staging-папку через `platformdirs`: `UploadSettings.temp_dir` — `user_data_dir` (`user_data_dir("mkobi", "ZOO") / "tmp_uploads"`), а per-user дерево загрузок — `user_cache_dir` (`user_cache_dir("mkobi", appauthor=False) / "uploads" / <user_id>`); обе не являются системным temp-каталогом
 3. Валидация → Parse (Polars)
 4. Transform + Aggregate (по `processing_configs`)
 5. Сохранение в `aggregated_data`
