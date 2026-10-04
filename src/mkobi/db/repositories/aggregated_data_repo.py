@@ -41,11 +41,45 @@ from uuid import UUID
 from sqlalchemy import delete, func, insert, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only, noload
 
 from mkobi.db.models import aggregated_data as aggregated_data_model
 from mkobi.interfaces.repository_interfaces import IAggregatedDataRepository
 
 logger = logging.getLogger(__name__)
+
+
+def _response_columns_only() -> list[Any]:
+    """Loader options that load only what the aggregate response serialises.
+
+    The aggregate read feeds ``ProcessingResultData``, which is built solely
+    from ``dims``, ``metrics`` and ``dashboard_id`` (the ``id`` is the sort key).
+    ``AggregatedData.dashboard`` and ``AggregatedData.graph`` are
+    ``lazy="selectin"`` at the model level, so reading the entity cascades into
+    ``Dashboard``'s nine ``selectin`` relationships -- 14 of the read path's 17
+    statements -- none of which the response uses. These options de-emphasise
+    both relationships **for this query only** (the model-level defaults are
+    untouched, so the config and admin read paths keep them) and restrict the
+    loaded scalar columns to the ones the response consumes.
+
+    ``Dashboard``/``Graph`` are not loaded here at all: the endpoint serialises
+    the graph's ``id``, ``type``, ``name`` and ``config`` from
+    ``GraphRepository``, not from this entity's ``graph`` relationship.
+
+    Returns:
+        list[Any]: Loader options to pass to ``Query.options``.
+    """
+    return [
+        load_only(
+            aggregated_data_model.AggregatedData.id,
+            aggregated_data_model.AggregatedData.dashboard_id,
+            aggregated_data_model.AggregatedData.graph_id,
+            aggregated_data_model.AggregatedData.dims,
+            aggregated_data_model.AggregatedData.metrics,
+        ),
+        noload(aggregated_data_model.AggregatedData.dashboard),
+        noload(aggregated_data_model.AggregatedData.graph),
+    ]
 
 
 class AggregatedDataRepository(IAggregatedDataRepository):
@@ -144,6 +178,7 @@ class AggregatedDataRepository(IAggregatedDataRepository):
         try:
             result = await db.execute(
                 select(aggregated_data_model.AggregatedData)
+                .options(*_response_columns_only())
                 .where(aggregated_data_model.AggregatedData.dashboard_id == dashboard_id)
                 .order_by(aggregated_data_model.AggregatedData.id)
             )
@@ -203,6 +238,7 @@ class AggregatedDataRepository(IAggregatedDataRepository):
                     )
 
             query = query.order_by(aggregated_data_model.AggregatedData.id)
+            query = query.options(*_response_columns_only())
 
             result = await db.execute(query)
             data = list(result.scalars().all())

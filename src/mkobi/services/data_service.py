@@ -203,10 +203,12 @@ class DataService(IDataService):
         records = await self.agg_repo.get_by_graph_id(
             graph_id, db, dashboard_id=dashboard_id, filters=filters,
         )
+        # Build only what the endpoint keeps. The route reads ``preview`` and
+        # discards ``columns`` and ``rows``, so the two list allocations that
+        # built ``columns`` are dropped here rather than materialised per row
+        # only to be thrown away.
         return [
             ProcessingResultData(
-                columns=list(record.dims.keys()) + list(record.metrics.keys()),
-                rows=1,
                 dashboard_id=record.dashboard_id,
                 preview=[{**record.dims, **record.metrics}],
             )
