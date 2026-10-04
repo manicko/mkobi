@@ -156,6 +156,14 @@ services:
       # tests/test_config.py resolves docker/ via Path(__file__).parent.parent;
       # without this the suite asserts against the image's baked copy.
       - ../docker:/app/docker
+      # pytest reads [tool.pytest.ini_options] from this file at the rootdir.
+      # Without this mount the gate grades the image's baked pytest config, so
+      # a host-side change to markers, addopts or coverage gates is invisible.
+      - ../pyproject.toml:/app/pyproject.toml
+      # tests/test_migration_lock.py reads alembic/env.py via
+      # Path(__file__).parent.parent; without this the source-contract test
+      # asserts against the baked copy, exactly like the docker/ mount above.
+      - ../alembic:/app/alembic
     ports:
       # Host port configurable for parallel checkouts (default 8001).
       - "${TEST_APP_HOST_PORT:-8001}:8000"
