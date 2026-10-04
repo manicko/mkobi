@@ -46,11 +46,25 @@ Run the script from the repo root: relative paths (`--env-file .env`,
 > (line wraps, quotes) and does **NOT** sort imports — `.\Makefile.ps1 format`
 > runs `ruff check --fix src/ tests/`, not `ruff format`.
 
-## Tests (Docker only)
+## Tests
 
-Local `uv run pytest` fails: there is no test database on `localhost`. Runs go
-through the `test-app` service of the `mkobi-test` Compose project
-(`docker/docker-compose.test.yml`, PostgreSQL on host port 5434).
+`.\Makefile.ps1 test` — the canonical gate — runs the suite through the `test-app`
+service of the `mkobi-test` Compose project (`docker/docker-compose.test.yml`,
+PostgreSQL on host port 5434).
+
+A host-side `uv run pytest` is **not** excluded any more. Every pytest process
+resolves its own test database name, `bidb_test_<run token>`, so a host run and a
+container run — or two host runs — can no longer drop each other's database. Two
+limits are left, and both are real:
+
+- The test stack must be up (`.\Makefile.ps1 test-up`), because `tests/conftest.py`
+  points a host run at the `test-db` container's published port, `localhost:5434`.
+- The image installs `libmagic1`; the Windows host does not have it. Any module whose
+  import graph reaches `src/mkobi/services/file_processing.py` therefore fails to
+  collect on the host with `ImportError: failed to find libmagic`. Modules that do
+  not reach it run on the host, database-backed ones included.
+
+`docs/06-backend/testing.md` is the SSOT for the per-run database.
 
 **Canonical path:**
 
@@ -79,12 +93,19 @@ services' `build.context: ..` to the repo's parent directory.
 | Full suite | `$dc run --rm --no-deps test-app pytest` | Default |
 | Stop | `$dc down` | Done (preserves named volumes) |
 
-**How the schema is created.** `tests/conftest.py` recreates and migrates the
-test database itself (session-scoped `setup_test_database` fixture), so there is
-no separate migrate step on the test path. The `mkobi_app` role must pre-exist —
-it is created by `docker/init-scripts/01-create-app-role.sh` on first `test-db`
-volume initialisation. If pytest reports `role "mkobi_app" does not exist`, run
-`.\Makefile.ps1 test-reset` once to rebuild the volume.
+**How the schema is created.** `tests/conftest.py` recreates and migrates the test
+database itself (session-scoped `setup_test_database` fixture), so there is no
+separate migrate step on the test path. The database it recreates is **this run's own**
+`bidb_test_<run token>` — the token is `MKOBI_TEST_RUN_ID` when set, otherwise
+`uuid4().hex[:8]` — and the session-end teardown drops it again, so the run leaves no
+database behind. Never pass the same `MKOBI_TEST_RUN_ID` to two concurrent runs: they
+would share one database and the first to finish would drop it out from under the
+second. `setup_test_database` is **not** autouse; only the modules and fixtures that
+need a live database request it, so a pure-unit selection creates no database at all.
+The `mkobi_app` role must pre-exist — it is created by
+`docker/init-scripts/01-create-app-role.sh` on first `test-db` volume initialisation.
+If pytest reports `role "mkobi_app" does not exist`, run `.\Makefile.ps1 test-reset`
+once to rebuild the volume.
 
 ## Dev stack
 

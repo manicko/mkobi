@@ -6,7 +6,12 @@
 - **Package manager (Python):** uv
 - **Package manager (Frontend):** npm
 - **Database (Development):** PostgreSQL (localhost:5432, db: bidb, user: mkobi_app)
-- **Database (Testing):** PostgreSQL (localhost:5434, db: bidb_test, user: mkobi_app)
+- **Database (Testing):** PostgreSQL (localhost:5434, user: mkobi_app)
+  - The server provisions `bidb_test`, but every pytest run creates, migrates and then
+    drops its own `bidb_test_<run token>` (`MKOBI_TEST_RUN_ID` when set, otherwise
+    `uuid4().hex[:8]`). Two runs therefore cannot collide. Never pass the same
+    `MKOBI_TEST_RUN_ID` to two concurrent runs — they would share one database and the
+    first to finish would drop it out from under the second.
   - Default password: `test_app_password` (mkobi_app user)
   - Admin password: `test_password` (postgres user)
 
@@ -47,7 +52,7 @@ IMPORTANT: USE Get-Content to read .env files.
 | Add dependency | `uv add <package>` |
 | Add dev dependency | `uv add --dev <package>` |
 | Database CLI (dev) | `set "PGPASSWORD=<your_password>" & psql -h localhost -p 5432 -U postgres -d bidb` |
-| Database CLI (test) | `set "PGPASSWORD=test_password" & psql -h localhost -p 5434 -U postgres -d bidb_test` |
+| Database CLI (test) | `set "PGPASSWORD=test_password" & psql -h localhost -p 5434 -U postgres -d bidb_test` (the server's own database; a pytest run's tables live in its per-run `bidb_test_<run token>` instead) |
 
 > **Always run from repo root:** `C:\py_dev\mkobi`
 

@@ -408,10 +408,13 @@ targets, see [Quick Start](#quick-start). The essentials:
 - No port or volume conflicts with the dev stack, because the two stacks are
   separate Compose projects
 
-`tests/conftest.py` sets `os.environ.setdefault` for the database connection, so
-Compose values win inside the container while native host runs keep working
-defaults. The schema is created and migrated by `conftest`, not by
-`test-migrate`.
+`tests/conftest.py` applies `os.environ.setdefault` for the database **connection**, so
+Compose values win inside the container while native host runs keep working defaults.
+The two database **names** are the exception: `DATABASE__DBNAME` and
+`DATABASE__TEST_DBNAME` are assigned unconditionally, overriding the `bidb_test` that
+`docker/docker-compose.test.yml` hardcodes on `test-app`, because every run must own a
+database no other run targets. The schema is created and migrated by `conftest`, not by
+`test-migrate` — see [Testing](../06-backend/testing.md) for the per-run naming.
 
 ## Production Deployment
 
