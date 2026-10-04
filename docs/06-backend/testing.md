@@ -129,9 +129,9 @@ The canonical gate does not run on the host. `.\Makefile.ps1 test` runs the suit
 inside the `test-app` container, and that service bind-mounts `src/`, `tests/` and
 `docker/` from the working tree — so the gate grades the files you just edited
 and a test-side change is graded without an image rebuild. The mounts are
-writes-through: `__pycache__` directories and any stray artefact a test leaves
-behind can appear in `src/` or `tests/` on the host. See
-[Docker Guide](../11-guides/docker.md#testing) for the stack.
+writes-through: any stray artefact a test leaves behind in `src/` or `tests/` can
+appear on the host. See [Docker Guide](../11-guides/docker.md#testing) for the
+stack.
 
 ## Coverage Areas
 

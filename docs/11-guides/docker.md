@@ -279,9 +279,10 @@ authored migration was otherwise invisible to it.
 
 Two consequences follow from those mounts being writes-through to the host:
 
-- `__pycache__` directories, and any stray artefact a test leaves behind, can
-  appear in `src/` or `tests/` in the working tree. `__pycache__/` is
-  git-ignored; nothing else is.
+- Any stray artefact a test leaves behind in `src/` or `tests/` can appear in the
+  working tree. The mounts are world-writable and writes go straight through to
+  the host; only `__pycache__/` is not a concern, because
+  `PYTHONDONTWRITEBYTECODE=1` is set in the image.
 - The test targets invoke pytest with `-o cache_dir=/tmp/pytest_cache`. `/app` is
   `root:root 755` and unwritable by the container's non-root `app` user, so
   pytest's default `.pytest_cache` write fails with `Errno 13`. The same class of
