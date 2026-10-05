@@ -46,6 +46,28 @@ function shouldPreserveFilters(state: unknown): boolean {
 }
 
 /**
+ * Narrows an unknown restored value to a usable `FilterState` entry.
+ *
+ * `loadPersistedFilters` runs as a `useState` initializer, before
+ * `useDashboard` resolves, so it cannot consult the declared filter types. It
+ * can still decide the one case that is unambiguous from the value alone: a
+ * `number[]` is the retired slider's output, and a range is not evaluable, so
+ * that entry is dropped. A `string[]` is ambiguous -- it is indistinguishable
+ * on the wire from a legitimate two-value multiselect -- and is kept; the
+ * server's by-name backstop is what resolves it.
+ */
+function isRestorableFilterValue(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return !value.some((element) => typeof element === 'number')
+  }
+  return (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  )
+}
+
+/**
  * Loads persisted filters for a dashboard.
  *
  * Used as a `useState` initializer so the restore happens once at mount rather
@@ -65,7 +87,13 @@ function loadPersistedFilters(dashboardId: string | undefined, preserve: boolean
     if (!saved) return {}
     const parsed: unknown = JSON.parse(saved)
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
-    return parsed as FilterState
+    const restored: FilterState = {}
+    for (const [key, value] of Object.entries(parsed)) {
+      if (isRestorableFilterValue(value)) {
+        restored[key] = value as FilterState[string]
+      }
+    }
+    return restored
   } catch {
     // Ignore JSON parse errors - continue with empty filters
     return {}

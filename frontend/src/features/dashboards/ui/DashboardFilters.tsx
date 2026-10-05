@@ -6,15 +6,25 @@ import {
   MenuItem,
   TextField,
   Typography,
-  Slider,
   Button,
   Stack,
   Chip,
   Paper,
   Box,
+  Alert,
 } from '@mui/material'
 import { useFilterValues } from '../api/dashboardApi'
 import type { FilterDetail } from '../../../shared/types/api.types'
+
+/**
+ * Message shown when a declared filter type has no evaluable control.
+ *
+ * A dashboard that already stores a `range` filter renders no control; silence
+ * is the same "does nothing" defect as a dead control, so the panel says so
+ * instead. This wording has a single home.
+ */
+const UNEVALUABLE_FILTER_MESSAGE =
+  'has a declared type that is not supported by the filters panel and sends no value'
 
 interface DashboardFiltersProps {
   filters: FilterDetail[]
@@ -176,27 +186,6 @@ function FilterField({ filter, value, onChange, dashboardId }: FilterFieldProps)
       )
     }
 
-    case 'range': {
-      const rangeValue = (value as [number, number]) || [
-        config.min || 0,
-        config.max || 100,
-      ]
-      const labelId = `filter-range-label-${filter.id}`
-      return (
-        <Box>
-          <Typography variant="caption" id={labelId}>{filter.name}</Typography>
-          <Slider
-            value={rangeValue}
-            min={config.min || 0}
-            max={config.max || 100}
-            onChange={(_, newValue) => onChange(newValue)}
-            valueLabelDisplay="auto"
-            aria-labelledby={labelId}
-          />
-        </Box>
-      )
-    }
-
     case 'date':
       return (
         <TextField
@@ -211,6 +200,10 @@ function FilterField({ filter, value, onChange, dashboardId }: FilterFieldProps)
       )
 
     default:
-      return null
+      return (
+        <Alert severity="warning">
+          {`Filter "${filter.name}" ${UNEVALUABLE_FILTER_MESSAGE}. Declared type is "${filter.type}".`}
+        </Alert>
+      )
   }
 }
