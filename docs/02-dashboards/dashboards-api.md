@@ -994,7 +994,9 @@ In addition to the global graph endpoints, graphs can be created and listed via 
 | -------------- | -------------------------------------------------- |
 | **Method**     | `POST`                                             |
 | **Path**       | `/api/v1/dashboards/{dashboard_id}/graphs`         |
-| **Auth level** | Admin                                              |
+| **Auth level** | Dashboard admin (an `admin` grant on this dashboard, or the `admin` role) |
+
+A caller outside that audience receives `403` whether or not the dashboard exists, because the dashboard admin gate runs before the handler body.
 
 **Request body:** Same structure as global Create Graph.
 
@@ -1004,6 +1006,7 @@ In addition to the global graph endpoints, graphs can be created and listed via 
 
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
+| `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | `You do not have admin access to this dashboard` |
 | `409`  | Duplicate name in dashboard  | `Conflict: graph creation failed` |
 
 ---

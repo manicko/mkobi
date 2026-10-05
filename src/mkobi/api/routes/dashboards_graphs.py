@@ -1,7 +1,9 @@
 """Dashboard graph routes.
 
 This module provides endpoints for managing graphs within a dashboard.
-Create operations require admin role. Read operations use dashboard access control.
+Create operations require an `admin` permission on the target dashboard, or the
+`admin` role, which bypasses the per-dashboard check. Read operations use
+dashboard read access control.
 """
 
 import logging
@@ -13,10 +15,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mkobi.api.deps import (
-    CurrentUser,
     get_db_dependency,
     get_graph_repository,
-    require_admin_role,
+    require_dashboard_admin_access,
     require_dashboard_read_access,
 )
 from mkobi.api.schemas.responses import (
@@ -45,7 +46,11 @@ router = APIRouter(tags=["dashboards"])
     response_model=GraphRead,
     status_code=status.HTTP_201_CREATED,
     summary="Create a new graph for a dashboard",
-    description="Creates a new graph for a specific dashboard. Requires admin role.",
+    description=(
+        "Creates a new graph for a specific dashboard. Requires an `admin` "
+        "permission on the dashboard, or the `admin` role, which bypasses the "
+        "per-dashboard check."
+    ),
     responses={
         401: error_401,
         403: error_403,
@@ -54,12 +59,11 @@ router = APIRouter(tags=["dashboards"])
         422: error_422,
         500: error_500,
     },
-    dependencies=[Depends(require_admin_role)],
 )
 async def create_dashboard_graph_endpoint(
     dashboard_id: UUID,
     graph: GraphCreate,
-    current_user: CurrentUser,
+    current_user: UserRead = Depends(require_dashboard_admin_access),
     db: AsyncSession = Depends(get_db_dependency),
     graph_repo: GraphRepository = Depends(get_graph_repository),
 ) -> GraphRead:
@@ -68,13 +72,16 @@ async def create_dashboard_graph_endpoint(
     Args:
         dashboard_id: Dashboard ID.
         graph: Model with graph data.
-        current_user: Current authenticated user.
+        current_user: Current authenticated user who passed the dashboard
+            admin-access gate.
         db: Database session.
 
     Returns:
         GraphRead: Model of the created graph.
 
     Raises:
+        AppException 403: If the caller holds no admin grant on the dashboard
+            and is not an administrator.
         AppException 404: If dashboard not found.
         AppException 422: If data validation failed.
         AppException 500: On database error.

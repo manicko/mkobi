@@ -734,3 +734,193 @@ class TestGraphsAPI:
             assert second.json()["code"] == ErrorCode.DUPLICATE_RESOURCE.value
         finally:
             await _delete_committed_graph(async_session_maker, dashboard_id, name)
+
+
+
+class TestDashboardGraphCreateAudience:
+    """POST /dashboards/{id}/graphs enforces the per-dashboard grant, not the global role.
+
+    AZ-6: the create path carried a global ``require_admin_role`` dependency. That
+    is a wrong *kind* of gate, not a missing gate: it admits any administrator and
+    refuses any non-administrator, regardless of which dashboards they administer.
+    The route now carries ``require_dashboard_admin_access``, the same per-dashboard
+    grant gate the access routes use, so an editor granted admin on dashboard A can
+    create a graph there and a caller with no grant on dashboard B is refused there.
+    The admin-role bypass must survive, and is covered by the administrator case.
+    """
+
+    @pytest.mark.asyncio
+    async def test_granted_editor_can_create_on_their_dashboard(
+        self, async_client: AsyncClient, async_db_session: AsyncSession,
+        async_session_maker,
+    ) -> None:
+        """A non-admin editor holding an ``admin`` grant on the dashboard succeeds."""
+        from mkobi.db.repositories.access_repo import AccessRepository
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        access_repo = AccessRepository()
+        owner = await user_repo.create(
+            db=async_db_session,
+            email=f"graph_az6_owner_{uuid.uuid4().hex[:8]}@example.com",
+            password_hash=hash_password("TestPass123!"),
+            role=UserRole.EDITOR,
+        )
+        editor = await user_repo.create(
+            db=async_db_session,
+            email=f"graph_az6_editor_{uuid.uuid4().hex[:8]}@example.com",
+            password_hash=hash_password("TestPass123!"),
+            role=UserRole.EDITOR,
+        )
+        assert owner is not None and editor is not None
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"az6-granted-dashboard-{uuid.uuid4().hex[:8]}",
+            created_by=owner.id,
+            config={"graph_types": ["bar"]},
+        )
+        assert dashboard is not None
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=editor.id,
+            dashboard_id=dashboard.id,
+            permission=DashboardPermission.ADMIN,
+        )
+        await async_db_session.flush()
+        dashboard_id = dashboard.id
+        name = f"az6-granted-graph-{uuid.uuid4().hex[:8]}"
+
+        token = create_access_token({"user_id": str(editor.id), "email": editor.email})
+        try:
+            response = await async_client.post(
+                f"/dashboards/{dashboard_id}/graphs",
+                json={
+                    "dashboard_id": str(dashboard_id),
+                    "name": name,
+                    "type": "bar",
+                    "config": {"xaxis": {"title": "X"}},
+                    "dimensions": ["category"],
+                    "metrics": ["sales"],
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == status.HTTP_201_CREATED
+            assert await _count_committed_graphs(
+                async_session_maker, dashboard_id, name
+            ) == 1
+        finally:
+            await _delete_committed_graph(async_session_maker, dashboard_id, name)
+
+    @pytest.mark.asyncio
+    async def test_no_grant_on_dashboard_is_refused(
+        self, async_client: AsyncClient, async_db_session: AsyncSession,
+        async_session_maker,
+    ) -> None:
+        """A caller with an admin grant on A is still refused on B with no grant."""
+        from mkobi.db.repositories.access_repo import AccessRepository
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        access_repo = AccessRepository()
+        owner = await user_repo.create(
+            db=async_db_session,
+            email=f"graph_az6b_owner_{uuid.uuid4().hex[:8]}@example.com",
+            password_hash=hash_password("TestPass123!"),
+            role=UserRole.EDITOR,
+        )
+        caller = await user_repo.create(
+            db=async_db_session,
+            email=f"graph_az6b_caller_{uuid.uuid4().hex[:8]}@example.com",
+            password_hash=hash_password("TestPass123!"),
+            role=UserRole.EDITOR,
+        )
+        assert owner is not None and caller is not None
+        dashboard_a = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"az6b-a-{uuid.uuid4().hex[:8]}",
+            created_by=owner.id,
+            config={"graph_types": ["bar"]},
+        )
+        dashboard_b = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"az6b-b-{uuid.uuid4().hex[:8]}",
+            created_by=owner.id,
+            config={"graph_types": ["bar"]},
+        )
+        assert dashboard_a is not None and dashboard_b is not None
+        # Caller administers A only.
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=caller.id,
+            dashboard_id=dashboard_a.id,
+            permission=DashboardPermission.ADMIN,
+        )
+        await async_db_session.flush()
+        dashboard_b_id = dashboard_b.id
+        name = f"az6b-graph-{uuid.uuid4().hex[:8]}"
+
+        token = create_access_token({"user_id": str(caller.id), "email": caller.email})
+        try:
+            response = await async_client.post(
+                f"/dashboards/{dashboard_b_id}/graphs",
+                json={
+                    "dashboard_id": str(dashboard_b_id),
+                    "name": name,
+                    "type": "bar",
+                    "config": {"xaxis": {"title": "X"}},
+                    "dimensions": ["category"],
+                    "metrics": ["sales"],
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == status.HTTP_403_FORBIDDEN
+            assert response.json()["code"] == ErrorCode.PERMISSION_DENIED.value
+            assert await _count_committed_graphs(
+                async_session_maker, dashboard_b_id, name
+            ) == 0
+        finally:
+            await _delete_committed_graph(async_session_maker, dashboard_b_id, name)
+            await _delete_committed_graph(
+                async_session_maker, dashboard_a.id, "az6b-no-such-graph"
+            )
+
+    @pytest.mark.asyncio
+    async def test_administrator_bypass_survives(
+        self, authenticated_client: AsyncClient, async_db_session: AsyncSession,
+        async_session_maker, test_user: dict,
+    ) -> None:
+        """An administrator with no grant row still creates (the bypass must survive)."""
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+
+        dashboard_repo = DashboardRepository()
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"az6-admin-dashboard-{uuid.uuid4().hex[:8]}",
+            created_by=test_user["id"],
+            config={"graph_types": ["bar"]},
+        )
+        assert dashboard is not None
+        await async_db_session.flush()
+        dashboard_id = dashboard.id
+        name = f"az6-admin-graph-{uuid.uuid4().hex[:8]}"
+
+        try:
+            response = await authenticated_client.post(
+                f"/dashboards/{dashboard_id}/graphs",
+                json={
+                    "dashboard_id": str(dashboard_id),
+                    "name": name,
+                    "type": "bar",
+                    "config": {"xaxis": {"title": "X"}},
+                    "dimensions": ["category"],
+                    "metrics": ["sales"],
+                },
+            )
+            assert response.status_code == status.HTTP_201_CREATED
+            assert await _count_committed_graphs(
+                async_session_maker, dashboard_id, name
+            ) == 1
+        finally:
+            await _delete_committed_graph(async_session_maker, dashboard_id, name)
