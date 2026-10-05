@@ -298,6 +298,19 @@ class MockRedis:
         """Check if key exists in mock Redis."""
         return 1 if key in self._data else 0
 
+    async def delete(self, key):
+        """Delete a key, returning the number of keys removed.
+
+        Mirrors redis-py: ``DEL`` returns the count of keys that existed. The
+        token-revocation clear path uses this directly, so the double must expose
+        it, not only the queued ``MockPipeline.delete``.
+        """
+        if key in self._data:
+            del self._data[key]
+            self._ttls.pop(key, None)
+            return 1
+        return 0
+
     async def setex(self, key, ttl, value):
         """Set key with TTL in mock Redis."""
         self._data[key] = value

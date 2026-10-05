@@ -683,6 +683,129 @@ class _FaultingRevocationRedis(MockRedis):
         raise RuntimeError("Redis revocation store unreachable")
 
 
+class TestReactivateUser:
+    """Tests that reactivation clears the token revocation marker.
+
+    AZ-9: the reactivate branch previously had no ``else``, so the
+    ``user_tokens_revoked`` marker written by the deactivation survived the
+    reactivation and kept refusing the user's own sessions. These tests pin the
+    deletion: removing the ``else`` branch makes both fail.
+    """
+
+    async def test_reactivation_restores_authentication(
+        self,
+        async_client: AsyncClient,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
+    ) -> None:
+        """A deactivated-then-reactivated user can authenticate again.
+
+        Behavioural: the user logs in before deactivation, its account is
+        deactivated and reactivated through the admin endpoint, and the *same*
+        pre-deactivation token must work again. Without the marker clear, the
+        token's ``iat`` still predates the surviving marker and the request is
+        refused as revoked.
+        """
+        target_email = f"reactivate_auth_{uuid.uuid4().hex[:8]}@example.com"
+        user_repo = UserRepository()
+        target_user = await user_repo.create(
+            db=async_db_session,
+            email=target_email,
+            password_hash=hash_password("TargetPass123!"),
+            role=UserRole.VIEWER,
+        )
+        await async_db_session.commit()
+
+        try:
+            # Obtain a token while the account is still active.
+            login = await async_client.post(
+                "/auth/login",
+                json={"email": target_email, "password": "TargetPass123!"},
+            )
+            assert login.status_code == status.HTTP_200_OK
+            token_headers = {
+                "Authorization": f"Bearer {login.json()['access_token']}"
+            }
+            assert (
+                await async_client.get("/auth/me", headers=token_headers)
+            ).status_code == status.HTTP_200_OK
+
+            # Deactivate: the marker is written, so the pre-existing token is refused.
+            deactivate = await async_client.patch(
+                f"/admin/users/{target_user.id}/active",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={"is_active": False},
+            )
+            assert deactivate.status_code == status.HTTP_200_OK
+
+            # Reactivate: the marker must be cleared, so the token works again.
+            reactivate = await async_client.patch(
+                f"/admin/users/{target_user.id}/active",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={"is_active": True},
+            )
+            assert reactivate.status_code == status.HTTP_200_OK
+            assert reactivate.json()["is_active"] is True
+
+            me = await async_client.get("/auth/me", headers=token_headers)
+            assert me.status_code == status.HTTP_200_OK
+            assert me.json()["email"] == target_email
+        finally:
+            await _delete_committed_email(async_session_maker, target_email)
+
+    async def test_reactivation_removes_the_marker_key(
+        self,
+        async_client: AsyncClient,
+        async_db_session,
+        async_session_maker,
+        test_user: dict,
+    ) -> None:
+        """The marker key is gone from the store after reactivation.
+
+        Store-level: the deactivation writes ``user_tokens_revoked:<id>`` and the
+        reactivation must delete exactly that key. This is the direct assertion
+        on the deletion the ``else`` branch performs.
+        """
+        from mkobi.core.security import is_user_tokens_revoked
+        from mkobi.main import app
+
+        target_email = f"reactivate_marker_{uuid.uuid4().hex[:8]}@example.com"
+        user_repo = UserRepository()
+        target_user = await user_repo.create(
+            db=async_db_session,
+            email=target_email,
+            password_hash=hash_password("TargetPass123!"),
+            role=UserRole.VIEWER,
+        )
+        await async_db_session.commit()
+
+        try:
+            # The async_client fixture installs a MockRedis on app.state.
+            mock_redis = app.state.mock_redis
+
+            deactivate = await async_client.patch(
+                f"/admin/users/{target_user.id}/active",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={"is_active": False},
+            )
+            assert deactivate.status_code == status.HTTP_200_OK
+            marker_key = f"user_tokens_revoked:{target_user.id}"
+            assert await mock_redis.exists(marker_key) == 1
+
+            reactivate = await async_client.patch(
+                f"/admin/users/{target_user.id}/active",
+                headers={"Authorization": f"Bearer {test_user['token']}"},
+                json={"is_active": True},
+            )
+            assert reactivate.status_code == status.HTTP_200_OK
+
+            assert await mock_redis.exists(marker_key) == 0
+            assert await is_user_tokens_revoked(mock_redis, target_user.id) is False
+        finally:
+            await _delete_committed_email(async_session_maker, target_email)
+
+
 class TestResetUserPassword:
     """Tests for POST /admin/users/{user_id}/reset-password endpoint."""
 

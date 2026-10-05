@@ -28,7 +28,7 @@ from mkobi.models.auth import (
     TempPasswordRetrievalRequest,
 )
 from mkobi.services.auth_service import AuthService
-from mkobi.core.security import revoke_all_user_tokens
+from mkobi.core.security import clear_user_tokens_revocation, revoke_all_user_tokens
 from mkobi.core.temp_password_store import (
     TempPasswordStore,
     TempPasswordStoreUnavailableError,
@@ -211,6 +211,33 @@ async def update_user_active_admin_endpoint(
                     ),
                 ) from revoke_error
             logger.info("All tokens revoked for deactivated user: id=%s", user_id)
+        else:
+            # Reactivation must undo the marker the deactivation wrote: an active
+            # user whose marker survives is still refused on every credential
+            # dated before it, even though the account is no longer disabled.
+            # Guarded separately for the same reason as the deactivation write:
+            # a Redis fault must be reported as a committed reactivation with a
+            # failed marker clear, not conflated with a database error.
+            try:
+                await clear_user_tokens_revocation(
+                    redis_client=redis_client,
+                    user_id=user_id,
+                )
+            except Exception as clear_error:
+                logger.error(
+                    "Reactivation committed but clearing the revocation marker "
+                    "failed: id=%s: %s",
+                    user_id,
+                    clear_error,
+                )
+                raise AppException(
+                    code=ErrorCode.INTERNAL_ERROR,
+                    detail=(
+                        "User was reactivated successfully, but clearing the "
+                        "revocation marker failed"
+                    ),
+                ) from clear_error
+            logger.info("Revocation marker cleared for reactivated user: id=%s", user_id)
 
         return updated
     except AppException:

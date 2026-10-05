@@ -685,6 +685,31 @@ async def revoke_all_user_tokens(
     logger.info("All tokens revoked for user: id=%s", user_id)
 
 
+async def clear_user_tokens_revocation(
+    redis_client: aioredis.Redis, user_id: UUID
+) -> None:
+    """Clear a user's revocation marker, re-admitting already-issued tokens.
+
+    ``revoke_all_user_tokens`` writes a timestamped marker that withdraws every
+    credential dated at or before it. That is the right tool for credential
+    rotation and for deactivation, but it must be undone when an administrator
+    reactivates a deactivated account: an active user whose marker survives is
+    still refused on every request that carries a pre-marker ``iat``. Deleting
+    the marker restores the ordinary ``is_active``-only verdict for that user.
+
+    A missing marker is not an error: clearing is idempotent, so a reactivation
+    of a user who was never deactivated (or whose marker already expired) is a
+    no-op rather than a fault.
+
+    Args:
+        redis_client: Async Redis client.
+        user_id: User ID whose revocation marker should be removed.
+    """
+    key = f"user_tokens_revoked:{user_id}"
+    await redis_client.delete(key)
+    logger.info("User token revocation marker cleared for user: id=%s", user_id)
+
+
 async def is_user_tokens_revoked(
     redis_client: aioredis.Redis,
     user_id: UUID,
