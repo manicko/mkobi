@@ -11,6 +11,7 @@ restart.
 import inspect
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncio
 import pytest
 
 import mkobi.app as app_module
@@ -348,6 +349,154 @@ class TestLifespanTeardownFailIsolation:
                                 pass
 
         redis_close.assert_awaited_once()
+        starter.shutdown.assert_awaited_once()
+
+
+class TestStartupFailureTerminates:
+    """B12: a failed startup terminates the process after teardown.
+
+    The lifespan arms raise on a startup failure. uvicorn would otherwise
+    restart the worker in-process, so the process acquires the lease, fails
+    again, and loops forever without becoming healthy or reporting why. The
+    terminal signal is taken *after* the fail-isolated teardown has run.
+    """
+
+    @pytest.mark.asyncio
+    async def test_startup_failure_runs_teardown_then_terminates(self):
+        """A raising startup() still disposes and shuts down, then terminates."""
+        app = MagicMock()
+        starter = MagicMock()
+        starter.startup = AsyncMock(side_effect=RuntimeError("startup blew up"))
+        starter.shutdown = AsyncMock()
+
+        dispose = AsyncMock()
+        terminate = MagicMock()
+
+        with patch.object(app_module, "DatabaseStarter", return_value=starter):
+            with patch.object(app_module, "dispose_engine", new=dispose):
+                with patch.object(
+                    app_module,
+                    "start_stale_processing_cleanup_task",
+                    new=AsyncMock(return_value=None),
+                ):
+                    with patch.object(app_module, "_terminate_process", new=terminate):
+                        with pytest.raises(RuntimeError, match="startup blew up"):
+                            async with app_module.lifespan(app):
+                                pass
+
+        # Teardown ran to completion, then the process was terminated once.
+        dispose.assert_awaited_once()
+        starter.shutdown.assert_awaited_once()
+        terminate.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_termination_happens_after_every_teardown_step(self):
+        """A failing release step does not skip the rest before termination.
+
+        This re-pins the ``b646ef1`` property on the startup-failure path: the
+        terminal exit must not be taken before, or inside, the fail-isolated
+        teardown. Ordering is asserted through a shared event list.
+        """
+        app = MagicMock()
+        starter = MagicMock()
+        starter.startup = AsyncMock(side_effect=RuntimeError("startup blew up"))
+        starter.shutdown = AsyncMock()
+
+        order: list[str] = []
+
+        async def failing_release() -> bool:
+            order.append("release")
+            raise RuntimeError("release blew up")
+
+        async def closing_lease() -> None:
+            order.append("aclose")
+
+        async def disposing() -> None:
+            order.append("dispose")
+
+        async def shutting_down() -> None:
+            order.append("starter.shutdown")
+
+        async def closing_redis() -> None:
+            order.append("close_redis")
+
+        starter.shutdown = AsyncMock(side_effect=shutting_down)
+
+        with patch.object(app_module, "DatabaseStarter", return_value=starter):
+            with patch.object(
+                app_module, "get_async_redis_client", return_value=_UnreachableRedis()
+            ):
+                with patch.object(
+                    app_module.ReconcilerLease,
+                    "release",
+                    new=AsyncMock(side_effect=RuntimeError("release blew up")),
+                ):
+                    with patch.object(
+                        app_module.ReconcilerLease, "aclose", new=closing_lease
+                    ):
+                        with patch.object(
+                            app_module, "dispose_engine", new=disposing
+                        ):
+                            with patch.object(
+                                app_module,
+                                "close_async_redis_client",
+                                new=closing_redis,
+                            ):
+                                with patch.object(
+                                    app_module,
+                                    "start_stale_processing_cleanup_task",
+                                    new=AsyncMock(return_value=None),
+                                ):
+                                    with patch.object(
+                                        app_module,
+                                        "_terminate_process",
+                                        new=lambda: order.append("terminate"),
+                                    ):
+                                        with pytest.raises(RuntimeError):
+                                            async with app_module.lifespan(app):
+                                                pass
+
+        # Every fail-isolated step ran, and termination came last.
+        assert order.index("dispose") < order.index("close_redis")
+        assert order.index("close_redis") < order.index("starter.shutdown")
+        assert order[-1] == "terminate"
+
+    @pytest.mark.asyncio
+    async def test_slow_successful_startup_does_not_terminate(self):
+        """A slow but succeeding startup reaches teardown without terminating.
+
+        The terminal signal is gated strictly on the startup-failure arms, so a
+        successful boot must fall through the normal context-manager exit even
+        when startup is slow.
+        """
+        app = MagicMock()
+        starter = MagicMock()
+
+        async def slow_success() -> None:
+            await asyncio.sleep(0)
+            return None
+
+        starter.startup = AsyncMock(side_effect=slow_success)
+        starter.shutdown = AsyncMock()
+
+        terminate = MagicMock()
+
+        with patch.object(app_module, "DatabaseStarter", return_value=starter):
+            with patch.object(
+                app_module,
+                "get_async_redis_client",
+                return_value=_UnreachableRedis(),
+            ):
+                with patch.object(
+                    app_module,
+                    "start_stale_processing_cleanup_task",
+                    new=AsyncMock(return_value=None),
+                ):
+                    with patch.object(app_module, "_terminate_process", new=terminate):
+                        async with app_module.lifespan(app):
+                            pass
+
+        terminate.assert_not_called()
         starter.shutdown.assert_awaited_once()
 
 

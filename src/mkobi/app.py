@@ -6,6 +6,7 @@ a FastAPI instance using the factory pattern.
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,25 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+def _terminate_process() -> None:
+    """Terminate the process after a failed startup, bypassing cleanup handlers.
+
+    A failed startup must not merely unwind the lifespan coroutine: uvicorn
+    treats the resulting exception as a signal to restart the worker in-process,
+    so the process acquires the lease, fails again, and loops forever without
+    ever becoming healthy or reporting why. A non-zero process exit is what
+    actually stops a container restart policy from respawning the worker.
+
+    ``os._exit`` is deliberate over ``sys.exit``: ``sys.exit`` raises
+    ``SystemExit``, which uvicorn's own loop can catch and turn back into a
+    restart, and it would run this process's ``finally``/``atexit`` handlers a
+    second time. ``os._exit`` terminates immediately with the given status. The
+    lifespan's fail-isolated teardown has already run by the time this is
+    called, so no resource is left unreleased by the abrupt exit.
+    """
+    os._exit(1)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Any:
     """Application lifecycle manager.
@@ -139,6 +159,13 @@ async def lifespan(app: FastAPI) -> Any:
 
     # Background task for stale processing cleanup
     cleanup_task: asyncio.Task[None] | None = None
+
+    # Set only by the startup-failure arms below. The terminal exit is taken
+    # after the fail-isolated ``finally`` has run, never inside it: an exit
+    # before the teardown (or inside an arm that a teardown step could skip)
+    # would restore the bug commit b646ef1 fixed, where one failing release
+    # skipped the rest.
+    startup_failed = False
 
     try:
         logger.info("Initializing application...")
@@ -185,12 +212,15 @@ async def lifespan(app: FastAPI) -> Any:
         yield
     except DatabaseNotFoundError as e:
         logger.error("Database not found: %s", e)
+        startup_failed = True
         raise
     except SchemaNotFoundError as e:
         logger.error("Database schema not initialized: %s", e)
+        startup_failed = True
         raise
     except Exception as e:
         logger.error("Failed to initialize application: %s", e, exc_info=True)
+        startup_failed = True
         raise
     finally:
         logger.info("Shutting down application...")
@@ -251,6 +281,18 @@ async def lifespan(app: FastAPI) -> Any:
             await starter.shutdown()
         except Exception as e:
             logger.warning("Failed to shut down database starter: %s", e)
+
+        # The fail-isolated teardown above has completed. Only now, on the
+        # startup-failure path, do we terminate the process so a restart policy
+        # cannot respawn a worker that will fail identically forever. This sits
+        # at the end of the ``finally`` block - after every teardown step, never
+        # between them - so a failing release cannot skip the remaining steps
+        # before the exit (the property commit b646ef1 established). On a normal
+        # shutdown ``startup_failed`` is False and the context manager exits
+        # normally.
+        if startup_failed:
+            logger.critical("Startup failed after teardown; terminating the process")
+            _terminate_process()
 
 
 def create_app() -> FastAPI:
