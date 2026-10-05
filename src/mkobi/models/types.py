@@ -8,7 +8,7 @@ from typing import TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from mkobi.models.enums import AggregationFunctionEnum, YoyModeEnum
+from mkobi.models.enums import AggregationFunctionEnum, BarmodeEnum, OrientationEnum, YoyModeEnum
 from mkobi.models.transformation_configs import (
     AggregationConfig as TransformationAggregationConfig,
 )
@@ -145,11 +145,29 @@ class SortConfig(TypedDict, total=False):
 
 
 class GraphConfigDict(TypedDict, total=False):
-    """Chart configuration (config field)."""
+    """Chart configuration (the ``config`` field of a graph).
+
+    Declares every key the shipped client reads from ``graph.config`` so make
+    the request vocabulary match what is actually sent. The client
+    (``ChartRenderer.tsx``) reads ``x``, ``color``, ``metrics``,
+    ``orientation`` and ``barmode``; the rest are server-side chart options.
+
+    ``GraphConfigModel`` (below) mirrors this vocabulary; when one gains a key
+    the other must too.
+    """
 
     x: str | None
     y: str | None
     color: str | None
+    # Metric column names for the client's trace builder; the dev seeder also
+    # stores this key, so it must be declared for the read path to round-trip.
+    metrics: list[str] | None
+    # Bar trace orientation ("v"/"h") and bar grouping mode.
+    orientation: OrientationEnum | None
+    barmode: BarmodeEnum | None
+    # Legend visibility at the config level (the layout twin lives on
+    # ``ChartLayoutConfig.showlegend``).
+    showlegend: bool | None
     xaxis: AxisConfig | None
     yaxis: AxisConfig | None
     title: str | None
@@ -248,11 +266,20 @@ class MetricModel(BaseModel):
 
 
 class GraphConfigModel(BaseModel):
-    """Pydantic model for chart configuration."""
+    """Pydantic model for chart configuration.
+
+    Mirrors the declared vocabulary of :class:`GraphConfigDict`. Kept in step
+    with it so a runtime consumer of this model sees the same keys the request
+    boundary accepts.
+    """
 
     x: str | None = None
     y: str | None = None
     color: str | None = None
+    metrics: list[str] | None = None
+    orientation: OrientationEnum | None = None
+    barmode: BarmodeEnum | None = None
+    showlegend: bool | None = None
     xaxis: AxisConfig | None = None
     yaxis: AxisConfig | None = None
     title: str | None = None

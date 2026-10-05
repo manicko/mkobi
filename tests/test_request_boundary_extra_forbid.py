@@ -24,7 +24,9 @@ would also reach ``GraphRead(GraphBase)`` -- a **response** model with
   fields off the source), and
 * the ``extra`` policy **propagates into nested ``TypedDict`` fields**, so
   ``GraphRead.config`` (a ``GraphConfigDict``) would reject the ``metrics`` key
-  the dev seeder stores.
+  the dev seeder stores. ``metrics`` is now declared (SECB-5 widened the
+  vocabulary), so the seeder's key is carried rather than dropped; the guard is
+  kept so a later shrink of the vocabulary cannot silently break the read path.
 
 The policy is therefore declared on ``GraphCreate`` directly, and the regression
 guards at the bottom pin that ``GraphRead`` still validates the seeder's stored
@@ -36,7 +38,9 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
+import pytest
 from httpx import AsyncClient
+from pydantic import ValidationError
 
 from mkobi.models.dashboard import DashboardUpdate
 from mkobi.models.graph import GraphCreate, GraphRead, GraphUpdate
@@ -260,11 +264,12 @@ class TestGraphReadResponseUnaffected:
 
     Declaring the policy on ``GraphBase`` would inherit it into ``GraphRead``,
     and Pydantic propagates a parent's ``extra`` policy into nested
-    ``TypedDict`` fields. ``GraphRead.config`` is a ``GraphConfigDict`` whose
-    declared keys exclude ``metrics``, yet the dev seeder stores
-    ``config={"x": ..., "color": ..., "metrics": [...]}``. A base-level forbid
-    therefore breaks response validation for seeded graphs, which is why the
-    policy lives on ``GraphCreate`` instead.
+    ``TypedDict`` fields. ``GraphRead.config`` is a ``GraphConfigDict``. SECB-5
+    widened that dict to declare ``metrics`` (the dev seeder stores
+    ``config={"x": ..., "color": ..., "metrics": [...]}``), so the read path
+    carries the key instead of dropping it. A base-level forbid would still
+    reject any *genuinely* unknown stored key, which is why the policy lives on
+    ``GraphCreate``.
     """
 
     def test_t10_graph_read_accepts_stored_config_with_undeclared_key(
@@ -273,18 +278,18 @@ class TestGraphReadResponseUnaffected:
         """T10: ``GraphRead`` validates the seeder's stored ``config.metrics``.
 
         The real ``db.seeders.test_media_dash`` writes a ``metrics`` key inside
-        the graph config; ``GraphConfigDict`` does not declare it. Because
-        ``GraphRead`` carries no forbid, validation **succeeds** -- the
-        undeclared key is ignored, exactly as it was before this block. A
-        base-level forbid would have raised here and broken the read path for
-        seeded graphs, which is why the policy lives on ``GraphCreate``.
+        the graph config. Since SECB-5 declared it, the read carries it; because
+        ``GraphRead`` carries no forbid, any other undeclared key is ignored
+        rather than rejected. A base-level forbid would have raised on such a
+        key and broken the read path for seeded graphs, which is why the policy
+        lives on ``GraphCreate``.
         """
         seeded_config = {"x": "month_label", "color": "brand", "metrics": ["tvr_sum"]}
         read = GraphRead.model_validate(_FakeGraphRow(config=seeded_config))
-        # Validation did not raise. The declared keys are carried; the
-        # undeclared nested key is ignored (response-model `ignore` policy).
+        # Validation did not raise. The declared keys are carried.
         assert read.config["x"] == "month_label"
         assert read.config["color"] == "brand"
+        assert read.config["metrics"] == ["tvr_sum"]
 
     def test_t11_graph_read_does_not_declare_forbid(self) -> None:
         """T11: ``GraphRead`` carries no ``extra="forbid"`` policy."""
@@ -293,4 +298,77 @@ class TestGraphReadResponseUnaffected:
         # permissive policy and the undeclared source attribute is ignored.
         read = GraphRead.model_validate(_FakeGraphRow())
         assert "updated_at" not in read.model_dump()
+
+
+# ==================== SECB-5: nested config vocabulary ====================
+
+
+class TestGraphConfigNestedVocabulary:
+    """SECB-5: the declared ``config`` vocabulary matches the client, and a
+    genuinely unknown key inside ``config`` is refused at create and update.
+
+    The client (``ChartRenderer.tsx``) reads ``x``, ``color``, ``metrics``,
+    ``orientation`` and ``barmode`` from ``graph.config``; ``showlegend`` lives
+    on ``config.layout``. Before this block the ``GraphConfigDict`` declared
+    neither ``metrics`` nor ``orientation`` nor ``barmode``, so a request
+    carrying them was refused by the nested forbid.
+    """
+
+    def test_declared_config_keys_are_accepted_at_create(self) -> None:
+        """Every client-read ``config`` key validates on ``GraphCreate``."""
+        model = GraphCreate.model_validate(
+            {
+                **VALID_GRAPH_CREATE,
+                "config": {
+                    "x": "month",
+                    "color": "brand",
+                    "metrics": ["sales"],
+                    "orientation": "h",
+                    "barmode": "stack",
+                    "showlegend": True,
+                },
+            }
+        )
+        assert model.config["metrics"] == ["sales"]
+        assert model.config["orientation"] == "h"
+        assert model.config["barmode"] == "stack"
+
+    def test_declared_config_keys_are_accepted_at_update(self) -> None:
+        """Every client-read ``config`` key validates on ``GraphUpdate``."""
+        model = GraphUpdate.model_validate(
+            {"config": {"x": "month", "metrics": ["sales"], "barmode": "group"}}
+        )
+        assert model.config is not None
+        assert model.config["barmode"] == "group"
+
+    def test_undeclared_config_key_is_refused_at_create(self) -> None:
+        """A key inside ``config`` that is not declared fails on create."""
+        with pytest.raises(ValidationError) as exc_info:
+            GraphCreate.model_validate(
+                {**VALID_GRAPH_CREATE, "config": {"x": "month", "bogus": 1}}
+            )
+        assert "bogus" in str(exc_info.value)
+
+    def test_undeclared_config_key_is_refused_at_update(self) -> None:
+        """A key inside ``config`` that is not declared fails on update."""
+        with pytest.raises(ValidationError) as exc_info:
+            GraphUpdate.model_validate({"config": {"bogus": 1}})
+        assert "bogus" in str(exc_info.value)
+
+    def test_top_level_undeclared_key_is_still_refused(self) -> None:
+        """The model-level forbid still governs the top level of the body."""
+        with pytest.raises(ValidationError) as exc_info:
+            GraphCreate.model_validate({**VALID_GRAPH_CREATE, "bogus_top": 1})
+        assert "bogus_top" in str(exc_info.value)
+
+    async def test_unknown_nested_key_is_refused_through_the_route(
+        self, authenticated_client: AsyncClient
+    ) -> None:
+        """The nested refusal reaches the HTTP boundary as a 422."""
+        response = await authenticated_client.post(
+            "/graphs/",
+            json={**VALID_GRAPH_CREATE, "config": {"bogus": 1}},
+        )
+        assert response.status_code == 422
+        assert response.json()["code"] == ErrorCode.VALIDATION_ERROR.value
 
