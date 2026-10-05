@@ -26,19 +26,59 @@ const UploadModal = lazy(() =>
 
 const FILTER_STORAGE_KEY_PREFIX = 'dashboard-filters-'
 
+type FilterState = Record<string, string | string[] | number | number[]>
+
 // Helper to get filter storage key for a dashboard
 function getFilterStorageKey(dashboardId: string | undefined): string | null {
   if (!dashboardId) return null
   return `${FILTER_STORAGE_KEY_PREFIX}${dashboardId}`
 }
 
-export function DashboardView() {
-const { id } = useParams()
-   const location = useLocation()
+/**
+ * Reads the `preserveFilters` flag from router location state.
+ *
+ * `useLocation().state` is `any` in react-router v6, so the value is narrowed
+ * here rather than read as `any`. Absent or non-boolean values preserve filters.
+ */
+function shouldPreserveFilters(state: unknown): boolean {
+  if (typeof state !== 'object' || state === null) return true
+  return (state as { preserveFilters?: unknown }).preserveFilters !== false
+}
 
-  const [filters, setFilters] = useState<
-    Record<string, string | string[] | number | number[]>
-  >({})
+/**
+ * Loads persisted filters for a dashboard.
+ *
+ * Used as a `useState` initializer so the restore happens once at mount rather
+ * than via a synchronous `setState` inside an effect, which React warns against.
+ * When `preserveFilters` is false the saved entry is removed and no filters are
+ * restored.
+ */
+function loadPersistedFilters(dashboardId: string | undefined, preserve: boolean): FilterState {
+  const storageKey = getFilterStorageKey(dashboardId)
+  if (!storageKey) return {}
+  try {
+    if (!preserve) {
+      sessionStorage.removeItem(storageKey)
+      return {}
+    }
+    const saved = sessionStorage.getItem(storageKey)
+    if (!saved) return {}
+    const parsed: unknown = JSON.parse(saved)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
+    return parsed as FilterState
+  } catch {
+    // Ignore JSON parse errors - continue with empty filters
+    return {}
+  }
+}
+
+export function DashboardView() {
+  const { id } = useParams()
+  const location = useLocation()
+
+  const [filters, setFilters] = useState<FilterState>(() =>
+    loadPersistedFilters(id, shouldPreserveFilters(location.state)),
+  )
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
 
   const {
@@ -52,28 +92,6 @@ const { id } = useParams()
     error: dataError,
   } = useAggregatedData(id || '', filters)
   const { invalidateAggregatedData } = useInvalidateDashboard()
-
-  // Load persisted filters from sessionStorage on mount
-  useEffect(() => {
-    const storageKey = getFilterStorageKey(id)
-    if (storageKey) {
-      try {
-        if (location.state?.preserveFilters === false) {
-          // Clear saved filters when explicitly requested
-          sessionStorage.removeItem(storageKey)
-        } else {
-          // Restore saved filters (default behavior)
-          const savedFilters = sessionStorage.getItem(storageKey)
-          if (savedFilters) {
-            const parsed = JSON.parse(savedFilters) as Record<string, string | string[] | number | number[]>
-            setFilters(parsed)
-          }
-        }
-      } catch {
-        // Ignore JSON parse errors - continue with empty filters
-      }
-    }
-  }, [id, location.state?.preserveFilters])
 
   // Save filters to sessionStorage whenever they change
   useEffect(() => {

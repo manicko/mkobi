@@ -120,7 +120,7 @@ const setStoredFilters = (dashboardId: string, filters: Record<string, unknown>)
 
 const getStoredFilters = (dashboardId: string): Record<string, unknown> | null => {
   const stored = sessionStorage.getItem(`dashboard-filters-${dashboardId}`)
-  return stored ? JSON.parse(stored) : null
+  return stored ? (JSON.parse(stored) as Record<string, unknown>) : null
 }
 
 const clearStoredFilters = (dashboardId: string) => {
@@ -185,7 +185,7 @@ describe('DashboardView - Filter Persistence', () => {
 
     // Verify filter values are restored
     const filterValues = screen.getByTestId('filter-values')
-    const storedValues = JSON.parse(filterValues.textContent || '{}')
+    const storedValues = JSON.parse(filterValues.textContent || '{}') as Record<string, unknown>
     expect(storedValues).toEqual({ region: 'South' })
 
     // Clean up for next test
@@ -216,7 +216,7 @@ describe('DashboardView - Filter Persistence', () => {
     expect(stored).toBeNull()
   })
 
-  it('preserves separate filter state for different dashboards', async () => {
+  it('preserves separate filter state for different dashboards', () => {
     // Set filters for first dashboard
     setStoredFilters('dashboard-1', { region: 'North' })
     setStoredFilters('dashboard-2', { region: 'South' })
