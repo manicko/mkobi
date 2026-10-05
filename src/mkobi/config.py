@@ -71,6 +71,11 @@ ADMIN_PASSWORD_MIN_LENGTH = 8
 # Case-insensitive prefix that marks a shipped placeholder credential.
 PLACEHOLDER_CREDENTIAL_PREFIX = "change_me"
 
+# Processing-log retention window in days, fixed at 90 by the Product Owner
+# ruling (DP-10-7). Declared once here and imported by DatabaseStarterConfig so
+# the settings field and the starter's constructor default cannot disagree.
+LOGS_RETENTION_DAYS_DEFAULT: Final[int] = 90
+
 
 def is_weak_credential(value: str | None, weak_values: Collection[str]) -> bool:
     """Return True when a credential is a known weak or placeholder value.
@@ -724,7 +729,9 @@ class Settings(BaseSettings):
     admin_password: str = Field(default="CHANGE_ME_ADMIN_PASSWORD", alias="ADMIN_PASSWORD")
 
     # --- Cleanup Settings ---
-    logs_retention_days: int = Field(default=90, alias="LOGS_RETENTION_DAYS")
+    logs_retention_days: int = Field(
+        default=LOGS_RETENTION_DAYS_DEFAULT, alias="LOGS_RETENTION_DAYS"
+    )
     stale_file_threshold_hours: int = Field(default=24, alias="STALE_FILE_THRESHOLD_HOURS")
     stale_processing_timeout_minutes: int = Field(default=30, alias="STALE_PROCESSING_TIMEOUT_MINUTES")
     stale_processing_cleanup_interval_seconds: int = Field(default=300, alias="STALE_PROCESSING_CLEANUP_INTERVAL_SECONDS")

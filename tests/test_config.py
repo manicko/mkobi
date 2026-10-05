@@ -2130,3 +2130,40 @@ class TestEdgeLogStreamAndSizeBound:
                 continue
             # Every active access_log line names the redacting format.
             assert "mkobi_redacted" in line, line
+
+
+class TestLogsRetentionDefaultHasOneSource:
+    """The processing-log retention default is declared exactly once.
+
+    ``Settings.logs_retention_days`` and ``DatabaseStarterConfig``'s constructor
+    default describe the same setting. They historically carried two literals
+    (90 and 30) that could drift apart the moment anyone constructed the starter
+    directly. This pins agreement between the two *live* defaults rather than any
+    literal, so it fails on drift even if both were edited to the same wrong
+    number independently.
+    """
+
+    def test_starter_and_settings_defaults_agree(self) -> None:
+        import inspect
+
+        from mkobi.db.starter import DatabaseStarterConfig
+
+        settings_default = Settings.model_fields["logs_retention_days"].default
+        starter_default = inspect.signature(DatabaseStarterConfig).parameters[
+            "logs_retention_days"
+        ].default
+        assert starter_default == settings_default
+
+    def test_both_defaults_resolve_to_the_single_shared_constant(self) -> None:
+        import inspect
+
+        from mkobi.config import LOGS_RETENTION_DAYS_DEFAULT
+        from mkobi.db.starter import DatabaseStarterConfig
+
+        assert Settings.model_fields["logs_retention_days"].default == (
+            LOGS_RETENTION_DAYS_DEFAULT
+        )
+        assert inspect.signature(DatabaseStarterConfig).parameters[
+            "logs_retention_days"
+        ].default == LOGS_RETENTION_DAYS_DEFAULT
+

@@ -28,6 +28,7 @@ from sqlalchemy import DDL, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from mkobi.config import (
+    LOGS_RETENTION_DAYS_DEFAULT,
     get_config,
     is_weak_admin_password,
     is_weak_admin_username,
@@ -140,7 +141,7 @@ class DatabaseStarterConfig:
         migration_script_path: str = "alembic",
         alembic_ini_path: str = "alembic.ini",
         recreate_test_db: bool = False,
-        logs_retention_days: int = 30,
+        logs_retention_days: int = LOGS_RETENTION_DAYS_DEFAULT,
     ) -> None:
         self.env = env
         self.main_database_url = main_database_url
