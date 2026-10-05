@@ -184,6 +184,13 @@ resolver, a chart can never claim one column and draw another. The axis resolves
 way against the served `dimensions`; an unresolvable **colour** column produces **no
 grouping** rather than a guessed dimension.
 
+**How many dashboards were quietly drawing flat zeros before this was fixed is
+UNKNOWN.** Counting them needs a query over stored graph configs and aggregate rows that
+nobody is authorised to run, so the magnitude is deliberately not estimated here —
+including as zero. The state is defined by the served response, not by the historical
+data: any graph whose resolved measure is absent from every served row renders as a gap
+now, whether or not it was ever wrong before.
+
 State 5's condition is deliberately narrow: it requires an `error`, a non-empty served
 graph list, and a prior successful update. A first-load failure is state 1's cousin — a
 plain error alert — not a stale-data view.

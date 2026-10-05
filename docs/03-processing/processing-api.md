@@ -435,13 +435,20 @@ the same two columns the rows were merged from — so every name they list is a 
 on a served row. Nothing is derived from the graph's `config`, and no `_{metric_agg}`
 suffix rule is applied or implied.
 
-> **The distinction that is easy to get backwards.** A top-level `metrics` on this
+> **The distinction that is easy to get backwards.**
+> A top-level `metrics` on this
 > response is the **served, post-alias** key set. `config["metrics"]` on the *same
 > object* is the operator's **pre-alias input**. They routinely differ: an operator
 > who writes `"metrics": ["revenue"]` under a `mean` aggregation receives rows keyed
 > `revenue_mean`, so the response says `metrics: ["revenue_mean"]` while `config`
 > still says `["revenue"]`. **A client reads the served names and applies no suffix
 > rule to them.**
+
+> **The number of stored graphs whose `config` names a column the served rows no longer
+> carry is UNKNOWN.** Measuring it needs a query nobody is authorised to run, so no
+> magnitude is stated here — not an estimate, and not zero. Nothing about the contract
+> depends on it: the served names are correct by construction for every graph, affected
+> or not.
 
 Both fields are **optional with an empty default**, so neither appears in the
 OpenAPI `required` list. A graph with no served rows serves `[]` for both — and such
