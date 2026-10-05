@@ -116,6 +116,10 @@ services:
       # Without this mount a new migration would stay invisible to the image's
       # baked copy, exactly like the test-app defect. Mirrors the dev override.
       - ../alembic:/app/alembic
+      # tests/test_migration_index_policy.py reads the policy document via
+      # Path(__file__).parent.parent / "docs"; without this mount the source
+      # contract asserts against a path the image does not carry.
+      - ../docs:/app/docs
     depends_on:
       test-db:
         condition: service_healthy
@@ -172,6 +176,10 @@ services:
       # Makefile.ps1 (which invariant runs against which compose service);
       # without this mount the suite cannot see the file at all.
       - ../Makefile.ps1:/app/Makefile.ps1
+      # tests/test_migration_index_policy.py reads the policy document via
+      # Path(__file__).parent.parent / "docs"; without this mount the source
+      # contract asserts against a path the image does not carry.
+      - ../docs:/app/docs
     ports:
       # Host port configurable for parallel checkouts (default 8001).
       - "${TEST_APP_HOST_PORT:-8001}:8000"
