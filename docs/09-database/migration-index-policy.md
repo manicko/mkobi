@@ -33,14 +33,17 @@ The two canonical quality-gate and database targets it relies on are:
 
 ## 1. Index DDL under this setup
 
-`CREATE INDEX CONCURRENTLY` cannot run inside a transaction block, and this
-repository wraps every migration body in one. The escape below is the only way
-to express concurrent index DDL here, and it must stay narrow.
+**`CREATE INDEX CONCURRENTLY` is not expressible in a revision under this
+project's async `alembic/env.py` today.** Every plausible way to reach an
+out-of-transaction connection fails, and this document records the failures as
+measured, not as assumed. The project therefore uses the same in-transaction
+`CREATE INDEX IF NOT EXISTS` shape as every other index revision in the chain.
 
 ### 1.1 Why the naive form cannot work
 
 `alembic/env.py` runs migrations through a sync connection proxy
-(`Connection.run_sync(do_run_migrations)`), and `do_run_migrations` wraps the run:
+(`Connection.run_sync(do_run_migrations)`), and `do_run_migrations` wraps the run
+(`alembic/env.py:88-96`):
 
 ```python
 def do_run_migrations(sync_connection: Connection) -> None:
@@ -49,96 +52,103 @@ def do_run_migrations(sync_connection: Connection) -> None:
         context.run_migrations()
 ```
 
-`context.begin_transaction()` is entered before any revision body executes, so
-every statement in an `op.execute(...)` runs inside that open transaction. The
-offline path (`run_migrations_offline`) does the same. PostgreSQL refuses
-`CREATE INDEX CONCURRENTLY` when a transaction block is in progress, and the
-refusal is `CREATE INDEX CONCURRENTLY cannot run inside a transaction block`.
-A revision that calls `op.execute("CREATE INDEX CONCURRENTLY ...")` therefore
-fails on the server, whatever the connection's autocommit setting is: the
-transaction is already open.
+The offline path (`run_migrations_offline`, `alembic/env.py:84-85`) wraps the run
+in `context.begin_transaction()` too. So every statement in an `op.execute(...)`
+runs inside that open transaction. PostgreSQL refuses `CREATE INDEX
+CONCURRENTLY` when a transaction block is in progress:
 
-### 1.2 The escape: a narrow autocommit window
+```
+asyncpg.exceptions.ActiveSQLTransactionError:
+  CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+```
 
-The statement must execute on a connection that is genuinely outside the
-migration transaction. In a revision, reach the driver connection through the
-bound context, commit the migration transaction, and let SQLAlchemy execute the
-one concurrent statement in autocommit before normal operation resumes:
+That refusal is not cosmetic: it aborts the transaction, and the advisory-lock
+release that follows then fails too (`InFailedSQLTransactionError`), because the
+connection is in an aborted transaction. The migration process exits non-zero and
+`alembic_version` stays at the previous revision.
+
+### 1.2 The escape that was tried, and why it does not work here
+
+An earlier revision of this document published a recipe: end Alembic's migration
+transaction with `op.get_context().begin_transaction().commit()`, then run the
+one concurrent statement through the bound connection's driver, then commit. **It
+was proven not to work and must not be re-published as working.** The three
+failure modes, each measured on this repository's stack:
+
+1. **`op.get_context().begin_transaction()` is not the transaction.** In this
+   async setup the call returns Alembic's `nullcontext`, not a transactional
+   context with a `commit()` method:
+   `AttributeError: 'nullcontext' object has no attribute 'commit'`. The recipe's
+   first line raises before any concurrent statement is reached.
+2. **Committing on the bound SQLAlchemy connection does not end the driver's
+   transaction.** The async migration connection holds the transaction on the
+   driver, so `op.get_bind().commit()` followed by
+   `op.get_bind().exec_driver_sql("CREATE INDEX CONCURRENTLY ...")` still raises
+   `asyncpg.exceptions.ActiveSQLTransactionError: CREATE INDEX CONCURRENTLY
+   cannot run inside a transaction block`. The driver transaction is still open.
+3. **The raw-driver and fresh-engine routes deadlock or cannot see the chain's
+   work.** Reaching the raw asyncpg connection directly raises
+   `ActiveSQLTransactionError` for the same reason; opening a fresh engine
+   deadlocks against the connection `run_sync` is holding; and a separate
+   autocommit connection cannot see a table the chain has created but not yet
+   committed.
+
+No variant of the recipe is a working escape under the current `env.py`.
+
+### 1.3 What the project does instead
+
+Every index revision in this chain uses the same in-transaction shape:
 
 ```python
-import sqlalchemy as sa
 from alembic import op
 
 def upgrade() -> None:
-    """Create one index concurrently, outside the migration transaction."""
-    # 1. End the transaction Alembic opened in env.py. On the async stack the
-    #    Alembic run wraps the whole revision body in pool.acquire()'s
-    #    "begin once" block, so ending it here is what lets a later statement
-    #    start its own.
-    op.get_context().begin_transaction().commit()
-
-    # 2. Take the DBAPI connection directly. execute_driver_sql runs in
-    #    autocommit when the Connection is in SQLAlchemy 2.0 "autobegin"
-    #    state and no Transaction is held on it.
-    conn = op.get_bind()
-    conn.execute_driver_sql(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
-        "idx_processing_logs_status_finished_at "
-        "ON processing_logs (status, finished_at)"
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_example "
+        "ON some_table (some_column)"
     )
 
 def downgrade() -> None:
-    """Drop the index concurrently, outside the migration transaction."""
-    op.get_context().begin_transaction().commit()
-    conn = op.get_bind()
-    conn.execute_driver_sql(
-        "DROP INDEX CONCURRENTLY IF EXISTS idx_processing_logs_status_finished_at"
-    )
+    op.execute("DROP INDEX IF EXISTS idx_example")
 ```
 
-### 1.3 Why the escape works here, and the bounds you must keep
+This is transactional, so it participates in the migration's transaction and is
+rolled back with it on failure. The `IF NOT EXISTS` / `IF EXISTS` guards keep the
+statement idempotent when a database already carries the object.
 
-This shape is compatible with how `env.py` runs migrations, for three reasons
-visible in `alembic/env.py`:
+### 1.4 The cost, stated honestly
 
-1. **`op.get_bind()` yields the sync proxy's DBAPI connection.** `do_run_migrations`
-   is invoked through `await connection.run_sync(do_run_migrations)`
-   (`alembic/env.py:151`), so within a revision `op.get_bind()` is the SA
-   `Connection` that Alembic configures — `env.py` passes `connection=sync_connection`
-   at `alembic/env.py:92`. Reaching the driver from it is supported.
-2. **The migration's own statements are always sent as raw text.** Every index
-   revision in this chain uses `op.execute("...")`; none uses `op.create_index`,
-   whose online implementation necessarily issues the statement on the in-transaction
-   connection. `op.execute` is how index DDL is already written here.
-3. **The advisory lock is held on the session, not the transaction** (`env.py:129`,
-   `pg_try_advisory_lock`, session-scoped). Committing or ending the migration
-   transaction inside a revision does not release it, so the exclusion `env.py`
-   establishes is preserved across the autocommit window.
+A non-concurrent `CREATE INDEX` takes a **write lock on the table for the
+duration of the build**. On an empty or low-traffic table that lock is
+imperceptible and the in-transaction form is the right choice. On a large, live
+table the lock blocks writes for the whole build and is **not** acceptable during
+traffic.
 
-Bounds that keep the escape narrow — treat each as a requirement:
+That trade-off is the operator's decision, and this document exists to give them
+the information to make it:
 
-- **Exactly one concurrent statement** between the `commit()` and the end of the
-  function. A `CREATE INDEX CONCURRENTLY` cannot participate in the migration's
-  transaction, **cannot be rolled back** once started, and **must not be mixed**
-  with any transactional statement in the same window.
-- **The window closes with the function.** The next statement in the revision
-  body opens a fresh transaction on the bound connection; do not carry the
-  autocommit connection outside the one call and do not reuse it.
-- **`CONCURRENTLY` implies idempotency by itself; keep the `IF NOT EXISTS` guard
-  anyway.** A concurrent create that fails leaves an `INVALID` index behind, and
-  a retry needs the guard to be expressible. Verify staleness with
-  `SELECT indexrelid::regclass, indisvalid FROM pg_index WHERE NOT indisvalid;`.
-- **A failed concurrent build is not transactionally undone.** `CONCURRENTLY`
-  is inherently non-atomic: on failure you must
-  `DROP INDEX CONCURRENTLY IF EXISTS` the invalid index before retrying. That is
-  the reason the rollback below is a compensating procedure, not a transaction.
-- **This recipe is for `CREATE/DROP INDEX CONCURRENTLY` only.** Ordinary,
-  in-transaction index DDL keeps using `op.execute` with no escape.
+- Applying a non-concurrent index revision on a large live table means a write
+  outage for the build's duration, inside the migration's transaction.
+- There is currently no in-revision way to avoid that with `CONCURRENTLY` (see
+  1.2). Building the index out of band — via `psql` with `CREATE INDEX
+  CONCURRENTLY` outside Alembic, then landing a revision that only records the
+  state — is the only concurrent route available today, and it is a manual
+  operation with its own supervision and idempotency requirements.
 
-> Verified against the current `alembic/env.py`: the mechanism described is
-> compatible with how migrations run here. If `env.py` is later changed to stop
-> using `context.begin_transaction()` around `context.run_migrations()` — or to
-> drop the sync-proxy path — this recipe must be re-verified before use.
+### 1.5 What would have to change for the concurrent path to become possible
+
+Enabling `CREATE INDEX CONCURRENTLY` in a revision is **not a small change**. It
+requires at least:
+
+- `alembic/env.py` to stop wrapping every run in `context.begin_transaction()`
+  (or to expose a migration mode in which the transaction is not opened for a
+  revision that needs autocommit), and
+- the async connection lifecycle to expose a genuinely autocommit driver
+  connection that is the same session that sees the chain's uncommitted work, so
+  a concurrent build can run against a schema the chain has just created.
+
+Until both hold, the in-transaction form in 1.3 remains the only expressible
+shape, and any document or revision claiming otherwise is wrong.
 
 ---
 
@@ -282,24 +292,25 @@ against an unset `sqlalchemy.url`; `Invoke-MigrationCheck` runs
 pins the target to `bidb_test` and makes a request against the dev `bidb`
 structurally impossible.
 
-### 4.1 Honest expectation: this is not yet a clean result
+### 4.1 Current verdict: clean
 
-`alembic check` has **still never been run against a real database in this
-repository** — the target exists but its output has not been observed. The honest
-expectation is **not** a clean result. At least two indexes in the chain are
-declared by **no** model in `target_metadata`:
+`.\Makefile.ps1 migration-check` reports **"No new upgrade operations
+detected."** The model metadata and the migrated schema match: the two
+filter-value indexes (`uq_dashboard_filter_values`,
+`idx_dashboard_filter_values_lookup`, both created by revision `000000000002`)
+are declared in `src/mkobi/db/models/dashboard_filter_values.py::__table_args__`,
+so an index that exists in the database but is declared by no model does not
+surface as drift. The one index not declared by a model is
+`alembic_version_pkc`, which belongs to Alembic's own version table, not to the
+application schema.
 
-- `uq_dashboard_filter_values` (`dashboard_filter_values`)
-- `idx_dashboard_filter_values_lookup` (`dashboard_filter_values`)
+The measured census — 13 base tables, 13 foreign-key constraints, 6 PostgreSQL
+ENUM types, 37 indexes — is recorded in
+[Database Indexes](./indexes.md#modelchain-index-census).
 
-`alembic check` compares the models to the migrated schema and reports
-model/schema drift; an index that exists in the database but is declared by no
-model is a reported difference. Both are exercised by the chain (`000000000002`)
-and expected to surface here.
-
-Recording the drift is the whole scope of this section. Reconciling it — whether
-by declaring the missing indexes on the models or by an explicit, recorded
-decision — is a later wave, not this one.
+The drift assertion is still mandatory before every landing, not because it is
+expected to fail but because a schema-only revision that forgets its matching
+model change (or its inverse) would be caught here.
 
 ---
 
