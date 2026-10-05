@@ -230,7 +230,8 @@ class ProcessingLogService(IProcessingLogService):
 
         Args:
             retention_days: Number of days to keep logs. If None, uses the configured
-                logs_retention_days setting (default 30 days).
+                logs_retention_days setting, whose default is
+                LOGS_RETENTION_DAYS_DEFAULT from config.py.
             db: Optional database session. If None, creates a new session.
 
         Returns:
