@@ -990,7 +990,10 @@ class TestResetUserPassword:
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
-        assert "own password" in response.json()["detail"].lower()
+        # SECB-7: the route emits a fixed detail; the service's own
+        # "cannot reset your own password" text is logged, not returned. The
+        # refusal itself (422, VALIDATION_ERROR) is unchanged.
+        assert response.json()["detail"] == "Invalid password reset"
 
     async def test_reset_password_reports_revocation_failure(
         self,
