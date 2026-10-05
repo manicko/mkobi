@@ -2013,7 +2013,9 @@ class TestEdgeLogStreamAndSizeBound:
     the application ceiling silently diverged from the edge. These tests read the
     edge template and the compose file directly and pin the wiring: both log
     destinations target the standard streams, the ceiling is a template
-    placeholder fed by an environment key, and no log_format is introduced.
+    placeholder fed by an environment key, and the access log uses a
+    query-redacting ``log_format`` that the render script's explicit substitution
+    list leaves intact.
     """
 
     @staticmethod
@@ -2052,7 +2054,7 @@ class TestEdgeLogStreamAndSizeBound:
         what the edge served.
         """
         text = self._template_text()
-        assert "access_log /dev/stdout;" in text
+        assert "access_log /dev/stdout mkobi_redacted;" in text
         assert "error_log /dev/stderr;" in text
         # The tmpfs files are gone from every log directive.
         assert "/var/log/nginx/access.log" not in text
@@ -2080,7 +2082,48 @@ class TestEdgeLogStreamAndSizeBound:
         assert "NGINX_CLIENT_MAX_BODY_SIZE" in block
         assert "${NGINX_CLIENT_MAX_BODY_SIZE:-" in block
 
-    def test_no_log_format_directive_is_introduced(self) -> None:
-        """No log_format belongs to this phase; nginx's built-in combined stands."""
+    def test_render_script_substitution_list_is_explicit(self) -> None:
+        """AZ-14: the render script must not run a bare ``envsubst``.
+
+        A bare ``envsubst`` with no variable list substitutes *every* ``$VAR``,
+        which would blank nginx's own runtime variables (``$uri``, ``$status``,
+        ``$remote_addr``, ...) in the ``log_format`` and every other directive
+        that uses them -- a log format that renders blank fields and looks fine.
+        The substitution list must name exactly the template placeholder, so
+        nginx variables survive rendering verbatim.
+        """
+        script = (
+            self._docker_dir() / "nginx" / "entrypoint-render.sh"
+        ).read_text(encoding="utf-8")
+        # The only envsubst invocation is the explicit-list form.
+        assert "envsubst '${NGINX_CLIENT_MAX_BODY_SIZE}'" in script
+        for line in script.splitlines():
+            if "envsubst" not in line or line.strip().startswith("#"):
+                continue
+            assert "envsubst '" in line, line
+            assert "${NGINX_CLIENT_MAX_BODY_SIZE}" in line, line
+
+    def test_access_log_format_redacts_the_query_string(self) -> None:
+        """AZ-14: a ``log_format`` exists, is attached, and logs ``$uri`` only.
+
+        ``$request_uri`` carries the query string, where a ``filters=`` payload
+        can hold user-supplied filter values. The format must use ``$uri`` (path
+        only) and must not use ``$request_uri`` anywhere.
+        """
         text = self._template_text()
-        assert "log_format" not in text
+        assert "log_format" in text
+        # Attached to the access log by name.
+        assert "access_log /dev/stdout mkobi_redacted;" in text
+        # The format logs the path only, and names no query-bearing variable in
+        # any active directive. Comment lines are allowed to name the forbidden
+        # variable while explaining the rule.
+        assert "$uri" in text
+        for line in text.splitlines():
+            if line.strip().startswith("#"):
+                continue
+            assert "$request_uri" not in line, line
+        for line in text.splitlines():
+            if "access_log" not in line or line.strip().startswith("#"):
+                continue
+            # Every active access_log line names the redacting format.
+            assert "mkobi_redacted" in line, line

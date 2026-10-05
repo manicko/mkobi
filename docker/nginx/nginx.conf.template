@@ -10,7 +10,19 @@ http {
     # operator reads them through ``docker compose logs nginx``. Logs written to
     # a file under /var/log/nginx would land on the tmpfs mount and never reach
     # ``docker logs`` -- they would vanish with the container.
-    access_log /dev/stdout;
+    #
+    # The access format intentionally logs ``$uri`` (the path only) and never
+    # ``$request_uri`` (path plus query string): a request line carrying a
+    # ``filters=`` payload would otherwise write user-supplied filter values
+    # into the access log. ``$uri`` is a single-quoted-ish literal here in the
+    # sense that envsubst must not eat it -- see the entrypoint render script,
+    # which substitutes only ${NGINX_CLIENT_MAX_BODY_SIZE}, so nginx's own $uri
+    # reaches the runtime verbatim.
+    log_format mkobi_redacted '$remote_addr - $remote_user [$time_local] '
+                              '"$request_method $uri $server_protocol" '
+                              '$status $body_bytes_sent "$http_referer" '
+                              '"$http_user_agent"';
+    access_log /dev/stdout mkobi_redacted;
     error_log /dev/stderr;
 
     server {
