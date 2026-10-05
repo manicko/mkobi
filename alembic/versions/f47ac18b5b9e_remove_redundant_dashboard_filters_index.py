@@ -28,6 +28,8 @@ remains the only index on ``dashboard_filters``.
 
 from collections.abc import Sequence
 
+from alembic import op
+
 # revision identifiers, used by Alembic.
 revision: str = "f47ac18b5b9e"
 down_revision: str | Sequence[str] | None = "b749bc53b1ee"
