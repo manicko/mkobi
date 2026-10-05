@@ -299,7 +299,7 @@ async def get_dashboard_endpoint(
         return dashboard
     except PermissionDeniedException:
         raise AppException(
-            code=ErrorCode.ACCESS_DENIED,
+            code=ErrorCode.PERMISSION_DENIED,
             detail="Access denied",
         ) from None
     except AppException:
@@ -476,7 +476,7 @@ async def delete_dashboard_endpoint(
                 dashboard_id,
             )
             raise AppException(
-                code=ErrorCode.ACCESS_DENIED,
+                code=ErrorCode.PERMISSION_DENIED,
                 detail="Access denied",
             )
 

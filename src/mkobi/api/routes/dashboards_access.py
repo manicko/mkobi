@@ -219,6 +219,15 @@ async def revoke_dashboard_access_endpoint(
         if result:
             return {"message": "Access revoked successfully"}
         else:
+            # Classification: a revoke of a grant that does not exist is a
+            # not-found on a sub-resource, not a refusal by permission. The two
+            # are different classes and item AZ-11 only normalises same-class
+            # 403s to PERMISSION_DENIED. Keeping NOT_FOUND preserves the signal
+            # that the target grant was absent; folding it into the permission
+            # class would tell an admitted owner the wrong thing. It is not a
+            # silent idempotent 200 either: the endpoint already answers the
+            # revoked case distinctly, and collapsing the two would remove the
+            # only signal that nothing was removed.
             raise AppException(
                 code=ErrorCode.NOT_FOUND,
                 detail="Access record not found",

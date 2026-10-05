@@ -116,7 +116,7 @@ async def get_aggregated_data_endpoint(
             current_user.id,
         )
         raise AppException(
-            code=ErrorCode.ACCESS_DENIED,
+            code=ErrorCode.PERMISSION_DENIED,
             detail="You do not have access to this dashboard",
         )
 
@@ -275,7 +275,7 @@ async def get_aggregated_data_endpoint(
     except DashboardPermissionError as e:
         logger.warning("Access denied: %s", e)
         raise AppException(
-            code=ErrorCode.ACCESS_DENIED,
+            code=ErrorCode.PERMISSION_DENIED,
             detail=str(e),
         ) from e
     except Exception as e:

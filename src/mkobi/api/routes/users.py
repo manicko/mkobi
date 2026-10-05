@@ -319,7 +319,7 @@ async def delete_me_endpoint(
     except ValueError as e:
         logger.warning("Error deleting account: %s", e)
         raise AppException(
-            code=ErrorCode.ACCESS_DENIED,
+            code=ErrorCode.PERMISSION_DENIED,
             detail=str(e),
         ) from e
     except Exception as e:
@@ -373,7 +373,7 @@ async def delete_user_endpoint(
     except ValueError as e:
         logger.warning("Error deleting user: %s", e)
         raise AppException(
-            code=ErrorCode.ACCESS_DENIED,
+            code=ErrorCode.PERMISSION_DENIED,
             detail=str(e),
         ) from e
     except AppException:
