@@ -372,7 +372,7 @@ Authorization: Bearer <token>
 | Parameter | Type | Required | Description |
 | --------- | ---- | -------- | ----------- |
 | `dashboard_id` | UUID | Yes | Target dashboard |
-| `graph_id` | UUID | No | Specific graph (returns all graphs if omitted) |
+| `graph_id` | UUID | No | Specific graph (returns all graphs if omitted). The graph must belong to `dashboard_id`: a `graph_id` for another dashboard's graph is reported as `404 GRAPH_NOT_FOUND`, so access to one dashboard cannot read another's graph. |
 | `filters` | JSON string | No | Filter values (e.g., `{"year": "2024", "category": "A"}`). Bounded: at most 20 keys, 64-character key names, 256-character values, 4 KB serialised (`PRF-5`; see [Filter payload bounds](../02-dashboards/dashboards-api.md#filter-payload-bounds-prf-5)). |
 
 **Response** (`200 OK`):

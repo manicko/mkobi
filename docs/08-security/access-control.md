@@ -113,7 +113,7 @@ Access control is enforced on **all** dashboard-related endpoints, not just data
 | --- | --- | --- |
 | `GET /api/v1/dashboards/my` | Any authenticated | Returns only dashboards the user has access to; admins see all dashboards |
 | `GET /api/v1/dashboards/:id` | Any authenticated | Validates user has access to the specific dashboard; 403 if access denied, 404 if not found; admins bypass access check |
-| `GET /api/v1/data/aggregated` | Any authenticated | Validates dashboard access before returning data |
+| `GET /api/v1/data/aggregated` | Any authenticated | Validates dashboard access before returning data, and scopes a supplied `graph_id` to that dashboard: a graph belonging to another dashboard is reported `404 GRAPH_NOT_FOUND` rather than read. |
 
 ### Dashboard CRUD Endpoints
 

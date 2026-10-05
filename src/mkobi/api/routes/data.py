@@ -149,6 +149,26 @@ async def get_aggregated_data_endpoint(
                     detail="Graph not found",
                 )
 
+            # Scope the graph to the dashboard the request names. Access to the
+            # parent dashboard was granted above, before this lookup, so the
+            # authorization cannot be bypassed by naming another dashboard's
+            # graph here. A graph that exists under a different dashboard is
+            # reported as not found: to a caller who may read this dashboard it
+            # must not disclose that the graph exists elsewhere, and the rows
+            # read below must never cross the dashboard boundary.
+            if single_graph.dashboard_id != dashboard_id:
+                logger.warning(
+                    "Graph does not belong to the requested dashboard: "
+                    "graph_id=%s, graph_dashboard_id=%s, requested_dashboard_id=%s",
+                    graph_id,
+                    single_graph.dashboard_id,
+                    dashboard_id,
+                )
+                raise AppException(
+                    code=ErrorCode.GRAPH_NOT_FOUND,
+                    detail="Graph not found",
+                )
+
             records, total_rows = await data_service.get_bounded_aggregated_data(
                 dashboard_id=dashboard_id,
                 graph_id=graph_id,

@@ -285,3 +285,93 @@ class TestAggregateResponseShape:
         assert categories == ["cat-0", "cat-1"]
         for point in data_points:
             assert set(point.keys()) == {"category", "revenue"}
+
+
+
+class TestAggregateGraphScoping:
+    """AZ-8: a supplied ``graph_id`` is scoped to the named ``dashboard_id``.
+
+    The defect: the endpoint resolved ``graph_repo.get(id=graph_id)`` with no
+    dashboard constraint, so a caller with access to dashboard A could pass
+    dashboard B's ``graph_id`` to A's endpoint. The parent-dashboard
+    authorization already ran before the lookup, so the fix only adds the
+    belonging assertion; it must stay *after* that authorization or the endpoint
+    becomes a graph-existence oracle for dashboards the caller cannot read.
+    """
+
+    async def test_graph_of_another_dashboard_is_refused(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """A and B are readable by the same caller; A's endpoint must refuse B's graph."""
+        dashboard_a, _graph_a = await _setup_dashboard_with_aggregates(
+            async_db_session, test_user["id"], rows=1
+        )
+        dashboard_b, graph_b = await _setup_dashboard_with_aggregates(
+            async_db_session, test_user["id"], rows=1
+        )
+
+        response = await authenticated_client.get(
+            "/data/aggregated",
+            params={"dashboard_id": str(dashboard_a), "graph_id": str(graph_b)},
+        )
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert response.json()["code"] == "GRAPH_NOT_FOUND"
+
+    async def test_legitimate_pair_still_returns_its_rows(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """The matching pair is unchanged: the same rows as before this fix."""
+        dashboard_id, graph_id = await _setup_dashboard_with_aggregates(
+            async_db_session, test_user["id"], rows=3
+        )
+
+        response = await authenticated_client.get(
+            "/data/aggregated",
+            params={"dashboard_id": str(dashboard_id), "graph_id": str(graph_id)},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert len(body["graphs"]) == 1
+        assert body["graphs"][0]["graph_id"] == str(graph_id)
+        assert len(body["graphs"][0]["data"]) == 3
+        assert body["total_rows"] == 3
+
+    async def test_caller_without_access_to_named_dashboard_is_refused_first(
+        self, async_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """The caller cannot read B; naming B's dashboard is refused before any graph lookup."""
+        from mkobi.core.security import create_access_token
+        from mkobi.db.repositories.user_repo import UserRepository
+        from mkobi.models.enums import UserRole
+
+        dashboard_b, graph_b = await _setup_dashboard_with_aggregates(
+            async_db_session, test_user["id"], rows=1
+        )
+
+        outsider = await UserRepository().create(
+            db=async_db_session,
+            email=f"az8_outsider_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        assert outsider is not None
+        await async_db_session.flush()
+        token = create_access_token(
+            {"user_id": str(outsider.id), "email": outsider.email}
+        )
+
+        # The outsider has no grant on B and asks for B's graph on B's endpoint.
+        # The response must be a refusal, and must not be GRAPH_NOT_FOUND: the
+        # graph exists, and the authorization runs first, so the endpoint is not
+        # an existence oracle. The refusal code is normalized to PERMISSION_DENIED
+        # by the AZ-11 work item; this test pins the status and that the refusal
+        # is not the graph-not-found branch.
+        response = await async_client.get(
+            "/data/aggregated",
+            params={"dashboard_id": str(dashboard_b), "graph_id": str(graph_b)},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.json()["code"] != "GRAPH_NOT_FOUND"
