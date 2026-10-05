@@ -66,9 +66,11 @@ This guide covers deployment options for the mkobi BI Dashboard system, from loc
 
 4. **Database:**
 ```bash
-docker compose -f docker/docker-compose.yml up -d db
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml -f docker/docker-compose.override.yml up -d db
 uv run alembic upgrade head
 ```
+
+The base compose file requires **five** variables through `${VAR:?}` (`DATABASE__PASSWORD`, `MKOBI_APP_PASSWORD`, `JWT__SECRET_KEY`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`), so every `docker compose` invocation against it **must pass `--env-file .env`**. Without the env file Compose aborts interpolation and starts nothing — not `db`, not `app`, not even a read-only `config`. The Makefile wraps this: its `DevCompose` argument list resolves to `-p mkobi --env-file .env -f docker/docker-compose.yml -f docker/docker-compose.override.yml`, so `.\Makefile.ps1 up` (and every other target) supplies the file for you. An explicit command line must supply it itself.
 
 The React dev server runs on port 5173 (Vite) and proxies API requests to FastAPI (container port 8000; the dev overlay publishes the app on host port 8010 by default). Hot reload is enabled for both servers. CORS is configured to allow cross-origin requests between the dev servers.
 
@@ -168,8 +170,17 @@ server {
 
 To enable, start the nginx service from `docker-compose.yml`:
 ```bash
-docker compose -f docker/docker-compose.yml --profile production up -d
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml --profile production up -d
 ```
+
+The `nginx` service is the production edge. Its client bundle **ships inside the
+image**: the service builds the `frontend-nginx` stage of `docker/Dockerfile`,
+which copies the SPA out of the same `frontend-builder` stage the app image
+uses, into `/usr/share/nginx/html`. There is no host `../frontend/dist` bind
+mount — that directory is git-ignored twice (`frontend/.gitignore` and a root
+`dist/` rule) and unversioned, so it was never a sound production carrier. What
+the edge serves is therefore determined by the image build, not by whatever
+happens to be on the host. See [B6](#the-client-bundle-ships-inside-the-edge-image).
 
 ### Where the API-documentation surface is protected in production
 
@@ -207,16 +218,27 @@ The project uses a multi-stage Dockerfile supporting dev, test, and prod targets
 
 ### Quick Start
 
+Every command below passes `--env-file .env`, because the base compose file
+requires five variables through `${VAR:?}` and aborts interpolation without
+them. `.env` is **not** committed; create it from `.env.example` and fill the
+five names (see [Required Production Variables](#required-production-variables)).
+
 ```bash
 # Production (default target)
-docker compose -f docker/docker-compose.yml up -d
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml up -d
 
 # Production with nginx (production profile; rq-worker starts either way)
-docker compose -f docker/docker-compose.yml --profile production up -d
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml --profile production up -d
 
 # Development with hot reload and frontend dev server
-docker compose -f docker/docker-compose.yml -f docker/docker-compose.override.yml up -d
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml -f docker/docker-compose.override.yml up -d
 ```
+
+The Makefile targets (`.\Makefile.ps1 up`, `down`, `logs`, `psql`, …) already
+pass `--env-file .env` and both `-f` files; an explicit command line must repeat
+them. Production additionally reads its own values from a production env file —
+copy `docker/.env.production` and fill it, then pass `--env-file
+docker/.env.production` instead.
 
 **Note:** Development mode includes the frontend service running on port 5173 (Vite dev server with hot reload). Access the application at http://localhost:5173.
 
@@ -229,18 +251,40 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.override.ym
 | `dev` | base | All (incl. dev) | 1 (--reload) | Local dev |
 | `test` | base | All (incl. dev) | 1 (pytest) | CI/CD |
 | `prod` | prod-base | Production only | 4 | Production |
+| `frontend-nginx` | nginx:1.27-alpine | The built SPA only | — | Production edge (see [The client bundle ships inside the edge image](#the-client-bundle-ships-inside-the-edge-image)) |
+
+### The client bundle ships inside the edge image
+
+The production edge serves its client bundle **from the image, not from the
+host**. `docker/Dockerfile`'s `frontend-nginx` stage is `FROM` the same pinned
+`nginx:1.27-alpine` digest the compose file used and copies the SPA out of the
+`frontend-builder` stage into `/usr/share/nginx/html`; the `nginx` service builds
+that stage and declares `image: mkobi/nginx:${IMAGE_TAG:-local}`. The host
+`../frontend/dist` bind mount is **gone**: that directory is git-ignored twice
+(`frontend/.gitignore`, and a root `dist/` rule that matches at any depth) and
+is never committed, so it was never a versioned carrier. A failed frontend build
+leaves no `index.html`, and the stage's `RUN test -f …/index.html` aborts the
+image rather than shipping an empty bundle.
+
+The application-side static mount (`src/mkobi/app.py::resolve_frontend_bundle`)
+is **kept**, but it is not the production edge path. It serves the SPA app-side
+when the configured `FRONTEND__DIST_DIR` exists and carries an `index.html`, for
+the dev tier and for the single-entry Option A deployment this guide documents.
+In the shipped production topology nginx proxies only `/api` and the health
+paths to the app and serves `/` from the image, so the app-side mount is never
+consulted for the SPA there.
 
 ### Production Profiles
 
 `nginx` is the **only** service gated by `profiles: [production]`. It is not started by
 default; pass `--profile production` to include it:
 
-- **nginx** — Reverse proxy serving React SPA and proxying API requests to FastAPI.
+- **nginx** — Reverse proxy serving React SPA (from its own image) and proxying API requests to FastAPI.
 
 `redis` and `rq-worker` are **not** profile-gated. They start with the base file whether
 or not a profile is passed:
 
-- **rq-worker** — Redis Queue worker for background task processing. Runs `/app/.venv/bin/rqworker --url redis://redis:6379/0` — the virtualenv console script invoked directly, not `uv run rq worker`. Shares `app_data` volume with the app service.
+- **rq-worker** — Redis Queue worker for background task processing. Runs `/app/.venv/bin/python -m mkobi.rq_worker_wrapper` — the wrapper module invoked through the virtualenv interpreter directly. The retired `rqworker` console script does **not** exist in the current manifest (`pyproject.toml` declares no such entry point), so any row naming `/app/.venv/bin/rqworker` describes a symbol that is not installed. Shares `app_data` volume with the app service.
 
 See [Docker Guide](../11-guides/docker.md#rq-worker) for its dependencies, environment and mounts.
 
@@ -308,7 +352,7 @@ Ports are bound to `0.0.0.0` (Docker default). Security risk is **LOW** — the 
 - Inside Docker: environment variables set by Docker Compose (port 5432 internal)
 - From host: defaults to `localhost:5434` for direct pytest execution
 
-> **Security note:** On shared machines, consider binding to `127.0.0.1` instead of the default `0.0.0.0` to prevent cross-talk between developers. For CI/CD environments, running tests inside the container (`docker compose exec test-app uv run pytest`) avoids exposing ports entirely.
+> **Security note:** On shared machines, consider binding to `127.0.0.1` instead of the default `0.0.0.0` to prevent cross-talk between developers. For CI/CD environments, running tests inside the container (`.\Makefile.ps1 test`) avoids exposing ports entirely.
 
 ### Required Production Variables
 
@@ -378,9 +422,12 @@ tier-scoped in compose and overridable without an image rebuild.
 - **Schema drift check** — `.\Makefile.ps1 migration-check` runs `alembic check` as a one-shot inside the hermetic test compose (`docker compose -p mkobi-test -f docker/docker-compose.test.yml run --rm test-migrate alembic check`), against `bidb_test`. It reports "No new upgrade operations detected." when the model layer and the migrated database agree, and exits non-zero with the differing operations when they do not. Three properties of the check are load-bearing and easy to misread: it **can only be trusted against an already-migrated database** (with no version table present, `alembic check` creates `alembic_version` itself and then falsely reports no drift); it **also takes the migration advisory lock**, because `alembic check` runs `env.py` online, so a blocked run fails with *"refusing to migrate"* — a lock verdict, not a drift verdict; and the target is deliberately bound to `bidb_test` because a bare host `alembic check` resolves through `alembic.ini`'s commented-out `sqlalchemy.url` to the app config's `DATABASE_URL`, i.e. the shared dev database (`bidb` on `localhost:5432`). Two drift classes are **not** detected and must be checked by hand: a changed server default (`compare_server_default` is never enabled) and a changed native-enum label (Alembic has no enum comparator; `DashboardAccess.permission`'s `dashboard_permission_level` enum is the concrete blind spot). `alembic check` must **never** be added to the one-shot `migrate` service, which has to remain able to run against a drifted database in order to repair it.
 - Manual migration:
 ```bash
-docker compose -f docker/docker-compose.yml exec app uv run alembic upgrade head
+# The prod image runs as the non-root `app` user, for which `uv` is not
+# executable (uv is installed under /root/.local/bin and `app` cannot read it:
+# `uv run` fails with `uv: Permission denied`). Invoke the venv binary directly.
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml exec app /app/.venv/bin/alembic upgrade head
 # Check status:
-docker compose -f docker/docker-compose.yml exec app uv run alembic current
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml exec app /app/.venv/bin/alembic current
 ```
 
 ### Database Role (Least-Privilege)
@@ -428,11 +475,83 @@ This is configured in both `docker/docker-compose.yml` and `docker/docker-compos
 
 ### Volumes
 
-| Volume | Container Path | Purpose |
-|--------|---------------|---------|
-| `postgres_data` | `/var/lib/postgresql` | Database persistence |
-| `app_data` | `/app/data` | Uploads, logs, temp files |
-| `redis_data` | `/data` | Task queue (if used) |
+| Volume | Container Path | Purpose | Backup | Retention | Budget |
+|--------|---------------|---------|--------|-----------|--------|
+| `postgres_data` | `/var/lib/postgresql` | Database persistence | Yes — `pg_dump` + cluster globals, **daily** (`.\Makefile.ps1 backup`) | per `prune-backups` (7 days) | bounded by the database, not the 50 GB artefact budget |
+| `app_data` | `/app/data` | Uploads, logs, temp files | No (scratch; see the note below) | temp files **24 h**; processing logs **90 days** | **50 GB** artefact-and-log budget, enforced before accept — see [Artefact and log volume budget](#artefact-and-log-volume-budget) |
+| `redis_data` | `/data` | Task queue + reconciler lease | Yes — `BGSAVE` snapshot `bidb-<stamp>.redis.rdb` (`.\Makefile.ps1 backup`) | per `prune-backups` (7 days) | small; RQ registries and the lease marker |
+
+`app_data` holds **two** classes with different lifecycles and **no** backup:
+uploads are scratch — `process_csv` unlinks the accepted artefact once the job
+reaches a terminal state, and a hard kill leaves it to the stale-age sweep
+(`STALE_FILE_THRESHOLD_HOURS`, default 24 h) — so they are not a backup target.
+Processing logs are retained 90 days. The `postgres_data` and `redis_data`
+volumes are the durability targets; the [Backup and Restore](#backup-and-restore)
+section below describes the paired artefacts and the rehearsed restore.
+
+### Backup and Restore
+
+A restore needs **three** artefacts from one run, sharing a single timestamp
+stamp: the database dump (`bidb-<stamp>.dump`), the cluster globals
+(`bidb-<stamp>.globals.sql`) and the Redis snapshot (`bidb-<stamp>.redis.rdb`).
+`.\Makefile.ps1 backup` emits all three. Cluster globals are separate because a
+`pg_dump` of `bidb` does not contain the `mkobi_app` role (roles are
+cluster-global) — see [Database Role](#database-role-least-privilege).
+
+**RPO 24 h · RTO 4 h, daily backups.** The recovery-point objective is 24 hours
+because backups run daily; the recovery-time objective is 4 hours. These are the
+ruled figures (`DP-10-13`), not observations.
+
+**The acceptance gate is a rehearsed restore against a scratch database, and it
+has been executed.** `.\Makefile.ps1 rehearse-restore yes` sources a fresh dump
+and its paired globals from the hermetic test cluster, creates a uniquely-named
+throwaway database on that cluster, restores the paired artefacts into it in the
+documented order (`pg_restore --clean` first, then cluster globals), reads
+`alembic_version` **from the restored database**, and drops the scratch database
+on every exit path. It never reads or writes the dev database `bidb` and never
+restores into a `bidb_test*` database. It was run against this tree and passed:
+the restored `alembic_version` was read back and the scratch database was
+dropped. RPO is not exercised by the rehearsal (it is a policy, not a
+mechanism); RTO's restore path is.
+
+Cross-tier restore order is **Redis first, then the database**: the reconciler
+lease and the RQ queue live in Redis, so restoring the database against a stale
+store is the worse failure. The Redis restore (`.\Makefile.ps1 restore-redis yes
+<file.redis.rdb>`) refuses while `redis` runs, because an RDB is loaded only at
+startup.
+
+### Artefact and log volume budget
+
+The `app_data` artefact-and-log volume carries a **50 GB** budget, enforced
+**before accepting** an upload that would exceed it. Retention is **temporary
+files 24 hours** and **processing logs 90 days** (the `logs_retention_days`
+setting). The figure is ruled (`DP-10-7` / `DP-11-H`, Product Owner,
+2026-10-03); this is the derivation it is bound to, published beside it:
+
+- **Processing logs (90-day retention, the dominant reclaimed term).** Under
+  `--workers 4` the log ceiling is four rotating handlers of 6 files × 10 MB ≈
+  240 MB live; at 90 days the retained log set is bounded by the rotating
+  ceiling plus the database-side `processing_logs` rows, not by the raw stream.
+- **Upload scratch (24-hour retention).** Uploads are admitted at up to
+  `UPLOAD__MAX_FILE_SIZE_MB` (100 MiB default) and removed at a terminal job
+  state or by the 24-hour stale sweep; the live set is bounded by the 24-hour
+  horizon times the observed accept rate.
+- **Loader expansion.** A `.csv.gz` that passes the compressed-size check
+  expands ~9× in frame memory and ~30× in peak RSS (measured; see
+  `docs/06-backend/architecture.md`), but that is **residency**, not
+  `app_data` bytes — the compressed artefact is what sits on the volume until
+  the job terminalises it. The expansion bounds the worker's 512 MiB ceiling,
+  not the disk budget.
+- **Headroom.** The 50 GB figure is a conservative ceiling with headroom above
+  the sum of the retained terms as configured today. It is an **admission
+  bound**, not an accounting balance: the check rejects an upload that would
+  push the resolved `app_data` path past the budget.
+
+The budget is a ruling revised only if this derivation contradicts it; today it
+does not. The **ceiling** that enforces it (the pre-accept byte check expressed
+against the resolved upload directory) is phase 06's `FAB-5`; this section owns
+the **budget** figure and its derivation, per the ceiling-versus-budget
+separation (`C11-7`).
 
 ### Health Checks
 
@@ -446,23 +565,42 @@ The detailed component breakdown, including the reconciler-lease component on
 `/health/detailed` and the reason `/health` is deliberately left narrow, is in
 [Health API](../05-health/health-api.md).
 
+### Monitoring gaps
+
+**The queue-depth alert reads zero, and that is a known gap, not a healthy
+signal.** No component emits a queue-depth metric: a search for prometheus,
+OpenTelemetry, Sentry, StatsD or any metrics exporter across `pyproject.toml`
+and `src/mkobi/**` returns no match, so the RQ queue depth (`rq:queue:default`)
+is observable only by connecting to Redis by hand, not by any exported series.
+An alert wired to that absent series evaluates against a constant zero — it is
+flat regardless of the real depth — so a **zero reading must never be read as an
+idle queue**. The gap is filed for the operations layer; closing it requires an
+exporter that publishes the queue depth (and the worker registration count) as a
+scraped series. Building such instrumentation is not this deployment's job, and
+none is shipped in this tree.
+
+The worker's own registry liveness **is** observable: the `rq-worker` healthcheck
+reads the RQ worker registry and the `last_heartbeat` age rather than pinging
+Redis, so a dead, wedged or still-retrying worker is reported unhealthy.
+
 ### Common Operations
 
 ```bash
 # View logs
-docker compose -f docker/docker-compose.yml logs -f app
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml logs -f app
 
 # Open shell
-docker compose -f docker/docker-compose.yml exec app /bin/bash
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml exec app /bin/bash
 
-# Run tests
-docker compose -f docker/docker-compose.test.yml exec test-app uv run pytest tests/ -v
+# Run tests (the test image runs as the non-root app user, for whom `uv` is not
+# executable; call the venv binary directly, as the Makefile's test targets do)
+docker compose -p mkobi-test -f docker/docker-compose.test.yml exec test-app /app/.venv/bin/pytest tests/ -v
 
 # Stop and remove everything (including volumes)
-docker compose -f docker/docker-compose.yml down -v
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml down -v
 
 # Rebuild after code changes
-docker compose -f docker/docker-compose.yml up -d --build
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml up -d --build
 ```
 
 ---
@@ -473,21 +611,25 @@ When a deployment fails or introduces critical bugs, use these procedures to saf
 
 ### Docker Image Rollback
 
-To revert to a previous application version:
+The image coordinate is a real tag, not a floating `latest`: the base compose
+file names `mkobi/app:${IMAGE_TAG:-local}` (and `mkobi/migrate`, `mkobi/rq-worker`,
+`mkobi/nginx` likewise), and a build tags the service with exactly that string.
+The repository is the **local image store** — nothing is pushed to a registry —
+so a rollback selects a previously built local tag by setting `IMAGE_TAG` in the
+env file. It is **not** a `docker pull`: there is no registry to pull from.
 
 ```bash
-# List available local images
+# List locally-built application images and their tags
 docker images mkobi/app
 
-# Pull a specific previous image tag (if using versioned tags)
-docker pull mkobi/app:<previous-tag>
-
-# Update compose file or set environment to use specific tag
-# Then restart services
-docker compose -f docker/docker-compose.yml up -d
+# Select a previously built tag (a real tag, never :latest) by editing
+# IMAGE_TAG in .env, then recreate the services at that coordinate
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml up -d
 ```
 
-For Docker Compose with pre-built images, ensure you have versioned tags pushed to your registry and update the `image` tag in your compose configuration.
+`IMAGE_TAG` is read by `migrate`, `app`, `rq-worker` and `nginx` alike, so one
+value moves the whole deployment to an earlier build. `:latest` is deliberately
+never used: it is not a selectable rollback target.
 
 ### Database Migration Rollback
 
@@ -495,16 +637,16 @@ Use Alembic to revert schema changes. **Warning:** Downgrading may cause data lo
 
 ```bash
 # Revert the last migration
-docker compose -f docker/docker-compose.yml exec app uv run alembic downgrade -1
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml exec app /app/.venv/bin/alembic downgrade -1
 
 # Revert to a specific revision
-docker compose -f docker/docker-compose.yml exec app uv run alembic downgrade <revision>
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml exec app /app/.venv/bin/alembic downgrade <revision>
 
 # Check current revision before rollback
-docker compose -f docker/docker-compose.yml exec app uv run alembic current
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml exec app /app/.venv/bin/alembic current
 
 # View migration history
-docker compose -f docker/docker-compose.yml exec app uv run alembic history
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml exec app /app/.venv/bin/alembic history
 ```
 
 **Important considerations:**
@@ -524,7 +666,7 @@ cp .env.backup .env
 git checkout HEAD~1 -- .env
 
 # Restart services to apply changes
-docker compose -f docker/docker-compose.yml restart app
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml restart app
 ```
 
 For production environments using Docker secrets or mounted config files:
@@ -532,7 +674,7 @@ For production environments using Docker secrets or mounted config files:
 ```bash
 # Restore secrets from backup location
 cp /secure/backups/.env.production .env
-docker compose -f docker/docker-compose.yml up -d
+docker compose -p mkobi --env-file .env -f docker/docker-compose.yml up -d
 ```
 
 ---
@@ -544,7 +686,7 @@ This project intentionally avoids overengineering. The following decisions refle
 - **No Redux/Zustand:** TanStack Query handles all server state. React local state (`useState`, `useReducer`) handles UI state.
 - **No unnecessary abstraction layers:** API calls go through a thin Axios instance (with JWT interceptors). No additional service wrappers or API gateway abstractions.
 - **No duplicated logic:** Pydantic models from the backend are the single source of truth for data shapes. Frontend types are derived from the OpenAPI spec.
-- **No premature scaling:** A single FastAPI instance with 4 workers handles typical BI workloads. Scale horizontally only when metrics justify it.
+- **No premature scaling:** A single FastAPI instance with **4 uvicorn workers** handles typical BI workloads. Scale horizontally only when metrics justify it. The connection arithmetic that bounds this figure — and the finding that it exceeds the store's `max_connections` — is the [Connection-Pool Budget](../06-backend/architecture.md#connection-pool-budget) in Backend Architecture; that section owns the ceiling and is not restated here. The deployment reaches a **125**-connection estimate against PostgreSQL 18's shipped `max_connections` of `100`, and up to a **210** unconstrained ceiling; the ceiling is therefore a risk rather than a comfortable number, and the pool's per-process values are reachable from `DatabaseSettings` should the sizing change.
 - **No framework churn:** The stack (FastAPI, React, PostgreSQL, Polars) is stable and well-supported. Avoid adding new frameworks without strong operational justification.
 
 ---
