@@ -408,9 +408,6 @@ class TestStartupFailureTerminates:
             order.append("release")
             raise RuntimeError("release blew up")
 
-        async def closing_lease() -> None:
-            order.append("aclose")
-
         async def disposing() -> None:
             order.append("dispose")
 
@@ -432,29 +429,26 @@ class TestStartupFailureTerminates:
                     new=AsyncMock(side_effect=RuntimeError("release blew up")),
                 ):
                     with patch.object(
-                        app_module.ReconcilerLease, "aclose", new=closing_lease
+                        app_module, "dispose_engine", new=disposing
                     ):
                         with patch.object(
-                            app_module, "dispose_engine", new=disposing
+                            app_module,
+                            "close_async_redis_client",
+                            new=closing_redis,
                         ):
                             with patch.object(
                                 app_module,
-                                "close_async_redis_client",
-                                new=closing_redis,
+                                "start_stale_processing_cleanup_task",
+                                new=AsyncMock(return_value=None),
                             ):
                                 with patch.object(
                                     app_module,
-                                    "start_stale_processing_cleanup_task",
-                                    new=AsyncMock(return_value=None),
+                                    "_terminate_process",
+                                    new=lambda: order.append("terminate"),
                                 ):
-                                    with patch.object(
-                                        app_module,
-                                        "_terminate_process",
-                                        new=lambda: order.append("terminate"),
-                                    ):
-                                        with pytest.raises(RuntimeError):
-                                            async with app_module.lifespan(app):
-                                                pass
+                                    with pytest.raises(RuntimeError):
+                                        async with app_module.lifespan(app):
+                                            pass
 
         # Every fail-isolated step ran, and termination came last.
         assert order.index("dispose") < order.index("close_redis")
@@ -498,6 +492,92 @@ class TestStartupFailureTerminates:
 
         terminate.assert_not_called()
         starter.shutdown.assert_awaited_once()
+
+
+class TestLeaseDoesNotCloseSharedClient:
+    """The reconciler lease borrows the process-wide client; it never closes it.
+
+    Defect this pins: ``ReconcilerLease.aclose`` closed the shared async client,
+    so lifespan teardown closed it once through the lease and again through
+    ``close_async_redis_client``. Worse, the lease docstring claimed ownership of
+    the client, which would make a maintainer reintroduce the pooled-connection
+    eviction ``app.py:456-458`` warns against. The lease now closes nothing; the
+    single process-wide close step owns the resource.
+    """
+
+    @pytest.mark.asyncio
+    async def test_lease_has_no_client_close_method(self):
+        """The lease exposes no ``aclose`` that could close the shared client."""
+        from mkobi.core.reconciler_lease import ReconcilerLease
+
+        assert not hasattr(ReconcilerLease, "aclose")
+
+    @pytest.mark.asyncio
+    async def test_shared_client_is_closed_exactly_once_and_not_by_the_lease(self):
+        """On shutdown the shared client is closed once, and not by the lease.
+
+        The borrowed client records every ``aclose``; the process-wide close is
+        counted through the patched ``close_async_redis_client``. The lease's own
+        ``release`` still runs, so the lease is released without closing the
+        client.
+        """
+        app = MagicMock()
+        starter = MagicMock()
+        starter.startup = AsyncMock()
+        starter.shutdown = AsyncMock()
+
+        borrowed = _AcloseRecordingRedis()
+        close_calls: list[int] = []
+
+        async def process_wide_close() -> None:
+            close_calls.append(1)
+
+        release_calls: list[int] = []
+
+        async def counting_release(self):
+            release_calls.append(1)
+            return True
+
+        with patch.object(app_module, "DatabaseStarter", return_value=starter):
+            with patch.object(
+                app_module, "get_async_redis_client", return_value=borrowed
+            ):
+                with patch.object(
+                    app_module.ReconcilerLease, "release", new=counting_release
+                ):
+                    with patch.object(
+                        app_module, "close_async_redis_client", new=process_wide_close
+                    ):
+                        with patch.object(
+                            app_module,
+                            "start_stale_processing_cleanup_task",
+                            new=AsyncMock(return_value=None),
+                        ):
+                            async with app_module.lifespan(app):
+                                pass
+
+        assert release_calls == [1], "the lease's own release must still run"
+        assert borrowed.aclose_calls == 0, "the lease must not close the shared client"
+        assert close_calls == [1], "the process-wide close must run exactly once"
+
+
+class _AcloseRecordingRedis:
+    """Async Redis double that counts ``aclose`` calls, for the lease teardown."""
+
+    def __init__(self) -> None:
+        self.aclose_calls = 0
+
+    async def set(self, *args, **kwargs):
+        return True
+
+    async def eval(self, *args, **kwargs):
+        return 1
+
+    async def get(self, *args, **kwargs):
+        return None
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
 
 
 class _UnreachableRedis:

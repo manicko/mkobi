@@ -101,13 +101,15 @@ class ReconcilerStatus:
 class ReconcilerLease:
     """Exclusive, TTL-bounded lease guarding a single reconciler replica.
 
-    The instance owns one long-lived async Redis client, mirroring the
-    ``functools.cache``d ``get_rq_queue`` precedent for holding a single
-    Redis-backed resource per process. The client is created via
-    ``get_async_redis_client`` (which is not itself cached) and is closed
-    through this lease's ``aclose()``, so the resource has exactly one owner and
-    one close path. ``lifespan`` calls ``lease.aclose()`` rather than closing the
-    client directly.
+    The instance only *uses* the process-wide shared async Redis client; it does
+    not own its lifecycle. ``lifespan`` obtains that client from the
+    ``functools.cache``d ``get_async_redis_client`` factory, so the same instance
+    backs every request and every later health probe. The lease therefore never
+    closes it: doing so would evict the pooled connections every later request
+    depends on (the failure ``app.py:456-458`` warns against). The client's
+    single close path is the process-wide ``close_async_redis_client`` step in
+    ``lifespan``, which owns the resource. The lease's own state is confined to
+    the Redis key it compares-and-deletes, released through ``release()``.
     """
 
     def __init__(
@@ -251,13 +253,6 @@ class ReconcilerLease:
         except (RedisError, OSError, TimeoutError):
             return False
         return int(result) == 1
-
-    async def aclose(self) -> None:
-        """Close the underlying Redis client without raising."""
-        try:
-            await self._client.aclose()
-        except (RedisError, OSError, TimeoutError):
-            logger.debug("Failed to close reconciler lease Redis client", exc_info=True)
 
     @property
     def is_holder(self) -> bool:

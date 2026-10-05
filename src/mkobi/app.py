@@ -151,11 +151,11 @@ async def lifespan(app: FastAPI) -> Any:
     reconciler_status = ReconcilerStatus()
     app.state.reconciler_status = reconciler_status
 
-    # One lease client per process, created once and closed on shutdown. The TTL
-    # is bounded by a third of the configured sweep interval, so a dead holder is
-    # replaced within one interval.
+    # One lease per process. The lease borrows the process-wide shared Redis
+    # client (it does not own it and never closes it - see the teardown below).
+    # The TTL is bounded by a third of the configured sweep interval, so a dead
+    # holder is replaced within one interval.
     lease: ReconcilerLease | None = None
-    lease_client: Any = None
 
     # Background task for stale processing cleanup
     cleanup_task: asyncio.Task[None] | None = None
@@ -172,9 +172,8 @@ async def lifespan(app: FastAPI) -> Any:
         await starter.startup()
         logger.info("Application initialized successfully")
 
-        lease_client = get_async_redis_client()
         lease = ReconcilerLease(
-            lease_client, ttl_seconds=min(DEFAULT_LEASE_TTL_SECONDS, config.stale_processing_cleanup_interval_seconds // 3)
+            get_async_redis_client(), ttl_seconds=min(DEFAULT_LEASE_TTL_SECONDS, config.stale_processing_cleanup_interval_seconds // 3)
         )
 
         # Elect the reconciler holder at boot. The boot path never raises on
@@ -241,9 +240,11 @@ async def lifespan(app: FastAPI) -> Any:
             logger.info("Stale processing cleanup task cancelled")
 
         # Best-effort, owner-checked lease release so a restart does not wait a
-        # full TTL. The owning lease closes its own Redis client, so both the
-        # release and the client close cannot break the finally chain and skip
-        # the engine disposal and starter shutdown below.
+        # full TTL. The lease borrows the process-wide shared Redis client and
+        # does not close it: that client is closed exactly once by
+        # ``close_async_redis_client`` below, which owns its lifecycle. Closing
+        # it here would evict the pooled connections every later request depends
+        # on.
         if lease is not None:
             try:
                 released = await lease.release()
@@ -251,17 +252,6 @@ async def lifespan(app: FastAPI) -> Any:
                     logger.info("Released reconciler lease")
             except Exception as e:
                 logger.warning("Failed to release reconciler lease: %s", e)
-            try:
-                await lease.aclose()
-            except Exception as e:
-                logger.warning("Failed to close reconciler lease client: %s", e)
-        elif lease_client is not None:
-            # A lease was never constructed (a failure between client creation
-            # and lease construction): close the bare client directly.
-            try:
-                await lease_client.aclose()
-            except Exception as e:
-                logger.warning("Failed to close reconciler lease client: %s", e)
 
         # Dispose the main application engine
         try:
