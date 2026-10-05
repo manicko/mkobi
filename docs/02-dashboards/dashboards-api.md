@@ -845,11 +845,11 @@ The response echoes the **requested** permission, and that equals the stored val
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
 | `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | `You do not have admin access to this dashboard` |
-| `422`  | Admitted caller (owner or administrator) and the dashboard does not exist | `Dashboard with id=<dashboard_id> not found` |
+| `404`  | Admitted caller (owner or administrator) and the dashboard does not exist | `Dashboard not found` |
 | `422`  | `permission` outside `view` / `edit` / `admin` | `Request validation failed` |
 | `422`  | dashboard_id mismatch        | `dashboard_id in body doesn't match URL` |
 
-The absent-dashboard case is role-dependent: an admitted caller (owner or administrator) reaches the handler and receives `422` when the dashboard does not exist, while a caller outside the audience receives `403` whether or not the dashboard exists, because the admin-access gate runs before the handler body.
+The absent-dashboard case is role-dependent: an admitted caller (owner or administrator) reaches the handler and receives `404` when the dashboard does not exist, while a caller outside the audience receives `403` whether or not the dashboard exists, because the admin-access gate runs before the handler body.
 
 ---
 
@@ -869,6 +869,8 @@ The absent-dashboard case is role-dependent: an admitted caller (owner or admini
 | `limit`   | int  | `100`   | `1..1000` | Maximum records returned. |
 
 **Response** (`200 OK`): List of access records with user_id, permission level. An admitted caller (owner or administrator) receives `200` with an empty list when the dashboard has no access records; a caller outside the audience receives `403` whether or not the dashboard exists.
+
+**The empty-list-versus-forbidden distinction:** the audience check is the *only* thing that produces `403` here. Once a caller is inside the audience, the ACL read is always `200`, and an empty list means "this dashboard has no access rows", not "you may not see them". A `200 []` is therefore never an admission failure, and a caller that cannot see the records never receives an empty body in place of a refusal — it receives `403`. The status codes do not move with the row count.
 
 **Error responses:**
 

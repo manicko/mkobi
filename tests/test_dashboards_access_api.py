@@ -2,8 +2,8 @@
 
 The endpoint had no route-level coverage before this module. Its job is to pin the
 chosen contract: a duplicate grant is a 200 idempotent no-op with the same body,
-never a 409 and never a 500. The pre-existing 422 renderings are pinned so the
-untouched branches are proven untouched.
+never a 409 and never a 500. The path/body mismatch branch still renders 422, and
+the missing-dashboard branch renders 404 (AZ-5 moved it off the old 422).
 
 The audience tests below exist because the admin gate is structurally invisible to
 every test that calls through ``authenticated_client``: ``conftest.py::test_user``
@@ -214,13 +214,17 @@ class TestGrantDashboardAccessEndpoint:
             await _cleanup(async_db_session, dashboard.id, target_user.id)
 
     @pytest.mark.asyncio
-    async def test_unknown_dashboard_still_returns_422(
+    async def test_unknown_dashboard_returns_404_not_422(
         self, authenticated_client: AsyncClient, async_db_session, test_user: dict
     ) -> None:
-        """The missing-dashboard case still renders the pre-existing 422.
+        """An admitted caller granting against a non-existent dashboard gets 404.
 
-        Semantically it belongs to phase 12's authorization work; this block does
-        not change it, and the test records that it did not move.
+        AZ-5: the missing-dashboard case used to surface as ``422`` because the
+        service raised a bare ``ValueError`` the route mapped to
+        ``INSUFFICIENT_PERMISSIONS``. A missing resource is a ``404``; the
+        administrator path reaches it because the bypass grants before existence
+        is consulted. ``422`` would tell the caller nothing about the actual
+        problem.
         """
         user_repo = UserRepository()
         target_user = await user_repo.create(
@@ -243,7 +247,9 @@ class TestGrantDashboardAccessEndpoint:
             response = await authenticated_client.post(
                 f"/dashboards/{unknown_dashboard_id}/access", json=body
             )
-            assert response.status_code == 422
+            assert response.status_code == 404
+            assert response.status_code != 422
+            assert response.json()["code"] == "DASHBOARD_NOT_FOUND"
         finally:
             await _cleanup(async_db_session, unknown_dashboard_id, target_user.id)
 
@@ -755,6 +761,56 @@ class TestListAccessAudience:
         finally:
             await _cleanup(async_db_session, dashboard.id, owner.id)
             await _cleanup(async_db_session, uuid4(), caller.id)
+
+    @pytest.mark.asyncio
+    async def test_empty_list_is_200_not_a_refusal(
+        self, async_client: AsyncClient, async_db_session
+    ) -> None:
+        """An admitted caller on a rowless dashboard gets 200 [], never 403.
+
+        AZ-5: the ACL read stays 200 with an empty list. The distinction the
+        contract now states is that ``200 []`` means "no access rows", while a
+        caller outside the audience gets 403 regardless of row count. This pins
+        the half that could regress: an empty ACL must not be rendered as a
+        refusal.
+
+        The caller is an administrator, whose bypass admits it without any grant
+        row of its own, so the dashboard genuinely has zero access rows.
+        """
+        user_repo = UserRepository()
+        dashboard_repo = DashboardRepository()
+        owner = await user_repo.create(
+            db=async_db_session,
+            email=f"empty_list_owner_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.EDITOR,
+        )
+        caller = await user_repo.create(
+            db=async_db_session,
+            email=f"empty_list_caller_{uuid4().hex[:8]}@example.com",
+            password_hash="hash",
+            role=UserRole.ADMIN,
+        )
+        assert owner is not None and caller is not None
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"empty-list-dashboard-{uuid4().hex[:8]}",
+            created_by=owner.id,
+        )
+        assert dashboard is not None
+        await async_db_session.flush()
+
+        await _impersonate(async_client, caller)
+
+        try:
+            response = await async_client.get(f"/dashboards/{dashboard.id}/access")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload == []
+        finally:
+            await _cleanup(async_db_session, dashboard.id, owner.id)
+            await _cleanup(async_db_session, uuid4(), caller.id)
+
 
 
 class TestRevokeAccessAudience:

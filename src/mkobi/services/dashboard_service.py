@@ -411,10 +411,19 @@ class DashboardService(IDashboardService):
         """
         resolved_permission = _resolve_permission(permission)
 
-        # Check dashboard existence
+        # Check dashboard existence. A missing dashboard is a not-found at the
+        # boundary, not a validation fault: the caller named a resource that is
+        # not there. Raising the project's not-found exception keeps the route
+        # from having to translate a bare ValueError, and it is reachable by an
+        # administrator because the admin-role bypass grants before existence is
+        # ever consulted.
         dashboard_obj = await self.dashboard_repo.get(dashboard_id, db)
         if dashboard_obj is None:
-            raise ValueError(f"Dashboard with id={dashboard_id} not found")
+            raise AppException(
+                code=ErrorCode.DASHBOARD_NOT_FOUND,
+                detail="Dashboard not found",
+                details={"dashboard_id": str(dashboard_id)},
+            )
 
         if self.access_repo is None:
             raise ValueError("access_repo is required for grant_access")

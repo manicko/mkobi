@@ -109,12 +109,6 @@ async def grant_dashboard_access_endpoint(
                 code=ErrorCode.DASHBOARD_NOT_FOUND,
                 detail="Dashboard not found",
             )
-    except ValueError as e:
-        logger.warning("Validation error granting access: %s", e)
-        raise AppException(
-            code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
-        ) from e
     except AppException:
         raise
     except Exception as e:
@@ -134,7 +128,15 @@ async def grant_dashboard_access_endpoint(
     response_model=list[dict[str, Any]],
     status_code=status.HTTP_200_OK,
     summary="List dashboard access",
-    description="Returns all access records for a dashboard. Managing access to a dashboard requires an `admin` permission on that dashboard or the `admin` role, which bypasses the per-dashboard check; an administrator who is neither owner nor grantee may manage access.",
+    description=(
+        "Returns all access records for a dashboard. Managing access to a "
+        "dashboard requires an `admin` permission on that dashboard or the "
+        "`admin` role, which bypasses the per-dashboard check; an administrator "
+        "who is neither owner nor grantee may manage access. A caller inside "
+        "that audience always receives `200`; an empty list means this dashboard "
+        "has no access rows, not that the caller may not see them. A caller "
+        "outside the audience receives `403` whether or not the dashboard exists."
+    ),
     responses=admin_responses,
 )
 async def get_dashboard_access_endpoint(
