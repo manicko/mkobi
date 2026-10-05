@@ -913,8 +913,10 @@ Filters are linked to dashboards via the `dashboard_filters` many-to-many join t
 | -------------- | -------------------------------------------------- |
 | **Method**     | `POST`                                             |
 | **Path**       | `/api/v1/dashboards/{dashboard_id}/filters`        |
-| **Auth level** | Admin                                              |
+| **Auth level** | Dashboard admin (an `admin` grant on this dashboard, or the `admin` role) |
 | **Query param**| `filter_id` — UUID of the filter to bind           |
+
+A caller outside that audience receives `403` whether or not the dashboard and filter exist, because the dashboard admin gate runs before the handler body.
 
 **Response** (`200 OK`):
 
@@ -929,8 +931,9 @@ Filters are linked to dashboards via the `dashboard_filters` many-to-many join t
 
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
+| `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | `You do not have admin access to this dashboard` |
+| `404`  | Dashboard not found          | `Dashboard not found`        |
 | `404`  | Filter not found             | `Filter not found`           |
-| `409`  | Already bound / integrity    | `Conflict: filter binding failed` |
 
 ---
 
@@ -940,7 +943,9 @@ Filters are linked to dashboards via the `dashboard_filters` many-to-many join t
 | -------------- | -------------------------------------------------- |
 | **Method**     | `DELETE`                                           |
 | **Path**       | `/api/v1/dashboards/{dashboard_id}/filters/{filter_id}` |
-| **Auth level** | Admin                                              |
+| **Auth level** | Dashboard admin (an `admin` grant on this dashboard, or the `admin` role) |
+
+A caller outside that audience receives `403` whether or not the dashboard exists, because the dashboard admin gate runs before the handler body.
 
 **Response** (`200 OK`):
 
@@ -954,7 +959,9 @@ Filters are linked to dashboards via the `dashboard_filters` many-to-many join t
 
 | Status | Condition                    | Detail                       |
 | ------ | ---------------------------- | ---------------------------- |
-| `404`  | Filter not bound             | `Filter not bound to this dashboard` |
+| `403`  | Caller holds neither an `admin` grant on this dashboard nor the `admin` role | `You do not have admin access to this dashboard` |
+| `404`  | Dashboard not found          | `Dashboard not found`        |
+| `404`  | Filter not bound to the dashboard | `Filter not bound to this dashboard` |
 
 ---
 
