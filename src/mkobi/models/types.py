@@ -145,12 +145,30 @@ class SortConfig(TypedDict, total=False):
 
 
 class GraphConfigDict(TypedDict, total=False):
-    """Chart configuration (the ``config`` field of a graph).
+    """Declared vocabulary of a graph's ``config`` field.
 
-    Declares every key the shipped client reads from ``graph.config`` so make
-    the request vocabulary match what is actually sent. The client
-    (``ChartRenderer.tsx``) reads ``x``, ``color``, ``metrics``,
-    ``orientation`` and ``barmode``; the rest are server-side chart options.
+    This ``TypedDict`` is the write-boundary contract for ``config``: it is the
+    set ``_DECLARED_GRAPH_CONFIG_KEYS`` refuses against, and it governs both
+    ``GraphCreate`` and ``GraphUpdate``. The two readers of these keys today are
+    ``services/aggregation_service.py`` (``x``, ``color``) and the client's
+    ``ChartRenderer.tsx`` (``x``, ``color``, ``metrics``, ``orientation``,
+    ``barmode``).
+
+    The contract keys are ``x, y, color, metrics, orientation, barmode, title,
+    showlegend``. ``x``, ``color``, ``metrics``, ``orientation`` and ``barmode``
+    are read by ``ChartRenderer`` as named above. ``y`` names the metric column
+    the renderer's ``config.metrics?.[0] ?? 'y'`` fallback falls back to.
+    ``title`` and ``showlegend`` are the config-level twins of
+    ``ChartLayoutConfig.title`` / ``ChartLayoutConfig.showlegend``, which the
+    renderer reads off the response's ``layout`` field; populating that field is
+    residual block ``R2``.
+
+    RESERVED (adjudication ``D-16-1``): ``yoy``, ``secondary_y``, ``xaxis``,
+    ``yaxis``, ``layout``, ``sort_x``, ``sort_color``. These keys are declared,
+    validated at the request boundary, stored and returned on read, but read by
+    nothing in ``src/`` or ``frontend/src/`` today. By that ruling they are
+    deliberately neither deleted nor silently ignored. ``xaxis`` and ``layout``
+    are owned by residual block ``R2``; the rest have no consumer yet.
 
     ``GraphConfigModel`` (below) mirrors this vocabulary; when one gains a key
     the other must too.
@@ -168,15 +186,15 @@ class GraphConfigDict(TypedDict, total=False):
     # Legend visibility at the config level (the layout twin lives on
     # ``ChartLayoutConfig.showlegend``).
     showlegend: bool | None
-    xaxis: AxisConfig | None
-    yaxis: AxisConfig | None
+    xaxis: AxisConfig | None  # RESERVED: owned by R2
+    yaxis: AxisConfig | None  # RESERVED: no consumer yet
     title: str | None
-    layout: ChartLayoutConfig | None
-    yoy: YoYConfig | None
-    secondary_y: list[str] | None
+    layout: ChartLayoutConfig | None  # RESERVED: owned by R2
+    yoy: YoYConfig | None  # RESERVED: no consumer yet
+    secondary_y: list[str] | None  # RESERVED: no consumer yet
     # Sorting configuration
-    sort_x: SortConfig | None  # Sort x-axis values
-    sort_color: SortConfig | None  # Sort color dimension values (by metric)
+    sort_x: SortConfig | None  # RESERVED: no consumer yet. Sorts x-axis values.
+    sort_color: SortConfig | None  # RESERVED: no consumer yet. Sorts color values.
 
 
 # ==================== Filter Config Types ====================
@@ -268,7 +286,8 @@ class MetricModel(BaseModel):
 class GraphConfigModel(BaseModel):
     """Pydantic model for chart configuration.
 
-    Mirrors the declared vocabulary of :class:`GraphConfigDict`. Kept in step
+    Mirrors the declared vocabulary of :class:`GraphConfigDict` **including its
+    RESERVED classification**; see that class for the statement. Kept in step
     with it so a runtime consumer of this model sees the same keys the request
     boundary accepts.
     """

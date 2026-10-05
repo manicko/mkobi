@@ -1,6 +1,7 @@
 """Tests for graphs API."""
 
 import uuid
+from typing import Any
 
 import pytest
 from fastapi import status
@@ -13,7 +14,16 @@ from mkobi.db.models import dashboard as dashboard_model
 from mkobi.db.models import graphs as graph_model
 from mkobi.db.repositories.user_repo import UserRepository
 from mkobi.db.repositories.graph_repo import GraphRepository
-from mkobi.models.enums import ErrorCode, GraphType, UserRole, DashboardPermission
+from mkobi.models.enums import (
+    BarmodeEnum,
+    DashboardPermission,
+    ErrorCode,
+    GraphType,
+    OrientationEnum,
+    UserRole,
+    YoyModeEnum,
+)
+from mkobi.models.types import GraphConfigDict, GraphConfigModel
 
 
 async def _delete_committed_graph(
@@ -55,6 +65,70 @@ async def _count_committed_graphs(
             )
         )
         return result.scalar_one()
+
+
+# The declared vocabulary of a graph ``config``, written out by hand rather than
+# derived from ``GraphConfigDict.__annotations__``. The literal is the pin: a
+# round-trip test checked against the live annotations would shrink silently with
+# a future narrowing of the vocabulary (the regression f500d1f introduced), so
+# the expected set must not be able to drift with the source it guards.
+EXPECTED_GRAPH_CONFIG_KEYS: frozenset[str] = frozenset(
+    {
+        "x",
+        "y",
+        "color",
+        "metrics",
+        "orientation",
+        "barmode",
+        "showlegend",
+        "xaxis",
+        "yaxis",
+        "title",
+        "layout",
+        "yoy",
+        "secondary_y",
+        "sort_x",
+        "sort_color",
+    }
+)
+
+# The seven keys that are declared, validated at the request boundary, stored and
+# returned on read, but read by nothing in ``src/`` or ``frontend/src/`` today.
+# They are RESERVED by adjudication D-16-1: deliberately not deleted and
+# deliberately not silently ignored. Stating the split as a literal makes the
+# classification a testable fact rather than a comment.
+RESERVED_GRAPH_CONFIG_KEYS: frozenset[str] = frozenset(
+    {
+        "yoy",
+        "secondary_y",
+        "xaxis",
+        "yaxis",
+        "layout",
+        "sort_x",
+        "sort_color",
+    }
+)
+
+# A config carrying all fifteen declared keys, each with a non-default value that
+# is distinguishable from every other key's value, so a dropped or overwritten
+# key changes the deep-equality comparison at every leg of the round trip.
+FULL_GRAPH_CONFIG: dict[str, Any] = {
+    "x": "category",
+    "y": "sales",
+    "color": "region",
+    "metrics": ["profit"],
+    "orientation": OrientationEnum.HORIZONTAL,
+    "barmode": BarmodeEnum.STACK,
+    "showlegend": False,
+    "xaxis": {"title": "Category axis", "type": "linear"},
+    "yaxis": {"title": "Sales axis", "type": "log"},
+    "title": "Sales by category",
+    "layout": {"title": "Layout title", "showlegend": True, "height": 480},
+    "yoy": {"enabled": True, "metric": "revenue", "mode": YoyModeEnum.PERCENT},
+    "secondary_y": ["margin"],
+    "sort_x": {"by": "sales", "direction": "desc"},
+    "sort_color": {"by": "profit", "direction": "asc"},
+}
 
 
 class TestGraphsAPI:
@@ -735,6 +809,120 @@ class TestGraphsAPI:
         finally:
             await _delete_committed_graph(async_session_maker, dashboard_id, name)
 
+
+
+class TestGraphConfigRoundTrip:
+    """A declared graph ``config`` survives create -- read -- update -- read over HTTP.
+
+    The round trip is a persistence and serialization property, not a
+    request-boundary refusal, so it does not belong beside the ``extra="forbid"``
+    suite in ``tests/test_request_boundary_extra_forbid.py``. It lives here
+    because ``POST /graphs/`` commits: the committed row survives the DB
+    fixture's teardown rollback, and the cleanup helpers that undo it live only
+    in this module.
+
+    The vocabulary test below pins the declared set to a hand-written literal.
+    Without it the round-trip test would be vacuous against the regression this
+    phase already hit once (``f500d1f`` narrowed a boundary vocabulary rather
+    than widening it): a round trip checked against the live annotations would
+    shrink with the source it guards and still pass.
+    """
+
+    async def test_declared_config_survives_create_read_update_read(
+        self,
+        async_db_session: AsyncSession,
+        async_session_maker,
+        authenticated_client: AsyncClient,
+    ) -> None:
+        """A full fifteen-key config round-trips byte-identically through the routes.
+
+        The update leg sends the exact config the read leg returned, so the
+        assertion is about the read-modify-write shape the client performs, not
+        about a re-typed literal. Every leg asserts deep equality against
+        ``FULL_GRAPH_CONFIG`` because a silent drop earlier in the cycle would be
+        invisible to a check made only at the end.
+        """
+        from mkobi.db.repositories.dashboard_repo import DashboardRepository
+
+        dashboard_repo = DashboardRepository()
+        dashboard = await dashboard_repo.create(
+            db=async_db_session,
+            name=f"roundtrip-dashboard-{uuid.uuid4().hex[:8]}",
+            config={"graph_types": ["bar"]},
+        )
+        await async_db_session.flush()
+        # Capture the id now: the create request commits, which expires the ORM
+        # instance, and reading it afterwards would trigger a lazy load.
+        dashboard_id = dashboard.id
+        name = f"roundtrip-graph-{uuid.uuid4().hex[:8]}"
+
+        try:
+            created = await authenticated_client.post(
+                "/graphs/",
+                json={
+                    "dashboard_id": str(dashboard_id),
+                    "name": name,
+                    "type": "bar",
+                    "config": FULL_GRAPH_CONFIG,
+                    "dimensions": ["category"],
+                    "metrics": ["sales"],
+                },
+            )
+            assert created.status_code == status.HTTP_201_CREATED
+            graph_id = created.json()["id"]
+
+            first_read = await authenticated_client.get(f"/graphs/{graph_id}")
+            assert first_read.status_code == status.HTTP_200_OK
+            first_config = first_read.json()["config"]
+            assert first_config == FULL_GRAPH_CONFIG
+            assert set(first_config) == EXPECTED_GRAPH_CONFIG_KEYS
+
+            # The only update key is ``config``, and its value is the config the
+            # read leg returned -- the read-modify-write shape the hazard names.
+            # A future asymmetry between the create-side and update-side declared
+            # sets answers 422 here rather than passing as "nothing changed".
+            updated = await authenticated_client.put(
+                f"/graphs/{graph_id}",
+                json={"config": first_config},
+            )
+            assert updated.status_code == status.HTTP_200_OK
+            assert updated.status_code != status.HTTP_422_UNPROCESSABLE_CONTENT
+
+            second_read = await authenticated_client.get(f"/graphs/{graph_id}")
+            assert second_read.status_code == status.HTTP_200_OK
+            second_config = second_read.json()["config"]
+            assert set(second_config) == EXPECTED_GRAPH_CONFIG_KEYS
+            assert second_config == FULL_GRAPH_CONFIG
+        finally:
+            await _delete_committed_graph(async_session_maker, dashboard_id, name)
+
+    async def test_declared_vocabulary_is_the_published_graph_config_contract(
+        self,
+    ) -> None:
+        """The declared config vocabulary is the literal contract, reserved split included.
+
+        No database and no HTTP: this pins the source vocabulary to a literal so
+        removing or moving a key fails loudly instead of shrinking the round-trip
+        test with it, mirroring ``DECLARED_GRAPH_CREATE_KEYS`` in the boundary
+        suite. It also pins the reserved split as a stated classification.
+        """
+        assert frozenset(GraphConfigDict.__annotations__) == EXPECTED_GRAPH_CONFIG_KEYS
+        assert frozenset(GraphConfigModel.model_fields) == EXPECTED_GRAPH_CONFIG_KEYS
+        assert EXPECTED_GRAPH_CONFIG_KEYS - RESERVED_GRAPH_CONFIG_KEYS == frozenset(
+            {
+                "x",
+                "y",
+                "color",
+                "metrics",
+                "orientation",
+                "barmode",
+                "title",
+                "showlegend",
+            }
+        )
+        assert frozenset(GraphConfigModel.model_fields) == frozenset(
+            GraphConfigDict.__annotations__
+        )
 
 
 class TestDashboardGraphCreateAudience:
