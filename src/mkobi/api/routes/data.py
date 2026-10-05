@@ -186,12 +186,14 @@ async def get_aggregated_data_endpoint(
                     detail="Graph not found",
                 )
 
-            records, total_rows = await data_service.get_bounded_aggregated_data(
-                dashboard_id=dashboard_id,
-                graph_id=graph_id,
-                db=db,
-                max_rows=caps.max_rows_per_graph,
-                filters=parsed_filters,
+            records, total_rows, metric_keys, dimension_keys = (
+                await data_service.get_bounded_aggregated_data(
+                    dashboard_id=dashboard_id,
+                    graph_id=graph_id,
+                    db=db,
+                    max_rows=caps.max_rows_per_graph,
+                    filters=parsed_filters,
+                )
             )
             data_points = _flatten_points(records)
             returned_rows = len(data_points)
@@ -223,6 +225,8 @@ async def get_aggregated_data_endpoint(
                         type=single_graph.type,
                         name=single_graph.name,
                         data=data_points,
+                        metrics=metric_keys,
+                        dimensions=dimension_keys,
                         returned_rows=returned_rows,
                         total_rows=total_rows,
                         rows_truncated=rows_truncated,
@@ -241,12 +245,14 @@ async def get_aggregated_data_endpoint(
         any_truncated = False
 
         for graph_item in graphs:
-            records, total_rows = await data_service.get_bounded_aggregated_data(
-                dashboard_id=dashboard_id,
-                graph_id=graph_item.id,
-                db=db,
-                max_rows=min(caps.max_rows_per_graph, remaining_budget),
-                filters=parsed_filters,
+            records, total_rows, metric_keys, dimension_keys = (
+                await data_service.get_bounded_aggregated_data(
+                    dashboard_id=dashboard_id,
+                    graph_id=graph_item.id,
+                    db=db,
+                    max_rows=min(caps.max_rows_per_graph, remaining_budget),
+                    filters=parsed_filters,
+                )
             )
             data_points = _flatten_points(records)
             returned_rows = len(data_points)
@@ -270,6 +276,8 @@ async def get_aggregated_data_endpoint(
                     type=graph_item.type,
                     name=graph_item.name,
                     data=data_points,
+                    metrics=metric_keys,
+                    dimensions=dimension_keys,
                     returned_rows=returned_rows,
                     total_rows=total_rows,
                     rows_truncated=rows_truncated,

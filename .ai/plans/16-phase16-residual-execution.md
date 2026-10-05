@@ -85,6 +85,50 @@ the project rules discourage. **`P12` is recorded as a hand-over, not built.** T
 stated rather than hidden: `D-16-3`'s `'category'` default becomes effectively permanent in-tree,
 because a stored value a user cannot set is a constant with extra steps.
 
+## Execution log
+
+| Block | Commit | Validator verdict |
+| --- | --- | --- |
+| **R1** — `CHTB-1` residual | `716c755` | **ACCEPT** — round-trip assertion is non-vacuous (hand-written vocabulary literal); reserved classification verified true against the tree |
+| **R2** — `CHTB-3` | `a306981` | **ACCEPT** — both halves in one commit; neither half can be dropped silently (probe-verified) |
+
+## Corrections to the plan's tooling — binding on every remaining block
+
+**The plan's frontend test command does not work in this environment.** Verified by R2's validator:
+
+```powershell
+# BROKEN - vitest resolves its root to the REPO ROOT, never loads frontend/vite.config.ts,
+# runs in the node environment, and every test (including untouched files) fails on
+# ReferenceError: document is not defined
+npm --prefix frontend exec -- vitest run <path>
+
+# CORRECT - minimal edit, working directory unchanged
+npm --prefix frontend exec -- vitest run --root frontend <path>
+```
+
+The jsdom environment lives in `frontend/vite.config.ts`; there is no `vitest.config.ts` anywhere.
+`npm exec --prefix` does not change the child's cwd. The plan repeats the broken form in at least
+six places. **A 38/39 red from that form is a tooling artefact, not a regression.**
+
+**Full frontend suite:** `.\Makefile.ps1 fe-test` — **24 files / 198 passed** at `a306981`.
+**Frontend typecheck:** no target exists; `npm --prefix frontend run build` (writes the gitignored
+`frontend/dist`). **Full backend suite:** 1644 passed at `a306981`. **`fe-lint`: 0 errors.**
+
+## Findings filed for later blocks
+
+- **→ `R4`.** `ChartRenderer.test.tsx`'s `VAL-16-006` tripwire inspects `lastLineProps().layout`, so
+  re-stating the defaults as **props** (`<LineChart xAxisLabel="Category" />` — the idiomatic way to
+  write the mistake) survives. Assert on `lastLineProps()` itself. No defect ships today; the
+  protection is weaker than the test's shape implies.
+- **→ `R6`.** A graph whose metric matches no source column is **not** absent from the response: the
+  endpoint enumerates the `graphs` table, so it **appears with `data: []`**. The plan's "no card at
+  all" premise for the absent-graph state must be re-derived before that block is designed.
+- **→ general.** `ProcessingConfigService.upsert` writes `metric_agg` **without re-aggregating**, so a
+  naming rule derived from the current config can disagree with the stored rows. Names must be read
+  off the data that is actually served.
+- **→ `R8`.** `tests/test_request_boundary_extra_forbid.py` carries a docstring claiming the ORM
+  `Graph` supplies `updated_at`; it does not.
+
 ## Standing constraints for every residual block
 
 - **One implementor at a time.** Each block commits on its own.
@@ -272,3 +316,46 @@ merge the bar branch's axis object, **one commit, never revertible by half** (`V
    `Response format:` sketch still omits `layout` (and `config` and the count fields — it is an
    abbreviated line, not a false one, and completing it is a documentation pass); the `docs/` halves of
    `CHT-006`; `api.types.ts::AxisConfig.label`'s mirror. No `docs/` file is edited by this block.
+
+### 2026-10-05 — R3 (`CHTB-2`), Planner decisions
+
+Scope executed: serve the **stored** measure and dimension names with the aggregate rows —
+`GraphDataResponse.metrics` / `.dimensions`, read off the `AggregatedData` rows that produced the
+response, in `DataService.get_bounded_aggregated_data`. Executed per
+`.ai/plans/_code-context/16-phase16-r3-naming-research.md`.
+
+1. **Return shape: a plain 4-tuple `tuple[list[ProcessingResultData], int, list[str], list[str]]`.**
+   The method already returns a positional 2-tuple for the same "payload + true total" reason, and the
+   exact semantic sibling `FilterValuesService.get_filter_values -> tuple[list[str], int]` feeds an
+   additive response model the same way; `data/loaders/validator.py` already returns same-typed
+   `list[str]` pairs positionally. **Rejected:** a `NamedTuple` (zero occurrences in `src/` — a new
+   type for two call sites, against "no new abstractions without strong justification"); a dataclass
+   (heavier than a `NamedTuple` for a pure return record, and Pydantic models here are response DTOs);
+   `dict[str, list[str]]` (project rule: no dicts where a type belongs); adding the names to
+   `ProcessingResultData` (leaks response shape into the worker payload type, which has no
+   `dims`/`metrics` split). The one ambiguity a 4-tuple introduces — two same-typed `list[str]` slots —
+   is caught by this block's own tests, which assert `metrics == ["revenue"]` and
+   `dimensions == ["category"]` **separately**, so a swap is a red test, not a silent green.
+
+2. **`dimensions` IS in scope.** It is free from the same already-loaded `record.dims` read, it closes
+   the axis-name half of the identical guess (`config.x ?? 'x'`), and the `R3` row of the queue table
+   above already names both fields — so this is the block as specified, not an extension. The
+   acceptance criterion is symmetric: a served dimension list must likewise appear as keys on a served
+   row, and that symmetry is pinned by its own test.
+
+3. **Both fields are optional with an empty default** (`Field(default_factory=list)`), so they stay out
+   of the OpenAPI `required` list. The default is **not** the zero-row mechanism: the derivation
+   produces `[]` and both route sites pass it explicitly.
+
+4. **Filed, not done:** `frontend/src/shared/types/api.types.ts::GraphDataWithConfig` needs
+   `metrics?: string[]` / `dimensions?: string[]` before `R4` can consume them — that file carries
+   another agent's uncommitted change and is **not** edited or staged here. Owner: `R4` (the consumer),
+   with `R8` for the wording.
+5. **Filed, not done:** `get_aggregated_data_endpoint`'s own `Response format:` sketch omits the two
+   new names (and `layout` / `config` / the count fields). Owner: `R8`, per `R2`'s precedent.
+6. **Drift note for later blocks:** the unbounded sibling `DataService.get_aggregated_data` merges the
+   same two columns at the same spot and is deliberately left byte-unchanged (it has **no** `src/`
+   caller). If a later block routes it into a response, it must reuse `R3`'s helper, not re-derive.
+7. **`R6` coupling, stated in `R3`'s brief:** a non-empty served `metrics` list does **not** mean
+   "this graph has data" — the two are independent signals. `R6` must not use list non-emptiness as a
+   proxy for the absent-vs-zero distinction.

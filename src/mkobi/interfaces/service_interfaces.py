@@ -500,8 +500,13 @@ class IDataService(abc.ABC):
         db: AsyncSession,
         max_rows: int,
         filters: dict[str, Any] | None = None,
-    ) -> tuple[list[ProcessingResultData], int]:
-        """Get bounded aggregate rows plus the true total."""
+    ) -> tuple[list[ProcessingResultData], int, list[str], list[str]]:
+        """Get bounded aggregate rows plus the true total and served keys.
+
+        Returns ``(records, total_rows, metric_keys, dimension_keys)``: the
+        bounded records, the true untruncated row count, the served metric keys
+        and the served dimension keys.
+        """
         pass
 
     @abc.abstractmethod

@@ -307,7 +307,7 @@ class StorageManager:
             dashboard_id=dashboard_id,
             graph_id=graph_id,
             dims=normalized_dims,
-            metrics=metrics,
+            metrics=_normalize_json_keys(metrics),
         )
 
         stmt = stmt.on_conflict_do_update(
@@ -485,7 +485,15 @@ class StorageManager:
             dashboard_ids = [dashboard_id] * len(chunk)
             graph_ids = [agg["graph_id"] for agg in chunk]
             dims = [_canonicalize_dims(agg["dims"]) for agg in chunk]
-            metrics = [agg["metrics"] for agg in chunk]
+            # ``dims`` are key-sorted so identical categories conflict. The
+            # ``metrics`` mapping is stored verbatim (its numbers are the data
+            # and must not be canonicalised), but it is still routed through the
+            # same recursive key-sort so a multi-metric row's stored key order
+            # is deterministic. PostgreSQL ``jsonb`` otherwise reorders keys by
+            # length-then-bytes, which would make the stored order -- and the
+            # served ``metrics`` list read off it -- depend on key spelling
+            # rather than the graph's declared metric order.
+            metrics = [_normalize_json_keys(agg["metrics"]) for agg in chunk]
 
             dashboard_ids_param = bindparam(
                 "dashboard_ids", type_=ARRAY(PG_UUID(as_uuid=True))

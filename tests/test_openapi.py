@@ -207,6 +207,39 @@ class TestAggregatedDataResponseCarriesTruncationContract:
         assert component["properties"]["truncated"].get("type") == "boolean"
 
 
+class TestGraphDataResponseDeclaresServedRowKeys:
+    """R3 / ``CHTB-2``: the served row-key lists are published as optional arrays.
+
+    ``GraphDataResponse.metrics`` / ``.dimensions`` name the measure and
+    dimension keys actually present on the served rows. They are additive and
+    optional -- a graph with no served rows carries ``[]`` -- so this pins both
+    the Python declaration and the published OpenAPI shape, and that the two
+    names stay out of the ``required`` list.
+    """
+
+    def test_served_row_keys_are_published_as_optional_string_arrays(self) -> None:
+        """``metrics`` / ``dimensions`` are optional ``list[str]`` on the wire."""
+        from mkobi.main import app
+        from mkobi.models.data import GraphDataResponse
+
+        for name in ("metrics", "dimensions"):
+            field = GraphDataResponse.model_fields[name]
+            assert field.annotation == list[str], (
+                f"{name} annotation changed from list[str] to {field.annotation!r}"
+            )
+            assert not field.is_required(), f"{name} must stay an optional field"
+
+        schema = app.openapi()
+        component = schema["components"]["schemas"]["GraphDataResponse"]
+        for name in ("metrics", "dimensions"):
+            prop = component["properties"][name]
+            assert prop["type"] == "array"
+            assert prop["items"] == {"type": "string"}
+            assert name not in component["required"], (
+                f"{name} must not be published as required"
+            )
+
+
 class TestDocumentUrlsAreGatedTogether:
     """The three FastAPI document URLs share one production gate.
 

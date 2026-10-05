@@ -29,6 +29,26 @@ from mkobi.utils.exceptions import AppException
 logger = get_logger(__name__)
 
 
+def _served_row_keys(records: list[Any]) -> tuple[list[str], list[str]]:
+    """Return the ``(metric_keys, dimension_keys)`` served on the rows.
+
+    The keys are read directly off each record's ``metrics`` / ``dims`` columns
+    -- the same columns the rows were merged from -- so every returned name is a
+    key on a served row by construction. The union is taken in first-seen order
+    over the whole page, never from ``records[0]`` alone: the route merges
+    previews across the page, so a record whose keys were not first would
+    otherwise drop them.
+    """
+    metric_keys: dict[str, None] = {}
+    dimension_keys: dict[str, None] = {}
+    for record in records:
+        for key in record.metrics or {}:
+            metric_keys.setdefault(key, None)
+        for key in record.dims or {}:
+            dimension_keys.setdefault(key, None)
+    return list(metric_keys), list(dimension_keys)
+
+
 class DataService(IDataService):
     """Data service class for processing data."""
 
@@ -222,7 +242,7 @@ class DataService(IDataService):
         db: AsyncSession,
         max_rows: int,
         filters: dict[str, Any] | None = None,
-    ) -> tuple[list[ProcessingResultData], int]:
+    ) -> tuple[list[ProcessingResultData], int, list[str], list[str]]:
         """Get at most ``max_rows`` aggregate rows plus the true total.
 
         The rows are bounded by ``max_rows`` (order preserved), while the total
@@ -238,8 +258,9 @@ class DataService(IDataService):
             filters: Optional filters for JSONB field dims.
 
         Returns:
-            tuple[list[ProcessingResultData], int]: The bounded records and the
-            true, untruncated row count.
+            tuple[list[ProcessingResultData], int, list[str], list[str]]: the
+            bounded records, the true untruncated row count, the served metric
+            keys, and the served dimension keys -- in that order.
         """
         records = await self.agg_repo.get_by_graph_id_limited(
             graph_id, db, max_rows, dashboard_id=dashboard_id, filters=filters,
@@ -254,7 +275,8 @@ class DataService(IDataService):
             )
             for record in records
         ]
-        return results, total_rows
+        metric_keys, dimension_keys = _served_row_keys(records)
+        return results, total_rows, metric_keys, dimension_keys
 
     async def count_dashboard_aggregated_data(
         self,

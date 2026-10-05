@@ -590,12 +590,40 @@ class GraphDataResponse(BaseModel):
 
     ``rows_truncated`` is true exactly when ``data`` is shorter than
     ``total_rows``.
+
+    ``metrics`` and ``dimensions`` are the union of the keys of the records in
+    ``data``: ``metrics`` names the measure keys and ``dimensions`` the
+    dimension keys, in first-seen order. Both are derived from the same
+    ``AggregatedData.dims`` / ``.metrics`` columns the rows were merged from, so
+    every served name is a key on a served row by construction. They are **not**
+    derived from ``config["metrics"]`` / ``config["x"]`` and do not re-state any
+    ``_{metric_agg}`` aliasing rule. A graph with no served rows serves ``[]``
+    for both; such a graph still appears in the response carrying its counts and
+    an empty ``data`` list.
     """
 
     graph_id: str
     type: GraphType
     name: str
     data: list[dict[str, int | float | str]]
+    metrics: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Post-alias served measure keys: the union of the metric keys of "
+            "the records in ``data``, in first-seen order. These are the keys "
+            "actually present on the served rows, not the pre-alias operator "
+            "input in ``config['metrics']``."
+        ),
+    )
+    dimensions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Post-alias served dimension keys: the union of the dimension keys "
+            "of the records in ``data``, in first-seen order. These are the "
+            "keys actually present on the served rows, not the pre-alias "
+            "operator input in ``config['x']``."
+        ),
+    )
     returned_rows: int
     total_rows: int
     rows_truncated: bool = False
@@ -613,6 +641,8 @@ class GraphDataResponse(BaseModel):
                     {"category": "A", "revenue": 1000},
                     {"category": "B", "revenue": 2000},
                 ],
+                "metrics": ["revenue"],
+                "dimensions": ["category"],
                 "returned_rows": 2,
                 "total_rows": 2000,
                 "rows_truncated": True,
