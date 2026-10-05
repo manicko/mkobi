@@ -224,6 +224,20 @@ export interface GraphDataWithConfig {
   total_rows: number
   /** True exactly when `data` holds fewer rows than `total_rows`. */
   rows_truncated: boolean
+  /**
+   * The post-alias metric (measure) keys the server actually placed on the
+   * served rows — each name is a key on a served row by construction. This is
+   * NOT `config.metrics`: that is the operator's pre-alias input, which may
+   * name a column the server never emitted.
+   */
+  metrics?: string[]
+  /**
+   * The post-alias dimension keys the server actually placed on the served
+   * rows — each name is a key on a served row by construction. This is NOT
+   * `config.x`: that is the operator's pre-alias input, which may name a
+   * column the server never emitted.
+   */
+  dimensions?: string[]
   layout?: ChartLayoutConfig
   config?: {
     x?: string
