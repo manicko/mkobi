@@ -4,8 +4,10 @@ import inspect
 from unittest.mock import MagicMock
 
 import pytest
+import redis
 
 from mkobi.rq_worker_wrapper import (
+    _build_redis_url,
     check_redis_connection,
     check_worker_registered,
     MAX_RETRIES,
@@ -128,6 +130,96 @@ class TestRQWorkerRetry:
         # Verify exponential backoff: 2^0, 2^1
         expected_delays = [BASE_DELAY_SECONDS ** i for i in range(MAX_RETRIES - 1)]
         assert sleep_calls == expected_delays
+
+
+class TestBuildRedisUrlCredentialParity:
+    """B11: the consumer's derived URL carries the producer's credential.
+
+    The producer authenticates via ``redis.Redis(host=..., password=...)`` in
+    ``core.task_queue.get_rq_queue``; the consumer derives a URL. A password
+    configured for the store must reach the consumer's derivation, and a
+    password with URL-reserved characters must survive percent-encoding.
+    """
+
+    def _derive_with_config(self, monkeypatch, password: str | None) -> str:
+        from mkobi.config import clear_config_cache
+
+        monkeypatch.setenv("REDIS__HOST", "redishost")
+        monkeypatch.setenv("REDIS__PORT", "6380")
+        monkeypatch.setenv("REDIS__DB", "2")
+        if password is None:
+            monkeypatch.delenv("REDIS__PASSWORD", raising=False)
+        else:
+            monkeypatch.setenv("REDIS__PASSWORD", password)
+        clear_config_cache()
+        try:
+            return _build_redis_url()
+        finally:
+            clear_config_cache()
+
+    def test_url_carries_password_when_configured(self, monkeypatch):
+        """A configured password appears in the derived URL's userinfo."""
+        url = self._derive_with_config(monkeypatch, "s3cret")
+
+        assert url == "redis://:s3cret@redishost:6380/2"
+        # The producer reads the same setting through RedisSettings.
+        assert redis.Redis.from_url(url).connection_pool.connection_kwargs["password"] == "s3cret"
+
+    def test_url_has_no_userinfo_when_password_absent(self, monkeypatch):
+        """With no password the URL has no userinfo section."""
+        url = self._derive_with_config(monkeypatch, None)
+
+        assert url == "redis://redishost:6380/2"
+        assert "@" not in url
+
+    def test_password_with_reserved_characters_round_trips(self, monkeypatch):
+        """A password containing URL-reserved characters survives round-tripping.
+
+        ``from_url`` must recover the exact original password, which only holds
+        when the reserved characters were percent-encoded on the way in.
+        """
+        password = "p@ss:w/rd?#{}[]"
+        url = self._derive_with_config(monkeypatch, password)
+
+        # The raw password must not appear unescaped in the URL.
+        assert password not in url
+        assert redis.Redis.from_url(url).connection_pool.connection_kwargs["password"] == password
+
+    def test_worker_queue_connection_uses_the_derived_url(self, mocker, monkeypatch):
+        """start_rq_worker builds its queue connection from the derived URL.
+
+        Patches ``from_url`` and asserts the password reaches it, so a future
+        divergence between the producer's credential and the consumer's cannot
+        pass unnoticed.
+        """
+        monkeypatch.setenv("REDIS__HOST", "redishost")
+        monkeypatch.setenv("REDIS__PORT", "6380")
+        monkeypatch.setenv("REDIS__DB", "2")
+        monkeypatch.setenv("REDIS__PASSWORD", "queuesecret")
+        monkeypatch.setenv("ENV", "test")
+        monkeypatch.setenv("DATABASE__HOST", "localhost")
+        monkeypatch.setenv("DATABASE__PORT", "5432")
+        monkeypatch.setenv("DATABASE__DBNAME", "bidb_test")
+        monkeypatch.setenv("DATABASE__USER", "mkobi_app")
+        monkeypatch.setenv("DATABASE__PASSWORD", "test")
+        monkeypatch.setenv("DATABASE__TEST_DBNAME", "bidb_test")
+        monkeypatch.setenv("JWT__SECRET_KEY", "test_secret_key_for_testing_32_chars")
+
+        from mkobi.config import clear_config_cache
+
+        clear_config_cache()
+
+        mocker.patch("mkobi.rq_worker_wrapper.check_redis_connection", return_value=True)
+        mock_from_url = mocker.patch(
+            "mkobi.rq_worker_wrapper.redis.Redis.from_url",
+            return_value=MagicMock(),
+        )
+        mocker.patch("mkobi.rq_worker_wrapper.rq.Queue")
+        mocker.patch("mkobi.rq_worker_wrapper.rq.Worker")
+
+        start_rq_worker()
+
+        assert mock_from_url.call_args.args[0] == "redis://:queuesecret@redishost:6380/2"
 
 
 class TestQueueNameAgreement:

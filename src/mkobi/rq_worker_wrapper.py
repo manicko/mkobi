@@ -10,6 +10,7 @@ import logging
 import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 
 import redis
 import rq
@@ -44,11 +45,23 @@ WORKER_LIVENESS_TTL_SECONDS = DEFAULT_WORKER_TTL + 60
 def _build_redis_url() -> str:
     """Build the Redis URL from configuration.
 
+    Carries the password from the same ``RedisSettings`` the producer
+    (``core.task_queue.get_rq_queue``) authenticates with, so the producer and
+    the consumer cannot derive different credentials for the same store. A
+    password is percent-encoded because URL-reserved characters would otherwise
+    corrupt the userinfo section and make the derived URL unparseable.
+
     Returns:
-        str: A redis:// URL built from RedisSettings host/port/db.
+        str: A ``redis://[:<password>@]<host>:<port>/<db>`` URL built from
+        RedisSettings host/port/db and the optional password.
     """
     config = get_config()
-    return f"redis://{config.redis.host}:{config.redis.port}/{config.redis.db}"
+    password = config.redis.password
+    credentials = f":{quote(password, safe='')}@" if password else ""
+    return (
+        f"redis://{credentials}"
+        f"{config.redis.host}:{config.redis.port}/{config.redis.db}"
+    )
 
 
 async def check_redis_connection(redis_url: str, max_retries: int = MAX_RETRIES) -> bool:

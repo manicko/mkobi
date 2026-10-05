@@ -145,5 +145,8 @@ class TestEnqueueFailureSurface:
         assert exc.detail == "Failed to enqueue processing job"
         assert "redis-internal.example" not in exc.detail
         assert "6379" not in exc.detail
+        # No store endpoint of any shape: no scheme, no host, no port, no URL.
+        assert "redis://" not in exc.detail
+        assert "://" not in exc.detail
         assert exc.__cause__ is not None
         assert isinstance(exc.__cause__, redis.exceptions.ConnectionError)
