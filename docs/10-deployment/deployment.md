@@ -396,6 +396,24 @@ This follows the least-privilege principle: any SQL injection or application bug
 
 The role is created via an initialization SQL script mounted to `/docker-entrypoint-initdb.d/` in the PostgreSQL container. The application's `DATABASE__USER` and `DATABASE__PASSWORD` point to the `mkobi_app` role.
 
+The role definition and all of its grants live in **one referenced artefact**: `docker/init-scripts/shared/app-role-grants.sql`. The init script `docker/init-scripts/01-create-app-role.sh` only supplies the psql variables (`app_password`, `dbname`) and loads it, so the artefact is the single definition and the two cannot drift. The artefact is idempotent: it creates the role only when absent and re-applies credentials and grants on every run.
+
+The schema-level privilege in that artefact is `USAGE` on schema `public`. The test-tier recreation path (`src/mkobi/db/starter.py::recreate_test_database`) grants `USAGE, CREATE` instead. **This difference is deliberate and per-tier**, not drift: the persistent database's migrations run as the `postgres` superuser, which owns every object, so the application role never needs `CREATE` there, while the ephemeral test tier builds its schema under conditions that allow it. The rationale is recorded in the artefact's header. Do not harmonise the two.
+
+Roles are **cluster-global, not part of a database dump**. A `pg_dump` of `bidb` does not contain `mkobi_app`, and `pg_restore` of that dump will not recreate it. When restoring onto a fresh cluster, the role must be created and granted first — the backup workflow exports cluster globals separately (see `Makefile.ps1`'s `Export-ClusterGlobals`/`Invoke-Load-Globals`) and loads them after the restore's drop phase.
+
+If a restore reports **failed grants** (`role "mkobi_app" does not exist`, or `GRANT ... TO mkobi_app` errors), the role was absent when the grants ran. The remedy is to load the referenced artefact against the restored database, then re-run the grants:
+
+```bash
+psql -v ON_ERROR_STOP=1 \
+     -v app_password="$MKOBI_APP_PASSWORD" \
+     -v dbname=bidb \
+     --username "$POSTGRES_USER" --dbname bidb \
+     --file docker/init-scripts/shared/app-role-grants.sql
+```
+
+Roles are never created by an Alembic migration: a per-database migration cannot describe a cluster-global object, and a role created by a migration would break the per-environment grant model. No `GRANT`, `REVOKE`, `CREATE ROLE` or `ALTER DEFAULT PRIVILEGES` appears under `alembic/`.
+
 ### PostgreSQL Locale Configuration
 
 The PostgreSQL container uses the `builtin` locale provider with `C.UTF-8` collation:
