@@ -352,18 +352,30 @@ services:
         condition: service_healthy
     ports:
       - "80:80"
+    # Edge configuration is templated: the entrypoint renders
+    # ${NGINX_CLIENT_MAX_BODY_SIZE} from the environment into the MAIN config
+    # (/etc/nginx/nginx.conf) at container start, then defers to the stock
+    # image entrypoint. The application remains authoritative for the upload
+    # ceiling; the edge value only stops a grossly oversized body and defaults
+    # deliberately above the application's UPLOAD__MAX_FILE_SIZE_MB.
+    environment:
+      NGINX_CLIENT_MAX_BODY_SIZE: ${NGINX_CLIENT_MAX_BODY_SIZE:-512m}
+    entrypoint: ["/etc/nginx/entrypoint-render.sh"]
+    command: ["nginx", "-g", "daemon off;"]
     volumes:
-      - ../docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../docker/nginx/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
+      - ../docker/nginx/entrypoint-render.sh:/etc/nginx/entrypoint-render.sh:ro
       - ../frontend/dist:/usr/share/nginx/html:ro
     restart: unless-stopped
     # Security: read-only root filesystem with explicit writable tmpfs paths
-    # nginx writes to these directories at runtime: cache, PID files, logs
+    # nginx writes to these directories at runtime: cache and PID files.
+    # /var/log/nginx is intentionally absent: both logs stream to stdout/stderr,
+    # not to files, so the directory is not written and needs no tmpfs entry.
     read_only: true
     tmpfs:
       - /tmp
       - /var/cache/nginx
       - /var/run
-      - /var/log/nginx
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost/"]
       interval: 30s

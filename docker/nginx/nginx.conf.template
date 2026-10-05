@@ -6,16 +6,27 @@ http {
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
 
-    # Logging
-    access_log /var/log/nginx/access.log;
-    error_log /var/log/nginx/error.log;
+    # Logging: both destinations are the container's standard streams so an
+    # operator reads them through ``docker compose logs nginx``. Logs written to
+    # a file under /var/log/nginx would land on the tmpfs mount and never reach
+    # ``docker logs`` -- they would vanish with the container.
+    access_log /dev/stdout;
+    error_log /dev/stderr;
 
     server {
         listen [::]:80;
         server_name localhost;
 
-        # Allow large file uploads (must match backend max_file_size)
-        client_max_body_size 100m;
+        # Upload byte ceiling for the edge.
+        # The application is authoritative: it enforces UPLOAD__MAX_FILE_SIZE_MB
+        # while streaming the request body and totals the reader boundary, so the
+        # application decides whether an upload is accepted. The edge value exists
+        # only to stop a grossly oversized body before it is proxied, and defaults
+        # deliberately above the application ceiling so the two never disagree at
+        # the boundary. If they do disagree, the application is right: a body the
+        # application would reject is normal, not an error, while a body the edge
+        # rejects first never reaches the application at all.
+        client_max_body_size ${NGINX_CLIENT_MAX_BODY_SIZE};
 
         add_header X-Content-Type-Options "nosniff" always;
         add_header X-Frame-Options "SAMEORIGIN" always;
@@ -29,7 +40,7 @@ http {
         # style-src allows 'unsafe-inline' for React CSS-in-JS styling patterns.
         add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'" always;
 
-        # /api prefix is intentional — matches FastAPI router prefix /api/v1/*
+        # /api prefix is intentional -- matches FastAPI router prefix /api/v1/*
         # Requests to /api/v1/* are forwarded to the app container as-is
         location /api {
             proxy_pass http://app:8000;
@@ -45,7 +56,7 @@ http {
             proxy_set_header Host $host;
         }
 
-        # Static files → React build
+        # Static files -> React build
         location / {
             root /usr/share/nginx/html;
             rewrite ^/(.*)/$ /$1 permanent;
@@ -63,8 +74,9 @@ http {
     #
     #     # HSTS header (only meaningful over HTTPS)
     #     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    #     # Allow large file uploads (must match backend max_file_size)
-    #     client_max_body_size 100m;
+    #     # Upload byte ceiling for the edge -- see the HTTP block above; the
+    #     # application is authoritative.
+    #     client_max_body_size ${NGINX_CLIENT_MAX_BODY_SIZE};
     #     add_header X-Content-Type-Options "nosniff" always;
     #     add_header X-Frame-Options "SAMEORIGIN" always;
     #     add_header X-XSS-Protection "1; mode=block" always;

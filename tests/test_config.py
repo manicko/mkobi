@@ -2001,3 +2001,86 @@ class TestBuildInputPinning:
                 break
             block.append(line)
         return "\n".join(block)
+
+
+class TestEdgeLogStreamAndSizeBound:
+    """OPS-006/OPS-013: the edge streams its logs and its size bound resolves.
+
+    Measured state before the fix: nginx wrote access.log and error.log onto the
+    tmpfs mounted at /var/log/nginx, so ``docker compose logs nginx`` never saw a
+    line and the files vanished with the container; and ``client_max_body_size``
+    was a bare ``100m`` literal tied to the backend only by a comment, so changing
+    the application ceiling silently diverged from the edge. These tests read the
+    edge template and the compose file directly and pin the wiring: both log
+    destinations target the standard streams, the ceiling is a template
+    placeholder fed by an environment key, and no log_format is introduced.
+    """
+
+    @staticmethod
+    def _docker_dir():
+        from pathlib import Path
+
+        return Path(__file__).resolve().parent.parent / "docker"
+
+    @staticmethod
+    def _service_block(text: str, service: str) -> str:
+        """Return one top-level service block from a compose file's text."""
+        lines = text.splitlines()
+        start = None
+        for index, line in enumerate(lines):
+            if line.rstrip() == f"  {service}:":
+                start = index
+                break
+        assert start is not None, f"{service} service not found"
+        block = [lines[start]]
+        for line in lines[start + 1:]:
+            if line.startswith("  ") and not line.startswith("    ") and line.strip():
+                break
+            block.append(line)
+        return "\n".join(block)
+
+    def _template_text(self) -> str:
+        return (self._docker_dir() / "nginx" / "nginx.conf.template").read_text(
+            encoding="utf-8"
+        )
+
+    def test_both_log_destinations_are_the_standard_streams(self) -> None:
+        """The edge streams to stdout/stderr, not to files under /var/log/nginx.
+
+        OPS-006: a log file on the tmpfs never reaches ``docker logs`` and is
+        destroyed with the container, so the operator loses the only record of
+        what the edge served.
+        """
+        text = self._template_text()
+        assert "access_log /dev/stdout;" in text
+        assert "error_log /dev/stderr;" in text
+        # The tmpfs files are gone from every log directive.
+        assert "/var/log/nginx/access.log" not in text
+        assert "/var/log/nginx/error.log" not in text
+
+    def test_client_max_body_size_is_a_placeholder_not_a_literal(self) -> None:
+        """OPS-013: the ceiling resolves from the environment, not a bare literal.
+
+        A bare ``100m`` cannot follow the application ceiling. The template must
+        carry the placeholder so the rendered value comes from the environment.
+        """
+        text = self._template_text()
+        assert "client_max_body_size ${NGINX_CLIENT_MAX_BODY_SIZE};" in text
+        for line in text.splitlines():
+            if "client_max_body_size" not in line or line.strip().startswith("#"):
+                continue
+            assert "${NGINX_CLIENT_MAX_BODY_SIZE}" in line, line
+
+    def test_nginx_service_feeds_the_size_bound_key(self) -> None:
+        """The nginx service declares the environment key that fills the template."""
+        base_text = (self._docker_dir() / "docker-compose.yml").read_text(
+            encoding="utf-8"
+        )
+        block = self._service_block(base_text, "nginx")
+        assert "NGINX_CLIENT_MAX_BODY_SIZE" in block
+        assert "${NGINX_CLIENT_MAX_BODY_SIZE:-" in block
+
+    def test_no_log_format_directive_is_introduced(self) -> None:
+        """No log_format belongs to this phase; nginx's built-in combined stands."""
+        text = self._template_text()
+        assert "log_format" not in text
