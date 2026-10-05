@@ -190,6 +190,15 @@ async def get_aggregated_data_endpoint(
                 rows_truncated,
             )
 
+            # The top-level ``total_rows`` is the dashboard-wide true count on
+            # both response shapes; the per-graph count stays on the graph entry.
+            # Reusing the per-graph total here would label a graph count as a
+            # dashboard count, since the field name is shared in the OpenAPI
+            # schema (AggregatedDataResponse.total_rows).
+            dashboard_total = await data_service.count_dashboard_aggregated_data(
+                dashboard_id=dashboard_id, db=db,
+            )
+
             return AggregatedDataResponse(
                 graphs=[
                     GraphDataResponse(
@@ -203,7 +212,7 @@ async def get_aggregated_data_endpoint(
                         config=single_graph.config,
                     )
                 ],
-                total_rows=total_rows,
+                total_rows=dashboard_total,
                 truncated=rows_truncated,
             )
 

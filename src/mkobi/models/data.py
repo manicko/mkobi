@@ -617,7 +617,9 @@ class AggregatedDataResponse(BaseModel):
 
     Wrapper for graph data with configuration.
 
-    ``total_rows`` is the dashboard-wide **true, untruncated** row count. The
+    ``total_rows`` is the dashboard-wide **true, untruncated** row count, on
+    both the dashboard response and the single-graph response; the per-graph
+    count is carried separately on each ``GraphDataResponse.total_rows``. The
     response is marked ``truncated`` when any graph was bounded by the
     per-graph cap or the rows collectively exhausted the dashboard-wide budget;
     a graph whose rows were not returned at all still appears, carrying its

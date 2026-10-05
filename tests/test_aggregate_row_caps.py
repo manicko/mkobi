@@ -220,3 +220,67 @@ class TestAggregateRowCaps:
         by_name = {g["name"]: g for g in body["graphs"]}
         for name, count in seeded.items():
             assert by_name[name]["total_rows"] == count
+
+
+class TestTopLevelTotalRowsHasOneMeaning:
+    """PRF-4: the top-level ``total_rows`` is dashboard-wide on every path.
+
+    Defect this pins: the field is documented as the dashboard-wide true count,
+    but the single-graph path filled it with the per-graph total, so the same
+    field name meant two scopes in the published schema. A dashboard with two
+    graphs distinguishes the two scopes; a single-graph dashboard does not, which
+    is why the defect was latent.
+    """
+
+    async def test_single_graph_response_reports_dashboard_wide_total(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """A single-graph request reports the dashboard total, not the graph total."""
+        seeded = {"A": 4, "B": 7}
+        dashboard_id, graph_ids = await _setup_dashboard_with_aggregates(
+            async_db_session, test_user["id"], rows_per_graph=seeded
+        )
+
+        response = await authenticated_client.get(
+            "/data/aggregated",
+            params={
+                "dashboard_id": str(dashboard_id),
+                "graph_id": str(graph_ids["A"]),
+            },
+        )
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+
+        graph = body["graphs"][0]
+        # The graph entry carries the per-graph count ...
+        assert graph["total_rows"] == seeded["A"]
+        # ... while the top-level field carries the dashboard-wide count.
+        assert body["total_rows"] == sum(seeded.values())
+
+    async def test_dashboard_and_single_graph_agree_on_the_top_level_field(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """Both response shapes mean the same thing by the top-level field."""
+        seeded = {"A": 4, "B": 7}
+        dashboard_id, graph_ids = await _setup_dashboard_with_aggregates(
+            async_db_session, test_user["id"], rows_per_graph=seeded
+        )
+
+        dashboard_body = (
+            await authenticated_client.get(
+                "/data/aggregated",
+                params={"dashboard_id": str(dashboard_id)},
+            )
+        ).json()
+        single_body = (
+            await authenticated_client.get(
+                "/data/aggregated",
+                params={
+                    "dashboard_id": str(dashboard_id),
+                    "graph_id": str(graph_ids["B"]),
+                },
+            )
+        ).json()
+
+        assert dashboard_body["total_rows"] == sum(seeded.values())
+        assert single_body["total_rows"] == dashboard_body["total_rows"]
