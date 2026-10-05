@@ -319,35 +319,25 @@ class TestFilterPayloadBounds:
             "revenue": 104,
         }
 
-    async def test_list_value_element_respects_the_value_length_bound(
-        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
-    ) -> None:
-        """An over-long list element is rejected, naming the value-length bound.
+    def test_list_value_element_respects_the_value_length_bound(self) -> None:
+        """An over-long list element is refused, naming the key and the bound.
 
-        Discriminates the per-element bound: after a naive widening the list
-        would measure its repr and this would return 200. The route wraps the
-        model's ``ValidationError`` into a generic 422, so the bound's own
-        message is pinned against the model -- the thing that enforces it --
-        rather than the discarded route body.
+        Discriminates the per-element branch: the message names the offending
+        key (``category``) and the element's length. At HEAD the scalar
+        ``len(str(value))`` branch measured the list's *repr* and refused the
+        same payload -- so no endpoint assertion can discriminate, the old
+        bound already 422s it -- but its message omitted the key. The model-level
+        assertion below is what fails at HEAD: ``"category" in message`` cannot
+        hold for the scalar branch, and the route wraps the model's
+        ``ValidationError`` into a generic 422 that discards the message, so the
+        attribution is observable only against the model. The endpoint half is
+        therefore omitted as a non-discriminating pin.
         """
         from pydantic import ValidationError
 
         from mkobi.models.data import AggregatedFiltersRequest
 
-        dashboard_id, graph_id = await _dashboard_with_rows(
-            async_db_session, test_user["id"], rows=1
-        )
         element = "v" * (MAX_FILTER_VALUE_LENGTH + 1)
-
-        response = await authenticated_client.get(
-            _url(dashboard_id, graph_id),
-            params=_params(
-                dashboard_id, graph_id, json.dumps({"category": [element]})
-            ),
-        )
-
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
-        assert response.json()["code"] == "VALIDATION_ERROR"
 
         try:
             AggregatedFiltersRequest(filters={"category": [element]})
@@ -357,6 +347,21 @@ class TestFilterPayloadBounds:
             raise AssertionError("an over-long list element was accepted")
         assert "category" in message
         assert str(MAX_FILTER_VALUE_LENGTH) in message
+
+    def test_list_with_in_bound_elements_is_accepted_after_widening(self) -> None:
+        """A multi-element list of in-bound strings is accepted, not refused.
+
+        The element-wise bound *widens* acceptance: ``["a"*200, "b"*200]`` has a
+        repr of 408 characters, which the scalar repr bound refused, so this is
+        200 after the widening where it was a ``VALIDATION_ERROR`` before. It
+        pins the acceptance side of the same change.
+        """
+        from mkobi.models.data import AggregatedFiltersRequest
+
+        request = AggregatedFiltersRequest(
+            filters={"category": ["a" * 200, "b" * 200]}
+        )
+        assert request.filters["category"] == ["a" * 200, "b" * 200]
 
 
 async def _dashboard_declaring_filters(

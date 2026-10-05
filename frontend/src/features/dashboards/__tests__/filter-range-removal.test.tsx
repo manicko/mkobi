@@ -77,6 +77,7 @@ vi.mock('../api/dashboardApi', () => ({
   useInvalidateDashboard: () => ({
     invalidateDashboard: vi.fn(),
     invalidateAggregatedData: vi.fn(),
+    invalidateFilterValues: vi.fn(),
   }),
 }))
 
@@ -172,6 +173,31 @@ describe('DashboardView - range control removal', () => {
     })
     const withCategory = capturedFilters.find((f) => f?.category !== undefined)
     expect(withCategory?.category).toEqual(['A', 'B'])
+  })
+
+  it('drops a restored boolean-array filter so it cannot blank the dashboard', async () => {
+    // Discriminates the tightened predicate: HEAD admitted a `boolean[]` (it
+    // only dropped arrays containing a number), which serialises into the
+    // `filters` payload and is refused by `list[str]` with a 422 rendered as a
+    // dashboard-scope alert. Every element must be a string.
+    setStoredFilters('test-dashboard-id', { flags: [true, false] })
+
+    const Wrapper = createWrapper()
+    render(
+      <Wrapper>
+        <DashboardView />
+      </Wrapper>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Test Dashboard')).toBeInTheDocument()
+    })
+    await waitFor(() => {
+      expect(capturedFilters.length).toBeGreaterThan(0)
+    })
+    for (const filters of capturedFilters) {
+      expect(filters).not.toHaveProperty('flags')
+    }
   })
 
   it('preserves a restored scalar filter unchanged', async () => {

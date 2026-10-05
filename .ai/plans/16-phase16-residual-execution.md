@@ -828,3 +828,43 @@ both change the design.
     passed**. `ChartRenderer.test.tsx`'s 16 existing tests must pass **unmodified** — they are the
     regression net for the `resolveColumnName` move. No test may claim pixels: there is no
     browser-render harness, so evidence stops at the emitted trace/layout objects and component props.
+
+## 2026-10-05 — `R5` corrective pass (documentation accuracy)
+
+A single corrective pass on the **accepted** `R5` (`8f22377`, `7568a21`). No behaviour defect; three
+findings, all documentation or defensive tightening.
+
+- **C1 — the value-bound rationale was false, and is corrected.** `AggregatedFiltersRequest.validate_filter_bounds`
+  was justified as *"a list evades `MAX_FILTER_VALUE_LENGTH` element-wise because `len(str(value))` measures
+  the repr"*. That is false: `len(repr(list)) >= max(len(element))` always, so an over-long element was
+  never evadable — the repr bound already refused it with the same `VALIDATION_ERROR`. The corrected
+  comment states what the change is actually worth: it **attributes** the violation (names the offending
+  key and element length where the scalar message omits the key) and **widens** acceptance for
+  multi-element lists the repr bound refused (`["a"*200,"b"*200]`, repr 408 → now accepted) on a path
+  previously unreachable because the union refused lists first. `MAX_FILTER_PAYLOAD_BYTES` still caps the
+  total. The `8f22377` commit message cannot be rewritten; this entry records the correction.
+  - **C1 endpoint half — removed, not tightened.** The endpoint assertion 422s before *and* after (the old
+    repr bound already refused the payload), so it was a pin, not a discriminator, and the route wraps the
+    model's `ValidationError` into a generic 422 that discards the message — the attribution cannot be
+    observed at the endpoint. The model-level assertion (`"category" in message`) is the discriminator and
+    is kept; a second model-level test now pins the acceptance side of the widening.
+- **C2 — publication names corrected.** `TestAggregatedFiltersRequestPublishesListValues` →
+  `...ValidatesListValues`, and `test_filters_query_schema_publishes_a_string_array_branch` →
+  `...validates...`, with the docstring stating plainly that `AggregatedFiltersRequest` is built inside the
+  route and is **not** in the published OpenAPI document. The assertion against `model_json_schema()` is
+  not vacuous and is kept; the test is not relocated.
+- **C3 — the restore predicate now matches its name.** `isRestorableFilterValue` in `DashboardView.tsx`
+  admitted `boolean[]`, nested arrays and object arrays, which serialise into the `filters` payload and are
+  refused by `list[str]` with a 422 rendered as a dashboard-scope alert. It is now a type predicate that
+  admits a list only when **every element is a string**; the `as FilterState[string]` cast is gone; the
+  scalar and "is an object, is not an array" behaviour is unchanged. `R5`'s
+  `preserves a restored string-array filter byte-identical` stays green; a new test pins the boolean-array
+  drop.
+- **Optional ordering — left, recorded.** `validate_filter_values` still runs before the `graph_id`
+  ownership check (422-before-404 for a cross-dashboard `graph_id` with a bad filter). The call is
+  deliberately one call covering both response shapes before the branch; moving it would force a second
+  call or a restructure for a disclosure-only ordering that is not a hole (access is checked above). A
+  one-line comment in the route records it.
+
+`fe-lint` 0 errors; `fe-test` 30 files / 242 passed; `pytest tests/test_filter_payload_bounds.py tests/test_openapi.py`
+30 passed. No `docs/**`; no `src/mkobi/models/dashboard.py` change.

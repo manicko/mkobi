@@ -548,12 +548,21 @@ class AggregatedFiltersRequest(BaseModel):
     ) -> dict[str, FilterValue]:
         """Enforce key-count, key-length, value-length and payload-size bounds.
 
-        A list value is measured element-wise: today's ``len(str(value))``
-        measures the *repr* of the list, which lets a list evade
-        ``MAX_FILTER_VALUE_LENGTH`` per element. No per-key element-count bound
-        is applied: a list compiles to **one** membership predicate regardless
-        of element count, so ``PRF-5``'s plan-time rationale does not apply, and
-        ``MAX_FILTER_PAYLOAD_BYTES`` already caps the total element count.
+        A list value is measured element-wise rather than through the scalar
+        ``len(str(value))`` branch. That branch measured the list's *repr*, and
+        since ``len(repr(list)) >= max(len(element))`` an over-long element was
+        never evadable -- the repr bound already refused it, with the same
+        ``VALIDATION_ERROR``. The element-wise bound is worth two things instead:
+        it **attributes** the violation, naming the offending key and the
+        element's length where the scalar message omits the key; and it *widens*
+        acceptance for multi-element lists the repr bound used to refuse (e.g.
+        ``["a"*200,"b"*200]``, repr 408, is now accepted) on a path previously
+        unreachable because the union refused lists before the validator ran.
+        ``MAX_FILTER_PAYLOAD_BYTES`` still caps the total. No per-key
+        element-count bound is applied: a list compiles to **one** membership
+        predicate regardless of element count, so ``PRF-5``'s plan-time rationale
+        does not apply, and ``MAX_FILTER_PAYLOAD_BYTES`` already caps the total
+        element count.
         """
         if len(v) > MAX_FILTER_KEYS:
             raise ValueError(

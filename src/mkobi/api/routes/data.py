@@ -156,7 +156,10 @@ async def get_aggregated_data_endpoint(
 
         # Read admissibility: one call covers both response shapes (with and
         # without ``graph_id``) before any branch is taken. The service holds
-        # the business rule; the route keeps no logic.
+        # the business rule; the route keeps no logic. It runs before the
+        # graph ownership check below, so an unevaluable filter answers 422
+        # where a cross-dashboard ``graph_id`` would answer 404; access is
+        # already checked above, so this is a disclosure ordering, not a hole.
         await data_service.validate_filter_values(dashboard_id, parsed_filters, db)
 
         # When graph_id is provided, return data for single graph

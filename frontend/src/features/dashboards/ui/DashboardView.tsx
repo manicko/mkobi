@@ -82,11 +82,17 @@ function shouldPreserveFilters(state: unknown): boolean {
  * `number[]` is the retired slider's output, and a range is not evaluable, so
  * that entry is dropped. A `string[]` is ambiguous -- it is indistinguishable
  * on the wire from a legitimate two-value multiselect -- and is kept; the
- * server's by-name backstop is what resolves it.
+ * server's by-name backstop is what resolves it. A list is admitted only when
+ * **every element is a string**: a `boolean[]`, a nested array or an object
+ * array serialises into the `filters` payload and is then refused by `list[str]`
+ * with a 422, which renders as a dashboard-scope alert -- the defect class this
+ * predicate exists to keep out. The scalar cases are unchanged.
  */
-function isRestorableFilterValue(value: unknown): boolean {
+function isRestorableFilterValue(
+  value: unknown
+): value is FilterState[string] {
   if (Array.isArray(value)) {
-    return !value.some((element) => typeof element === 'number')
+    return value.every((element) => typeof element === 'string')
   }
   return (
     typeof value === 'string' ||
@@ -118,7 +124,7 @@ function loadPersistedFilters(dashboardId: string | undefined, preserve: boolean
     const restored: FilterState = {}
     for (const [key, value] of Object.entries(parsed)) {
       if (isRestorableFilterValue(value)) {
-        restored[key] = value as FilterState[string]
+        restored[key] = value
       }
     }
     return restored

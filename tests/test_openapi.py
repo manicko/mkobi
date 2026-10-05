@@ -240,21 +240,21 @@ class TestGraphDataResponseDeclaresServedRowKeys:
             )
 
 
-class TestAggregatedFiltersRequestPublishesListValues:
-    """The widened ``filters`` payload schema publishes a string-array branch.
+class TestAggregatedFiltersRequestValidatesListValues:
+    """The widened ``filters`` payload schema validates a string-array branch.
 
     The union admits ``list[str]`` so a multiselect value can be evaluated as a
-    membership test. This pins the published schema as **additive**: the array
-    branch is present and every previously-accepted scalar branch survives, so
-    no existing client is invalidated.
+    membership test. This pins the schema as **additive**: the array branch is
+    present and every previously-accepted scalar branch survives, so no existing
+    client is invalidated.
 
-    Note: ``AggregatedFiltersRequest`` is built at runtime inside the route
-    handler (``filters`` is a plain ``str`` query parameter), so it is **not** a
-    component of ``app.openapi()``. The publication claim is therefore asserted
-    against the model's own JSON Schema -- the schema the plan intended to pin.
+    ``AggregatedFiltersRequest`` is built at runtime inside the route handler
+    (``filters`` is a plain ``str`` query parameter), so it is **not** a
+    component of the published OpenAPI document -- this asserts the model's own
+    JSON Schema, which is what validates the payload, not a publication.
     """
 
-    def test_filters_payload_schema_publishes_a_string_array_branch(self) -> None:
+    def test_filters_payload_schema_validates_a_string_array_branch(self) -> None:
         """``additionalProperties.anyOf`` carries the array and all scalar branches."""
         from mkobi.models.data import AggregatedFiltersRequest
 
