@@ -90,11 +90,19 @@ Boundary** (`frontend/src/shared/components/ErrorBoundary.tsx::reportError`). Th
 other two — **global `window.onerror`** and **unhandled promise rejections**
 (`window.onunhandledrejection`) — are **not** wired in this repository.
 
-The Error Boundary guards the reporter with `if (import.meta.env.DEV)`:
-`import.meta.env.DEV` is **true in development builds**, so the boundary logs to
-the console there and calls `reportError` only in the **`else` branch — i.e. in
-production builds**. The reporter therefore fires in production builds, not in
-development.
+The reporter sends the payload through the shared axios client
+(`frontend/src/shared/api/axiosInstance.ts`), which already carries the API base
+URL, so the path is the relative `/client-errors`. The request is **awaited** and
+marked `skipErrorToast`, so a failed report cannot itself raise a user-facing
+toast — the boundary is already showing the error. A reporting failure is
+**logged** to the console (`[ErrorBoundary] failed to report client error`), not
+silently swallowed: the component whose single job is reporting failures must not
+be the place failures disappear.
+
+The call is guarded by `if (import.meta.env.DEV)`: `import.meta.env.DEV` is
+**true in development builds**, so the boundary logs to the console there and
+posts to `/client-errors` only in the **`else` branch — i.e. in production
+builds**. The reporter therefore fires in production builds, not in development.
 
 This provides visibility into production frontend issues that would otherwise go
 unnoticed by backend monitoring.

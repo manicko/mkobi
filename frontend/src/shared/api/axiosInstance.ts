@@ -5,10 +5,11 @@ import { getRefreshHandler } from './refreshHandler'
 import { extractApiError } from './errorHandler'
 import { getErrorMessage } from './errorMessages'
 import { getFeatureErrorMessage, SESSION_EXPIRED_MESSAGE } from './errorSurfaces'
+import { getApiBaseUrl } from '../config/env'
 import './axiosRequestConfig'
 
 export const axiosInstance = axios.create({
-  baseURL: '/api/v1',
+  baseURL: getApiBaseUrl(),
   withCredentials: true,
   headers: {
     'Content-Type': 'application/json',

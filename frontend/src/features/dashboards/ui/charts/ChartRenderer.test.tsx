@@ -30,16 +30,24 @@ vi.mock('./TableChart', () => ({ TableChart: () => <div data-testid="table" /> }
 import { ChartRenderer } from './ChartRenderer'
 import type { GraphDataWithConfig } from '../../../../shared/types/api.types'
 
-function makeGraph(overrides: Partial<GraphDataWithConfig>): GraphDataWithConfig {
+/**
+ * Builds a graph fixture from the **server wire shape** for `data`: a list of
+ * flat records, not Plotly traces. `GraphDataWithConfig.data` is declared as
+ * `Data[]` in the peer-owned `api.types.ts`, so the wire shape is bridged here
+ * with one documented cast at the fixture boundary. The production conversion
+ * itself never casts — it narrows with `isChartRecord`.
+ */
+function makeGraph(overrides: Partial<GraphDataWithConfig> & { data?: unknown[] }): GraphDataWithConfig {
+  const { data = [], ...rest } = overrides
   return {
     graph_id: 'g1',
     type: 'bar',
     name: 'Test',
-    data: [],
     returned_rows: 0,
     total_rows: 0,
     rows_truncated: false,
-    ...overrides,
+    ...rest,
+    data,
   }
 }
 
