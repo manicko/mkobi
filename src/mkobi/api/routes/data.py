@@ -92,7 +92,45 @@ async def get_aggregated_data_endpoint(
     """Get aggregated data for dashboard.
 
     Applies filters to JSONB field dims and groups data by graph_id.
-    Response format: {"graphs": [{"graph_id": "...", "type": "...", "name": "...", "data": [...]}]}
+
+    Response format::
+
+        {
+          "graphs": [
+            {
+              "graph_id": "<uuid>",
+              "type": "bar",
+              "name": "Sales by Category",
+              # Flat rows: the record's dimension and metric keys merged into
+              # one dict -- there is no nested ``dims`` / ``metrics`` pair.
+              "data": [{"category": "A", "revenue_sum": 1000}],
+              # The POST-ALIAS keys actually present on ``data``, in first-seen
+              # order. Not ``config["metrics"]``, which is the operator's
+              # pre-alias input; a client applies no ``_{metric_agg}`` rule here.
+              "metrics": ["revenue_sum"],
+              "dimensions": ["category"],
+              # Server-supplied counts. ``total_rows`` is the graph's true,
+              # untruncated count; ``returned_rows`` is what landed in ``data``.
+              "returned_rows": 1,
+              "total_rows": 5000,
+              "rows_truncated": True,
+              # The graph's stored ``config["layout"]``, served as stored, or
+              # None. NOT a merge of the config-level title/showlegend/xaxis/
+              # yaxis twins, which stay RESERVED and unwired.
+              "layout": {"title": "Sales by Category"},
+              # The graph's stored ``config``, unchanged.
+              "config": {"x": "category", "metrics": ["revenue"]}
+            }
+          ],
+          # Dashboard-wide true, untruncated count; ``truncated`` is true when
+          # any graph was bounded. The per-graph count is on the graph entry.
+          "total_rows": 5000,
+          "truncated": True
+        }
+
+    ``metrics`` and ``dimensions`` are optional with an empty default, so neither
+    appears in the OpenAPI ``required`` list. A graph with no served rows serves
+    ``[]`` for both and still appears, carrying its counts and an empty ``data``.
 
     When graph_id is provided, returns data for a single graph.
     When graph_id is absent, returns data for all graphs in the dashboard.
@@ -100,7 +138,9 @@ async def get_aggregated_data_endpoint(
     Args:
         dashboard_id: Dashboard ID.
         graph_id: Graph ID (optional). If absent, returns all dashboard graphs.
-        filters: JSON string with filters (optional).
+        filters: JSON string with filters (optional). A scalar value is one
+            ``->>`` equality; a list of strings is a membership union, and an
+            empty list imposes no constraint.
         current_user: Current authenticated user.
         data_service: Data service (dependency injection).
         graph_repo: Graph repository for fetching graphs (dependency injection).
@@ -111,6 +151,9 @@ async def get_aggregated_data_endpoint(
     Raises:
         AppException 403: If user has no read access to dashboard.
         AppException 404: If dashboard or graph not found.
+        AppException 422: On an invalid filters payload, or a submitted value the
+            dashboard's declared filter type cannot evaluate (a stored ``range``
+            is refused by name).
         AppException 500: On server error.
     """
     logger.info(

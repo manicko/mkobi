@@ -221,7 +221,11 @@ class FilterConfigDict(TypedDict, total=False):
     field: str  # Field for filtering
     source: str  # "dims", "metrics", "custom"
     multi: bool  # Multiple selection
-    type: str | None  # Input type ("select", "multiselect", "range", "date")
+    type: str | None  # Declared input type ("select", "multiselect", "date").
+    #   "range" is RETIRED and inert: no control renders it, no value
+    #   evaluates it, and it is refused by name on both a dashboard
+    #   save and the aggregate read. The FilterType.RANGE member and
+    #   the filter_type PostgreSQL label remain until phase 14 (C14-17).
     options: list[str | int] | None  # Available options
     default: str | int | list[str | int] | None
 

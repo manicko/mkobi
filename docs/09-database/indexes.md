@@ -84,9 +84,44 @@ CREATE INDEX idx_aggregated_data_dashboard_graph ON aggregated_data(dashboard_id
 CREATE INDEX idx_aggregated_data_dims_gin ON aggregated_data USING GIN (dims);
 ```
 
-**Purpose:** A GIN index declared on the `dims` column. It is currently **unused by the application**, and that is a recorded, accepted state — not a justification for the index. The backend does **not** emit JSONB containment operators; the query path extracts individual keys with `->>` equality per key, and `->>` does not reach a GIN index of this shape. `pg_stat_user_indexes` reports `idx_scan = 0, idx_tup_read = 0` for this index, so it is unreachable from either predicate form. The index is retained by decision; a separate decision record (`D-14-B`, plan 14) owns that and records the choice to keep it.
+**Purpose:** A GIN index declared on the `dims` column. It is currently **unused by the
+application**, and that is a recorded, accepted state — not a justification for the
+index. The backend emits **no** JSONB operator that a GIN index on a bare `dims`
+column can serve, so the read continues to be served by
+`idx_aggregated_data_dashboard_graph`. The index is retained by decision; a separate
+decision record (`D-14-B`, plan 14) owns that and records the choice to keep it.
 
-**Note:** GIN is not the optimal index type for the queries this schema runs. Neither `@>` (JSONB containment) nor `->>` (key extraction with equality) reaches this index in the measured workload, and the speed comparison that used to be quoted here does not reproduce. GIN index size tracks the number of distinct keys and distinct values per document rather than the row count, so no per-volume write-cost constant can be derived from it.
+**What the filter predicates actually use.** `AggregatedDataRepository._graph_filter_conditions`
+builds one predicate per submitted filter key, over the `dims` column:
+
+| Submitted value | Compiled predicate | Reaches `idx_aggregated_data_dims_gin`? |
+| --------------- | ------------------ | ---------------------------------------- |
+| Scalar | `dims ->> :key = :value` (`==`) | **No** |
+| `list[str]` (non-empty) | `dims ->> :key IN (…)` (`.in_()`) | **No** |
+| `list[str]` (empty) | no predicate at all — imposes no constraint | n/a |
+| (count query) | the same predicate set over a `COUNT(*)` | **No** |
+
+**Which operators are reachable, corrected.** Only **`->>`** and
+**`jsonb_exists_any`** are unreachable on this index shape — neither is a GIN-indexable
+operator for a bare column, and neither is what the code emits. That is the precise
+claim; it is **not** true that `@>` is unreachable:
+
+- **`@>` (containment) does reach it.** A predicate such as `dims @> '{"year":"2024"}'`
+  produces a **Bitmap Index Scan** on this index whenever the planner is not permitted
+  to fall back to a sequential scan (`enable_seqscan = off`). A previous revision of
+  this document asserted that neither `@>` nor `->>` reaches the index; the `@>` half of
+  that was measured-false and is corrected here.
+- **`@@` (jsonb path match) does reach it** too, for the same reason: it is one of the
+  operators the default `jsonb_ops` opclass indexes.
+
+`pg_stat_user_indexes` reports `idx_scan = 0` for this index, which is consistent with
+the predicates above: **nothing the application emits today is GIN-indexable on this
+index.** The index is unreachable from the emitted predicate forms, not from `@>`.
+
+**Note:** GIN is not the optimal index type for the queries this schema runs. The speed
+comparison that used to be quoted here does not reproduce. GIN index size tracks the
+number of distinct keys and distinct values per document rather than the row count, so
+no per-volume write-cost constant can be derived from it.
 
 ---
 
@@ -194,7 +229,7 @@ A plain column reference (`AggregatedData.dims`) would fail with `InvalidColumnR
 | -------------------------- | ---------- | ---------------------------------------- |
 | Primary key lookups        | Hash (implicit) | All tables                          |
 | Foreign key lookups        | B-tree     | `aggregated_data`, `dashboard_access`, `graphs`, `processing_logs` |
-| JSONB containment queries  | GIN        | `aggregated_data` (dims)                 |
+| JSONB containment queries  | GIN        | `aggregated_data` (dims) — declared but **not used by the application**; see [`idx_aggregated_data_dims_gin`](#4-idx_aggregated_data_dims_gin) |
 | Unique constraints         | `UNIQUE`   | `users`, `layouts`, `dashboards`, `graphs`, `filters`, `aggregated_data` |
 | Composite filters          | B-tree     | `aggregated_data`, `dashboard_access`, `dashboard_filters` |
 

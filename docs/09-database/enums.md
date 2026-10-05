@@ -33,7 +33,7 @@ All fixed values in the system are defined as `StrEnum` classes in `src/mkobi/mo
 | 1  | `UserRole`               | `admin`, `editor`, `viewer`                     | `user_role`           | `users`                  |
 | 2  | `DashboardPermission`    | `view`, `edit`, `admin`                         | `dashboard_permission_level` | `dashboard_access` |
 | 3  | `GraphType`              | `bar`, `line`, `pie`, `table`                   | `graph_type`          | `graphs`                 |
-| 4  | `FilterType`             | `select`, `multiselect`, `range`, `date`        | `filter_type`         | `filters`                |
+| 4  | `FilterType`             | `select`, `multiselect`, `range` (**retired, inert**), `date` | `filter_type`         | `filters`                |
 | 5  | `RegistrationStatus`     | `pending`, `approved`, `rejected`               | `registration_status` | `registration_requests`  |
 | 6  | `UploadMode`             | `overwrite`, `append`                           | —                     | API parameter            |
 | 7  | `ProcessingStatus`       | `started`, `uploaded`, `processing`, `completed`, `failed` | `processing_status` | `processing_logs` |
@@ -137,16 +137,40 @@ Defines filter UI control types.
 class FilterType(StrEnum):
     SELECT = "select"
     MULTISELECT = "multiselect"
-    RANGE = "range"
+    RANGE = "range"        # RETIRED and inert; see the note below
     DATE = "date"
 ```
 
-| Value         | UI Control       |
-| ------------- | ---------------- |
-| `select`      | Dropdown         |
-| `multiselect` | Multi-select     |
-| `range`       | Range slider     |
-| `date`        | Date picker      |
+| Value         | UI Control       | Evaluable on `GET /data/aggregated` |
+| ------------- | ---------------- | ------------------------------------ |
+| `select`      | Dropdown         | Yes — scalar `->>` equality |
+| `multiselect` | Multi-select     | Yes — a `list[str]` membership union |
+| `range`       | **None. No control is rendered.** | **No — refused by name** |
+| `date`        | Date picker      | Yes — scalar `->>` equality |
+
+**The `range` member and the `filter_type` label are retired but still present, and
+that is deliberate.** The retirement is in the *evaluation*, not in the schema:
+
+- `FilterType.RANGE` and the live PostgreSQL `filter_type` label `'range'` still
+  exist. The `filters.type` column therefore still **accepts** the label, and this
+  table's value list remains accurate as a storage vocabulary.
+- `range` has no control in the filters panel, and a stored `range` filter is
+  refused **by name** on a dashboard save (`422`, naming the field and the supported
+  set) and on the aggregate read (`422`, naming the filter and its reason). A
+  dashboard that already stores one renders a **non-blocking warning inside the
+  filters panel** and sends no value — it is **not** blanked, and it is **not** an
+  empty state.
+- The label's removal and the migration of stored rows are **deferred to phase 14**
+  (`C14-17`). Until that lands, the member must stay: a stored `range` row still has
+  to round-trip through `FilterType` on the read path, and deleting the label from
+  the enum would make the read model assert something the database does allow.
+
+**The controlling vocabulary for a submitted filter value is a different enum.**
+`EvaluableFilterType` (`src/mkobi/models/dashboard.py`) declares the closed set of
+types a value can be *evaluated against* — `select`, `multiselect`, `date` — and
+deliberately omits `range`. Aliasing the two would make the storage enum
+authoritative over evaluability. `FilterType` describes what a column can hold;
+`EvaluableFilterType` describes what a filter can do.
 
 **PostgreSQL ENUM:** `filter_type`
 **Table:** `filters.type`
@@ -396,7 +420,7 @@ The following 6 StrEnum classes have corresponding PostgreSQL ENUM types:
 | `user_role`                   | `UserRole`           | `admin`, `editor`, `viewer`                     |
 | `dashboard_permission_level`  | `DashboardPermission`| `view`, `edit`, `admin`                         |
 | `graph_type`                  | `GraphType`          | `bar`, `line`, `pie`, `table`                   |
-| `filter_type`                 | `FilterType`         | `select`, `multiselect`, `range`, `date`        |
+| `filter_type`                 | `FilterType`         | `select`, `multiselect`, `range` (**retired, inert**), `date` |
 | `processing_status`           | `ProcessingStatus`   | `started`, `uploaded`, `processing`, `completed`, `failed` |
 | `registration_status`         | `RegistrationStatus` | `pending`, `approved`, `rejected`               |
 

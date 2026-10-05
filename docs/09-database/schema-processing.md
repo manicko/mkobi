@@ -87,7 +87,10 @@ CREATE TABLE aggregated_data (
 - `idx_aggregated_data_graph_id` — B-tree index on `graph_id`
 - `idx_aggregated_data_dashboard_id` — B-tree index on `dashboard_id`
 - `idx_aggregated_data_dashboard_graph` — Composite B-tree index on `(dashboard_id, graph_id)`
-- `idx_aggregated_data_dims_gin` — GIN index on `dims` (for JSONB containment queries)
+- `idx_aggregated_data_dims_gin` — GIN index on `dims`. It would serve `@>` containment
+  queries, but **the application emits none**: the filter predicates use `->>`
+  extraction (`=` for a scalar, `IN (…)` for a list), which does not reach this index.
+  Declared and unused — see [Indexes](./indexes.md#4-idx_aggregated_data_dims_gin)
 - `uq_aggregated_data_dashboard_graph_dims` — Unique index on `(dashboard_id, graph_id, dims::text)` for UPSERT conflict detection
 
 **JSONB normalization note:** The `dims` column uses recursive key sorting before writes. This ensures that `{"a": 1, "b": 2}` and `{"b": 2, "a": 1}` produce identical JSONB representations, enabling reliable UPSERT operations via the unique index on `dims::text`.

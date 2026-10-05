@@ -373,22 +373,42 @@ Authorization: Bearer <token>
 | --------- | ---- | -------- | ----------- |
 | `dashboard_id` | UUID | Yes | Target dashboard |
 | `graph_id` | UUID | No | Specific graph (returns all graphs if omitted). The graph must belong to `dashboard_id`: a `graph_id` for another dashboard's graph is reported as `404 GRAPH_NOT_FOUND`, so access to one dashboard cannot read another's graph. |
-| `filters` | JSON string | No | Filter values (e.g., `{"year": "2024", "category": "A"}`). Bounded: at most 20 keys, 64-character key names, 256-character values, 4 KB serialised (`PRF-5`; see [Filter payload bounds](../02-dashboards/dashboards-api.md#filter-payload-bounds-prf-5)). |
+| `filters` | JSON string | No | Filter values. A **scalar** value is one `->>` equality; a **list** of strings is a membership union over the listed values, and an **empty list** imposes no constraint. Bounded: at most 20 keys, 64-character key names, 256-character values **per element**, 4 KB serialised (`PRF-5`; see [Filter payload bounds](../02-dashboards/dashboards-api.md#filter-payload-bounds-prf-5)). See [Filter values and admissibility](#filter-values-and-admissibility) below. |
 
 **Response** (`200 OK`):
 
+The response is an `AggregatedDataResponse`: a **list of graphs**, each carrying its own
+rows, its served column names, its layout and its row counts, plus two
+dashboard-level counts.
+
 ```json
 {
-  "dashboard_id": "<uuid>",
-  "graph_id": "<uuid>",
-  "data": [
+  "graphs": [
     {
-      "dims": {"year": "2024", "category": "A"},
-      "metrics": {"revenue": 100000, "cost": 60000}
+      "graph_id": "550e8400-e29b-41d4-a716-446655440000",
+      "type": "bar",
+      "name": "Sales by Category",
+      "data": [
+        {"year": "2024", "category": "A", "revenue_sum": 100000, "cost_sum": 60000}
+      ],
+      "metrics": ["revenue_sum", "cost_sum"],
+      "dimensions": ["year", "category"],
+      "returned_rows": 1,
+      "total_rows": 5000,
+      "rows_truncated": true,
+      "layout": {"title": "Sales by Category"},
+      "config": {"x": "category", "metrics": ["revenue"], "orientation": "v"}
     }
-  ]
+  ],
+  "total_rows": 5000,
+  "truncated": true
 }
 ```
+
+**`data` rows are flat and merged.** A row is one dict holding the record's dimension
+keys and its metric keys **in the same object** — there is no nested `dims` /
+`metrics` pair on the wire. When a dimension and a measure share a name the metric
+value wins, because the merge is `{**dims, **metrics}`.
 
 **Notes:**
 
@@ -397,6 +417,127 @@ Authorization: Bearer <token>
 - Rows are returned in a deterministic order: ascending row id. Under `overwrite` this reproduces the computed chart order, because the dashboard's rows are deleted before the rebuild re-inserts them.
 - **Append-mode limitation.** Ascending id is *wrong* for `append`: an upsert updates an existing `(dashboard_id, graph_id, dims)` row in place and keeps its original id, while new rows take fresh, larger ids. A re-ranked existing row keeps a stale position and new rows sort after all existing ones, so the read order diverges from the freshly computed chart order. Closing that needs a dedicated `aggregated_data.ordinal` column populated from the chart order — schema DDL that another phase owns. This limitation is recorded here and in the repository module, not fixed here.
 - `dims` values are stored canonically stringified, so one category is one row. `dims` keys are sorted recursively before writes, but that is cosmetic: JSONB canonicalises object key order itself, so the sorting is not what makes the UPSERT work.
+
+---
+
+### Served measure and dimension names
+
+Each graph entry carries two name lists. They are the single source of truth for
+"which columns can this chart read", and they are **correct by construction**:
+
+| Field | Meaning |
+| ----- | ------- |
+| `metrics` | The **post-alias measure keys actually present on the rows in `data`**, in first-seen order over the whole bounded page. |
+| `dimensions` | The **post-alias dimension keys actually present on the rows in `data`**, same order. |
+
+Both are read directly off the stored aggregate row's `metrics` / `dims` columns —
+the same two columns the rows were merged from — so every name they list is a key
+on a served row. Nothing is derived from the graph's `config`, and no `_{metric_agg}`
+suffix rule is applied or implied.
+
+> **The distinction that is easy to get backwards.** A top-level `metrics` on this
+> response is the **served, post-alias** key set. `config["metrics"]` on the *same
+> object* is the operator's **pre-alias input**. They routinely differ: an operator
+> who writes `"metrics": ["revenue"]` under a `mean` aggregation receives rows keyed
+> `revenue_mean`, so the response says `metrics: ["revenue_mean"]` while `config`
+> still says `["revenue"]`. **A client reads the served names and applies no suffix
+> rule to them.**
+
+Both fields are **optional with an empty default**, so neither appears in the
+OpenAPI `required` list. A graph with no served rows serves `[]` for both — and such
+a graph **still appears** in the response, carrying its counts and an empty `data`
+list. It is not omitted.
+
+### How a client resolves the measure, axis and colour columns
+
+The resolution rule is one rule, applied to a configured name against the served
+names (`chartStates.ts::resolveColumnName`):
+
+- a configured name that **is** among the served names wins;
+- an **absent or empty** served list is no authority at all, so the configured name stands;
+- otherwise the configured name is **unresolved**.
+
+| Role | Resolution | If unresolved |
+| ---- | ---------- | -------------- |
+| Measure (`y`) | `config.metrics[0]` if served, else the **first served metric** | Nothing resolves, which only happens when the served `metrics` list is absent or empty; the writer skips any group with no measure, so a non-empty row set carries at least one |
+| Axis (`x`) | `config.x` if served, else the **first served dimension** | Falls back to the literal column name `x`, which no row carries |
+| Colour (`color`) | `config.color` if it is among the served **dimension** names | **No grouping.** The chart draws one ungrouped trace — never a guessed dimension |
+
+The measure resolution is shared with the render-state predicate, so the trace and
+the state classification can never disagree about which column is the measure.
+
+### Layout
+
+`layout` is the graph's stored `config["layout"]`, served **as stored** and validated
+as `ChartLayoutConfig`. It is `null` when the graph stored no layout.
+
+It is **not** a merge of `config["title"]`, `config["showlegend"]`, `config["xaxis"]`
+or `config["yaxis"]`. Those config-level twins are separate declared keys, and the
+two axis twins are deliberately unwired — see
+[Extend Graphs](../11-guides/extend-graphs.md#the-config-vocabulary). A bar chart's
+axis type is `'category'` unless a stored layout supplies one.
+
+`AxisConfig.label` is a reserved key inside the layout: the client's converter reads
+`title`, `type` and `range` only, so a stored `label` survives the wire and is
+dropped at render time.
+
+---
+
+### Filter values and admissibility
+
+Two independent rules apply to a submitted `filters` payload, and they are decided
+in two different layers.
+
+**Shape** — enforced by `AggregatedFiltersRequest` in `src/mkobi/models/data.py`. A
+value is a scalar (`str`, `int`, `float`, `bool`) or a `list[str]`. The bounds
+(20 keys, 64-character key names, 256 characters **per element**, 4 KB serialised)
+apply to lists element-wise, so a multi-element list is not refused by the scalar
+branch's length check; the payload-size bound still caps the total.
+
+**Admissibility** — enforced by `DataService.validate_filter_values`, from the
+dashboard's stored `config["filters"]`. Per submitted key:
+
+| Declared type of the key | Submitted value | Outcome |
+| ------------------------ | --------------- | ------- |
+| absent, or the dashboard declares no filters | anything | Permitted |
+| not declared among the stored filters' `field` values | anything | Permitted |
+| `range` | anything, scalar or list | **Refused by name** |
+| not `multiselect` | a `list` | **Refused by name** |
+| `multiselect` | a `list` | Permitted — matched as a membership union |
+| `select`, `date`, `multiselect` | a scalar | Permitted — matched as `->>` equality |
+
+A refusal is an RFC 7807 **`422`** with `code = VALIDATION_ERROR`, a `detail` naming
+the filter and its reason, and `details` carrying `{filter, declared_type, reason}`.
+
+**Semantics of a list value.** A `list[str]` means *membership*: the returned rows
+are the union over the listed values, compiled as one `->> … IN (…)` predicate over
+the **same** `->>` operator a scalar uses, so a `select` and a `multiselect` over one
+dimension can never disagree. An **empty list imposes no constraint** and returns
+everything; it is deliberately not `IN ()`, which would blank every chart with no
+visible cause.
+
+### Bound: the retired `range` type is not fully closed
+
+The `range` filter type is **retired**. It has no control in the filters panel, and a
+stored `range` filter is refused by name on both a dashboard save and this read. The
+`FilterType.RANGE` enum member and the `filter_type` PostgreSQL label both still
+exist and are inert; their removal is deferred to phase 14 (`C14-17`). See
+[Database Enums](../09-database/enums.md#4-filtertype).
+
+What is **not** closed is the value union, and this is a bound rather than a closed
+hole:
+
+- A filter value of two strings — for example `["0", "100"]` — is
+  **indistinguishable on the wire** from a legitimate two-value multiselect.
+- A dashboard that declares **no** filters at all, and receives such a value, is
+  **permitted** and matched as a membership test. An undeclared filter carries no
+  type to discriminate with.
+- That path is **unreachable from any input the application itself produces** (the
+  range slider is gone, so nothing in the product emits a `number[]`), and it is
+  **not covered for a non-browser client**.
+
+No value union can discriminate the two forms, because the wire shape is identical.
+This is stated as a bound; it is not a claim that the hole is closed.
 
 ---
 

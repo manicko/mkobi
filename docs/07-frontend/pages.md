@@ -138,7 +138,7 @@ The application consists of **7 UI pages** (plus a 404 fallback). Authenticated 
 | Element | Type | Description |
 | --- | --- | --- |
 | Dashboard title | `Typography` | Dashboard name header |
-| Filters panel | `DashboardFilters` | Dynamic filters (Select/Range/Date) based on dashboard config |
+| Filters panel | `DashboardFilters` | Dynamic filters (Select / Multiselect / Date) based on dashboard config. A declared type with no evaluable control renders a **non-blocking warning inside the panel** and sends no value |
 | Charts grid | Chart components | Plotly.js charts (Bar, Line, Pie, Table) arranged in a grid |
 | Upload button | `Button` | Visible only for `admin` and `editor` roles; opens `UploadModal` dialog |
 | Upload modal | `UploadModal` | Dialog with mode toggle, file dropzone, upload queue, processing status polling |
@@ -149,6 +149,7 @@ The application consists of **7 UI pages** (plus a 404 fallback). Authenticated 
 | --- | --- | --- | --- |
 | Get dashboard | `GET` | `/api/v1/dashboards/:id` | — |
 | Get aggregated data | `GET` | `/api/v1/data/aggregated` | `dashboard_id`, `filters` (optional) — the client **omits** `graph_id` and issues one dashboard-wide request |
+| Get filter values | `GET` | `/api/v1/dashboards/:id/filter-values` | `filter_name` |
 | Upload file | `POST` | `/api/v1/upload/:dashboard_id` | Query: `mode=overwrite\|append`; Body: `multipart/form-data` |
 | Check status | `GET` | `/api/v1/upload/status/:task_id` | Polled after upload |
 
@@ -157,9 +158,35 @@ The application consists of **7 UI pages** (plus a 404 fallback). Authenticated 
 1. Page loads with dashboard ID from URL params.
 2. Filters panel renders based on dashboard configuration.
 3. Charts are fetched and rendered using Plotly.js React.
-4. Changing filters triggers new data requests (filtered on the backend).
+4. Changing filters triggers new data requests (filtered on the backend). A `multiselect` sends a **`list[str]`**, which the server matches as a membership union.
 5. Clicking "Upload Data" opens the `UploadModal` dialog (no page navigation).
-6. After successful upload and processing, dashboard data refreshes automatically.
+6. After successful upload and processing, dashboard data refreshes automatically: the aggregated data **and** the cached filter-option lists are invalidated together, so the options never describe the previous file.
+
+### Render states
+
+The dashboard does not have one "no data" state. It has **four**, defined in
+`chartStates.ts` and classified over the served response, plus a fifth for a failed
+refetch. The distinction that matters: **a present `0` is never the absent state.**
+
+| # | State | Predicate | What the user sees |
+| - | ----- | --------- | ------------------ |
+| 1 | `NO_CHARTS` | the served graph list is empty (or there is no response) | An info alert: *"This dashboard has no charts to display."* |
+| 2 | `NO_ROWS` | the graph served no rows | The chart frame with *"No data available for this chart"*. The graph itself still appears — it is **not** omitted from the response |
+| 3 | `MEASURE_ABSENT` | rows exist, but the **resolved measure column is absent from every one of them** | The chart drawn as a **gap** — explicit `null` points — with the empty-state text **suppressed**, plus a per-chart caption naming the column, and one dashboard-scope warning. A `0` is a value, so this state is not reached by zero-valued rows |
+| 4 | `RENDERED` | rows exist and at least one carries a value in the measure column | The chart |
+| 5 | Stale retained data | a **background refetch of an already-succeeded query failed** | The **last good data stays visible**, with an out-of-date warning naming the time of the last successful update, instead of being replaced by an error page |
+
+**The measure resolution is one rule, shared with the trace builder.** A configured
+`config.metrics[0]` wins if it is among the response's served `metrics`; an absent or
+empty served list is no authority and the configured name stands; otherwise the measure
+falls back to the first served metric. Because the predicate and the trace call the same
+resolver, a chart can never claim one column and draw another. The axis resolves the same
+way against the served `dimensions`; an unresolvable **colour** column produces **no
+grouping** rather than a guessed dimension.
+
+State 5's condition is deliberately narrow: it requires an `error`, a non-empty served
+graph list, and a prior successful update. A first-load failure is state 1's cousin — a
+plain error alert — not a stale-data view.
 
 ### Bounded response presentation
 
@@ -178,6 +205,13 @@ The dashboard-wide fetch is unchanged: the view issues one request for the
 whole dashboard (`graph_id` absent) and each chart reads its own graph's
 server-supplied counts out of that single bounded response. There is no
 per-graph fan-out (`DP-13-A`).
+
+The column names the states resolve against are the response's served `metrics`
+and `dimensions` — the **post-alias** keys actually present on the rows, read off
+the stored aggregate. They are not `config.metrics` / `config.x`, which are the
+operator's **pre-alias** input, and the client applies no `_{metric_agg}` suffix
+rule to them. See
+[Processing API → Served measure and dimension names](../03-processing/processing-api.md#served-measure-and-dimension-names).
 
 ---
 
@@ -332,7 +366,7 @@ The admin panel uses a tabbed interface with 4 sections. Tab state (pagination, 
 - [Auth Flow](auth-flow.md) — Detailed authentication and authorization flow
 - [Upload UI](upload-ui.md) — Upload modal and file handling details
 - [Frontend Security](frontend-security.md) — Security measures for all pages
-- [Authentication API](../../01-auth/auth-api.md) — Backend auth endpoint specs
-- [Processing API](../../03-processing/processing-api.md) — Upload and data endpoint specs
-- [Dashboards API](../../02-dashboards/dashboards-api.md) — Dashboard, graph, and filter CRUD
-- [Admin API](../../04-admin/admin-api.md) — Admin panel endpoints
+- [Authentication API](../01-auth/auth-api.md) — Backend auth endpoint specs
+- [Processing API](../03-processing/processing-api.md) — Upload, data endpoint specs, and the served `metrics` / `dimensions` / `layout` contract
+- [Dashboards API](../02-dashboards/dashboards-api.md) — Dashboard, graph, and filter CRUD
+- [Admin API](../04-admin/admin-api.md) — Admin panel endpoints

@@ -240,8 +240,13 @@ class TestRequestBoundaryOpenAPISchema:
 class _FakeGraphRow:
     """An ORM-like row carrying an attribute ``GraphRead`` does not declare.
 
-    The real ``db.models.graphs.Graph`` supplies ``updated_at``; ``GraphRead``
-    declares ``id`` and ``created_at`` but not ``updated_at``.
+    ``db.models.graphs.Graph`` has **no** ``updated_at`` column -- its mapped
+    columns are ``id``, ``dashboard_id``, ``name``, ``type``, ``config``,
+    ``dimensions``, ``metrics`` and ``created_at``. So ``updated_at`` here is a
+    synthetic extra attribute, not a stand-in for a real ORM column: the guard it
+    exercises is that ``from_attributes`` validation reads only the model's
+    declared fields off its source and ignores everything else on it, whatever
+    that source happens to carry.
     """
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:

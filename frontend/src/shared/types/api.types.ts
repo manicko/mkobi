@@ -241,6 +241,16 @@ export interface GraphDataWithConfig {
    */
   dimensions?: string[]
   layout?: ChartLayoutConfig
+  /**
+   * The graph's stored `config`, served unchanged. This declaration
+   * narrows the server's object to the members the renderer actually reads; the
+   * wire can carry every declared config key, including the reserved ones, so a
+   * member absent here is not a claim that the server omits it.
+   *
+   * `x`, `color` and `metrics` here are the operator's PRE-ALIAS
+   * input, and they resolve only when they appear among the served `dimensions` /
+   * `metrics` lists. `orientation` and `barmode` are read directly.
+   */
   config?: {
     x?: string
     color?: string

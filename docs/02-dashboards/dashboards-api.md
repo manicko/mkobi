@@ -394,11 +394,11 @@ A `dashboard_id` parameter is ignored rather than rejected, so a client that sen
     "name": "Revenue by Month",
     "type": "bar",
     "config": {
-      "x_axis": "month",
-      "y_axis": "revenue",
+      "x": "month",
+      "color": "year",
+      "metrics": ["revenue"],
       "orientation": "v",
-      "barmode": "group",
-      "colors": ["#1f77b4", "#ff7f0e"]
+      "barmode": "group"
     },
     "dimensions": ["month", "year"],
     "metrics": ["revenue", "cost"],
@@ -406,6 +406,11 @@ A `dashboard_id` parameter is ignored rather than rejected, so a client that sen
   }
 ]
 ```
+
+> The `config` keys in this example — and every other key it may carry — are drawn
+> from a **closed declared vocabulary of fifteen keys**. `x_axis`, `y_axis` and
+> `colors` are **not** keys: an undeclared key is refused by name at the request
+> boundary. See [The config vocabulary](../11-guides/extend-graphs.md#the-config-vocabulary).
 
 ---
 
@@ -445,9 +450,12 @@ Admin only.
   "name": "Profit Trend",
   "type": "line",
   "config": {
-    "x_axis": "date",
-    "y_axis": "profit",
-    "yoy_mode": "percent"
+    "x": "date",
+    "metrics": ["profit"],
+    "layout": {
+      "title": "Profit Trend",
+      "yaxis": {"title": "Profit", "type": "linear"}
+    }
   },
   "dimensions": ["date"],
   "metrics": ["profit"]
@@ -509,13 +517,22 @@ Graphs support the following types, defined by the `GraphType` StrEnum:
 
 ### Graph Features
 
-| Feature        | Description                                                                 |
-| -------------- | --------------------------------------------------------------------------- |
-| `multi-axis`   | Dual Y-axes for comparing metrics with different scales                     |
-| `combined`     | Mixed chart types (e.g., bar + line) in a single graph                      |
-| `YoY`          | Year-over-year comparison; modes: `absolute` (value diff) or `percent` (% change) |
+Feature configuration is stored in the `config` JSONB field of the `graphs` table,
+but **a declared key is not a working feature**. The keys below are *reserved*: they
+are validated at the request boundary, stored and returned on read, and read by
+nothing in `src/` or `frontend/src/`. They are kept deliberately rather than silently
+ignored, and lifting them needs a consumer as well as a producer — nothing in this
+repository can write them, because no graph-editing UI exists.
 
-Feature configuration is stored in the `config` JSONB field of the `graphs` table.
+| Key          | Intended feature                                                              | Status |
+| ------------ | ----------------------------------------------------------------------------- | ------ |
+| `secondary_y` | Dual Y-axes for comparing metrics with different scales                       | **RESERVED** — no consumer |
+| `combined`   | Mixed chart types (e.g. bar + line) in a single graph                        | **Not a config key** — refused by name |
+| `yoy`        | Year-over-year comparison; modes: `absolute` (value diff) or `percent` (% change) | **RESERVED** — no consumer |
+| `xaxis`, `yaxis` | Axis title, type and range, at the config level                         | **RESERVED** — deliberately unwired; the renderer reads axis configuration from the response's `layout` field only |
+
+See [The config vocabulary](../11-guides/extend-graphs.md#the-config-vocabulary) for
+the complete classification of all fifteen declared keys.
 
 ---
 
@@ -651,14 +668,28 @@ Admin only.
 
 ## Filter Types
 
-Filters support the following types, defined by the `FilterType` StrEnum:
+Filters support the following types. The controlling vocabulary for what a filter
+value may be is **not** `FilterType` — it is `EvaluableFilterType`
+(`src/mkobi/models/dashboard.py`), which is the closed set a submitted value can
+actually be evaluated against:
 
-| Type          | Description                                      | UI Control          |
-| ------------- | ------------------------------------------------ | ------------------- |
-| `select`      | Single value selection                           | Dropdown            |
-| `multiselect` | Multiple value selection                         | Multi-select        |
-| `range`       | Numeric range (min/max)                          | Range slider        |
-| `date`        | Date or date range selection                     | Date picker         |
+| Type          | Description                              | UI Control          | Value shape on `GET /data/aggregated` |
+| ------------- | ---------------------------------------- | ------------------- | ------------------------------------- |
+| `select`      | Single value selection                   | Dropdown            | Scalar (`->>` equality) |
+| `multiselect` | Multiple value selection                 | Multi-select        | **`list[str]`** (membership union); an empty list constrains nothing |
+| `date`        | Single date selection                    | Date picker         | Scalar (`->>` equality) |
+
+There is **no** evaluable `range`. The `range` filter type is **retired**: it has no
+control in the filters panel, and a stored `range` filter is refused **by name** —
+`422` on a dashboard save naming the field and the supported set, and `422` on the
+aggregate read naming the filter and its reason. A dashboard that already stores one
+renders a **non-blocking warning inside the filters panel** and sends no value; it is
+**not** blanked and it is **not** an empty state.
+
+The `FilterType.RANGE` enum member and the `filter_type` PostgreSQL label **still
+exist** and are inert; their removal is deferred to phase 14 (`C14-17`). The
+`filters.type` column therefore still accepts the label — the retirement is in the
+*evaluation*, not in the schema. See [Database Enums](../09-database/enums.md#4-filtertype).
 
 ### Filter Value Source
 
@@ -673,13 +704,27 @@ When `source === "data"`, the frontend fetches values from `GET /api/v1/dashboar
 
 ### Backend Implementation
 
-Filters are applied on the backend through parameterized SQL queries against the `aggregated_data` table. The `dims` JSONB column is filtered using PostgreSQL JSONB operators. Filter values are never interpolated into SQL strings — all queries use SQLAlchemy parameterized queries.
+Filters are applied on the backend through parameterized SQL queries against the `aggregated_data` table. Filter values are never interpolated into SQL strings — all queries use SQLAlchemy parameterized queries.
 
 Example filter application flow:
 
-1. Frontend sends selected filter values as query parameters
-2. Backend constructs a query filtering `aggregated_data.dims` using JSONB containment operators (`@>`)
-3. Filtered results are returned as graph data
+1. Frontend sends selected filter values as a JSON-encoded `filters` query parameter
+2. Backend validates the payload's shape and bounds, then checks each submitted key's **admissibility** against the dashboard's declared filter types
+3. Each key becomes one predicate on `aggregated_data.dims`: a scalar uses `->>` `=`, a list uses `->>` `IN (…)`
+4. Filtered results are returned as graph data
+
+The `->>` extraction operator is what the predicates use, and `->>` does **not** reach
+the `idx_aggregated_data_dims_gin` index; the read is served by
+`idx_aggregated_data_dashboard_graph`. See [Indexes](../09-database/indexes.md#4-idx_aggregated_data_dims_gin)
+for what does and does not reach that GIN index.
+
+A submitted value is additionally checked for **admissibility** before any branch is
+taken: a `range`-declared key is refused by name whatever the value's shape, and a
+`list` is refused by name on any key not declared `multiselect`. Both refusals are
+`422` RFC 7807 responses carrying `{filter, declared_type, reason}` in `details`. The
+full rule, and the **bound** that a two-string value on an undeclared filter is
+indistinguishable from a two-value multiselect, are documented once in
+[Processing API → Filter values and admissibility](../03-processing/processing-api.md#filter-values-and-admissibility).
 
 ---
 
@@ -1100,10 +1145,14 @@ untruncated counts alongside the bounded rows:
       "graph_id": "…",
       "type": "bar",
       "name": "Sales by Category",
-      "data": [ {"category": "A", "revenue": 1000} ],
+      "data": [ {"category": "A", "revenue_sum": 1000} ],
+      "metrics": ["revenue_sum"],
+      "dimensions": ["category"],
       "returned_rows": 1,
       "total_rows": 5000,
-      "rows_truncated": true
+      "rows_truncated": true,
+      "layout": null,
+      "config": {"x": "category", "metrics": ["revenue"]}
     }
   ],
   "total_rows": 5000,
@@ -1120,6 +1169,15 @@ untruncated counts alongside the bounded rows:
   (`DP-11-B`).
 - `GraphDataResponse.rows_truncated` — true exactly when `data` holds fewer
   rows than `total_rows`.
+- `GraphDataResponse.metrics` / `.dimensions` — the **served, post-alias** column
+  names actually present on the served rows, in first-seen order. Optional with an
+  empty default, so neither is in the OpenAPI `required` list. These are **not**
+  `config["metrics"]` / `config["x"]`, which are the operator's pre-alias input; a
+  client reading the served names applies no `_{metric_agg}` suffix rule to them.
+- `GraphDataResponse.layout` — the graph's stored `config["layout"]`, served as
+  stored, or `null` when none was stored. **Not** a merge of the config-level
+  `title` / `showlegend` / `xaxis` / `yaxis` twins.
+- `GraphDataResponse.config` — the graph's stored `config` object, unchanged.
 - `AggregatedDataResponse.total_rows` — the dashboard-wide true row count.
 - `AggregatedDataResponse.truncated` — true when any graph was bounded.
 
@@ -1137,8 +1195,8 @@ not from any client-side count.
 ### Filter payload bounds (`PRF-5`)
 
 The `filters` query parameter is a JSON-encoded object. Each key becomes one
-`->>` equality in the aggregate query, and nothing previously bounded its
-width, so any caller could make the planner build an arbitrarily large
+predicate on `aggregated_data.dims` in the aggregate query, and nothing previously
+bounded its width, so any caller could make the planner build an arbitrarily large
 predicate set. The application now validates the payload against four bounds
 (`src/mkobi/models/data.py`, `AggregatedFiltersRequest`):
 
@@ -1146,7 +1204,7 @@ predicate set. The application now validates the payload against four bounds
 | --- | --- | --- |
 | Filter keys | 20 | `MAX_FILTER_KEYS` |
 | Key-name length | 64 characters | `MAX_FILTER_KEY_LENGTH` |
-| Value length | 256 characters | `MAX_FILTER_VALUE_LENGTH` |
+| Value length | 256 characters **per element** | `MAX_FILTER_VALUE_LENGTH` |
 | Serialised payload | 4 KB | `MAX_FILTER_PAYLOAD_BYTES` |
 
 **Derivation.** Phase-1 measurement found that query *execution* time stays in
@@ -1163,8 +1221,36 @@ proxy.
 
 A payload that violates any bound is rejected with the same RFC 7807
 `VALIDATION_ERROR` (HTTP `422`) as malformed JSON, raised through
-`AppException`. The repository query is unchanged: `->>` equality per key, with
-no interpolation.
+`AppException`. The length bound is measured **element-wise** for a list value
+rather than through the scalar `len(str(value))` branch: it *attributes* the
+violation, naming the offending key and the offending element's length, and it
+*widens* acceptance for multi-element lists the scalar branch used to refuse.
+No per-key element-count bound is applied — a list compiles to **one** membership
+predicate regardless of length, so the plan-time rationale does not apply, and
+the payload-size bound already caps the total element count.
+
+### Filter values: membership and admissibility
+
+A value may be a **scalar** or a **`list[str]`**, and the two are decided in two
+different layers:
+
+- **Shape**, in `AggregatedFiltersRequest`: the union above. A payload that violates
+  the union is a `422`.
+- **Admissibility**, in `DataService.validate_filter_values`: whether the *declared
+  type* of the submitted key can evaluate the value at all. A `range`-declared key is
+  refused **by name** whatever the shape; a `list` is refused **by name** on any key
+  not declared `multiselect`.
+
+A **list** means *membership*: the returned rows are the union over the listed values.
+An **empty list** imposes **no** constraint and returns everything. A **scalar**
+filter's behaviour is unchanged. A value is bounded per element; the whole payload
+remains bounded.
+
+The complete admissibility table, the RFC 7807 refusal shape, and the **bound** — a
+two-string value on a dashboard that declares no filters is permitted and matched as a
+membership test, because it is indistinguishable on the wire from a legitimate
+two-value multiselect and is unreachable from anything the application produces — are
+stated once in [Processing API → Filter values and admissibility](../03-processing/processing-api.md#filter-values-and-admissibility). That bound is **not** a claim that the retired `range` hole is closed.
 
 ---
 
