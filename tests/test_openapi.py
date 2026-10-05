@@ -240,6 +240,38 @@ class TestGraphDataResponseDeclaresServedRowKeys:
             )
 
 
+class TestAggregatedFiltersRequestPublishesListValues:
+    """The widened ``filters`` payload schema publishes a string-array branch.
+
+    The union admits ``list[str]`` so a multiselect value can be evaluated as a
+    membership test. This pins the published schema as **additive**: the array
+    branch is present and every previously-accepted scalar branch survives, so
+    no existing client is invalidated.
+
+    Note: ``AggregatedFiltersRequest`` is built at runtime inside the route
+    handler (``filters`` is a plain ``str`` query parameter), so it is **not** a
+    component of ``app.openapi()``. The publication claim is therefore asserted
+    against the model's own JSON Schema -- the schema the plan intended to pin.
+    """
+
+    def test_filters_payload_schema_publishes_a_string_array_branch(self) -> None:
+        """``additionalProperties.anyOf`` carries the array and all scalar branches."""
+        from mkobi.models.data import AggregatedFiltersRequest
+
+        schema = AggregatedFiltersRequest.model_json_schema()
+        any_of = schema["properties"]["filters"]["additionalProperties"]["anyOf"]
+
+        # Order-independent: the scalar branches are compared as a set.
+        scalar_types = {
+            branch["type"] for branch in any_of if "items" not in branch
+        }
+        assert {"string", "integer", "number", "boolean"} <= scalar_types
+
+        array_branches = [branch for branch in any_of if branch.get("type") == "array"]
+        assert len(array_branches) == 1
+        assert array_branches[0]["items"] == {"type": "string"}
+
+
 class TestDocumentUrlsAreGatedTogether:
     """The three FastAPI document URLs share one production gate.
 

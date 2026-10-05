@@ -1,5 +1,6 @@
 import re
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -9,15 +10,75 @@ from mkobi.models.enums import DashboardPermission, GraphType
 from mkobi.models.layout import LayoutRead
 
 
-class DashboardConfig(BaseModel):
-    """Dashboard configuration model."""
+class EvaluableFilterType(StrEnum):
+    """The closed vocabulary of filter controls the aggregate read can evaluate.
+
+    This is deliberately **not** ``mkobi.models.enums.FilterType``. That enum is
+    the *storage* vocabulary (a live PostgreSQL enum whose labels are inert and
+    whose retirement is ``C14-17``); this one is the set of declared types a
+    submitted filter value can actually be evaluated against. Aliasing the two
+    would make the storage enum authoritative over evaluability and recreate the
+    defect this boundary closes.
+
+    ``range`` is absent on purpose: ``D-16-2`` removed it until a range
+    definition exists, and this model is where a stored ``range`` is refused
+    **by name** -- on a dashboard save, naming one field, which cannot blank an
+    already-rendered dashboard.
+    """
+
+    SELECT = "select"
+    MULTISELECT = "multiselect"
+    DATE = "date"
+
+
+class DashboardFilterConfig(BaseModel):
+    """One declared dashboard filter, as submitted to a write boundary.
+
+    This element validates a **submission**; it does not own the stored shape.
+    ``DashboardConfig.filters`` stays ``list[dict[str, Any]] | None`` so the
+    read path (``DashboardRead.config``) keeps passing every already-stored
+    element through byte-for-byte. ``extra="allow"`` preserves and passes
+    through any additional keys an operator stored (``options``, ``default``,
+    ``min``, ``max`` ...) instead of silently deleting them on a save round
+    trip. ``type`` is the closed ``EvaluableFilterType`` vocabulary, so a
+    declared ``range`` is refused with a named field.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    field: str
+    type: EvaluableFilterType
+    source: str | None = None
+    multi: bool | None = None
+
+
+class _DashboardConfigBase[T](BaseModel):
+    """Shared shape of the dashboard config, parameterised by its filter element.
+
+    ``T`` is the element type of ``filters``: ``dict[str, Any]`` for the
+    storage/read shape (``DashboardConfig``) and ``DashboardFilterConfig`` for
+    the write-boundary shape (``DashboardWriteConfig``). Parameterising the
+    shared shape -- rather than narrowing a mutable field in a subclass -- keeps
+    both concrete models independently typed without a subclass override mypy
+    would reject.
+    """
 
     graph_types: list[GraphType]
-    filters: list[dict[str, Any]] | None = None
+    filters: list[T] | None = None
     aggregations: list[dict[str, Any]] | None = None
     charts: list[dict[str, Any]] | None = None
     title: str | None = None
     description: str | None = None
+
+
+class DashboardConfig(_DashboardConfigBase[dict[str, Any]]):
+    """Dashboard configuration model -- the storage and read shape.
+
+    ``filters`` is the tolerant ``list[dict[str, Any]] | None``: this is
+    simultaneously what ``DashboardService`` stores (``model_dump``) and what
+    ``DashboardRead.config`` serves, so it must keep today's passthrough
+    behaviour byte-for-byte. A stored ``range`` element reads back unchanged.
+    """
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -26,7 +87,7 @@ class DashboardConfig(BaseModel):
                 "graph_types": ["bar", "line"],
                 "filters": [
                     {"field": "year", "type": "select"},
-                    {"field": "category", "type": "multi_select"},
+                    {"field": "category", "type": "multiselect"},
                 ],
                 "aggregations": [
                     {"type": "sum", "field": "revenue"},
@@ -47,12 +108,25 @@ class DashboardConfig(BaseModel):
     )
 
 
+class DashboardWriteConfig(_DashboardConfigBase[DashboardFilterConfig]):
+    """The write-boundary shape of the dashboard config.
+
+    Identical to ``DashboardConfig`` except that each ``filters`` element is a
+    validated ``DashboardFilterConfig``. Used by ``DashboardCreate`` and
+    ``DashboardUpdate`` only; ``DashboardRead.config`` keeps the tolerant
+    ``DashboardConfig``, so this typing is **write-only** and never makes a read
+    refuse an already-stored value.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class DashboardCreate(BaseModel):
     """Model for creating new dashboard."""
 
     name: str
     description: str | None = Field(None, max_length=200)
-    config: DashboardConfig = DashboardConfig(graph_types=[GraphType.BAR])
+    config: DashboardWriteConfig = DashboardWriteConfig(graph_types=[GraphType.BAR])
     layout_id: UUID | None = None
 
     @field_validator('name')
@@ -138,7 +212,7 @@ class DashboardUpdate(BaseModel):
 
     name: str | None = None
     description: str | None = Field(None, max_length=200)
-    config: DashboardConfig | None = None
+    config: DashboardWriteConfig | None = None
     layout_id: UUID | None = None
 
     model_config = ConfigDict(

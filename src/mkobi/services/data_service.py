@@ -22,7 +22,7 @@ from mkobi.interfaces.repository_interfaces import (
 )
 from mkobi.interfaces.service_interfaces import IDataService, IProcessingConfigService
 from mkobi.models.data import ProcessingResultData, ProcessingResult, ProcessingStatusResponse, UploadResponse
-from mkobi.models.enums import DashboardPermission, ErrorCode, ProcessingStatus, UploadMode
+from mkobi.models.enums import DashboardPermission, ErrorCode, FilterType, ProcessingStatus, UploadMode
 from mkobi.services.file_processing import process_upload_with_session
 from mkobi.utils.exceptions import AppException
 
@@ -300,6 +300,113 @@ class DataService(IDataService):
     ) -> int:
         """Return the dashboard-wide true, untruncated aggregate row count."""
         return await self.agg_repo.count_by_dashboard_id(dashboard_id, db)
+
+    async def validate_filter_values(
+        self,
+        dashboard_id: UUID,
+        filters: dict[str, Any] | None,
+        db: AsyncSession,
+    ) -> None:
+        """Refuse a submitted filter value the declared type cannot evaluate.
+
+        This is the **admissibility** rule, as distinct from the transport
+        *shape* rule enforced by ``AggregatedFiltersRequest``. Per submitted key:
+
+        1. dashboard unreadable, or its stored ``config["filters"]`` absent /
+           empty / not a list -> **permissive**.
+        2. key not declared among the stored filter elements' ``field`` ->
+           **permissive** (fixtures create dashboards with no ``filters`` key).
+        3. declared type is ``FilterType.RANGE`` -> refuse **by name**, whatever
+           the value's shape (a scalar on a range-declared filter is meaningless
+           too; one rule, not two).
+        4. declared type is not ``FilterType.MULTISELECT`` and the value is a
+           ``list`` -> refuse **by name**.
+        5. otherwise -> permit.
+
+        Refusal raises ``AppException`` with the existing
+        ``ErrorCode.VALIDATION_ERROR`` (422, already RFC 7807) and ``details``
+        naming the filter, its declared type and the reason -- so a client gets
+        a machine-readable pair without parsing prose.
+
+        Known bound: a dashboard declaring **no** ``filters`` at all that
+        receives ``["0", "100"]`` is permitted and matched as a membership test.
+        That wire form is indistinguishable from a legitimate two-value
+        multiselect, and an undeclared filter carries no type to discriminate
+        with. It is unreachable from any input the application produces; it is
+        not covered for a non-browser client, and is recorded as a bound rather
+        than a closed hole.
+        """
+        declared = await self._declared_filter_types(dashboard_id, db)
+        if not declared or not filters:
+            return
+        for key, value in filters.items():
+            declared_type = declared.get(key)
+            if declared_type is None:
+                continue
+            if declared_type == FilterType.RANGE.value:
+                self._refuse_filter_value(
+                    key,
+                    declared_type,
+                    "the 'range' filter type has been removed and no range "
+                    "definition exists",
+                )
+            if declared_type != FilterType.MULTISELECT.value and isinstance(
+                value, list
+            ):
+                self._refuse_filter_value(
+                    key,
+                    declared_type,
+                    "a list value is only valid for a filter declared "
+                    "'multiselect'",
+                )
+
+    async def _declared_filter_types(
+        self, dashboard_id: UUID, db: AsyncSession
+    ) -> dict[str, str]:
+        """Return ``field -> declared type`` from the dashboard's stored config.
+
+        Returns an empty mapping when the dashboard is unreadable or its config
+        carries no usable ``filters`` list, which makes the caller permissive.
+        """
+        if self.dashboard_repo is None:
+            return {}
+        dashboard = await self.dashboard_repo.get(id=dashboard_id, db=db)
+        if dashboard is None:
+            return {}
+        config = dashboard.config
+        if not isinstance(config, dict):
+            return {}
+        stored = config.get("filters")
+        if not isinstance(stored, list) or not stored:
+            return {}
+        declared: dict[str, str] = {}
+        for element in stored:
+            if not isinstance(element, dict):
+                continue
+            field = element.get("field")
+            declared_type = element.get("type")
+            if isinstance(field, str) and isinstance(declared_type, str):
+                declared[field] = declared_type
+        return declared
+
+    @staticmethod
+    def _refuse_filter_value(
+        key: str, declared_type: str, reason: str
+    ) -> None:
+        """Raise the RFC 7807 refusal for one unevaluable filter value."""
+        raise AppException(
+            code=ErrorCode.VALIDATION_ERROR,
+            detail=(
+                f"Filter '{key}' cannot be applied: {reason}. "
+                f"Declared filter type is '{declared_type}', which has no "
+                "supported evaluation in aggregated-data filters."
+            ),
+            details={
+                "filter": key,
+                "declared_type": declared_type,
+                "reason": reason,
+            },
+        )
 
     async def get_available_metrics(
         self, dashboard_id: UUID, db: AsyncSession,

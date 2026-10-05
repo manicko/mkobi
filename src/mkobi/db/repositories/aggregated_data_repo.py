@@ -208,6 +208,15 @@ class AggregatedDataRepository(IAggregatedDataRepository):
         same predicates, so the reported total can never disagree with the rows
         the same request is allowed to return.
 
+        A ``list`` value produces a membership predicate over the **same**
+        ``->>`` operator the scalar branch uses, so a ``select`` and a
+        ``multiselect`` over one dimension can never disagree. An empty list is
+        treated as no constraint (an empty multi-select expresses no
+        constraint); ``in_([])`` would compile to an always-false predicate and
+        blank every chart with no visible cause. The ``->>`` form leaves
+        ``idx_aggregated_data_dims_gin`` unreached, and the read continues to be
+        served by ``idx_aggregated_data_dashboard_graph``.
+
         Args:
             graph_id: Graph identifier (UUID).
             dashboard_id: Optional dashboard identifier for additional filtering.
@@ -225,9 +234,16 @@ class AggregatedDataRepository(IAggregatedDataRepository):
             )
         if filters:
             for key, value in filters.items():
-                conditions.append(
-                    aggregated_data_model.AggregatedData.dims[key].astext == str(value)
-                )
+                if isinstance(value, list):
+                    if not value:
+                        continue
+                    conditions.append(
+                        aggregated_data_model.AggregatedData.dims[key].astext.in_(value)
+                    )
+                else:
+                    conditions.append(
+                        aggregated_data_model.AggregatedData.dims[key].astext == str(value)
+                    )
         return conditions
 
     async def get_by_graph_id(

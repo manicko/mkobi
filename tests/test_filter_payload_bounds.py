@@ -180,3 +180,330 @@ class TestFilterPayloadBounds:
         assert graph["returned_rows"] == 1
         assert graph["total_rows"] == 1
         assert graph["data"][0]["category"] == "Filter-cat-0"
+
+    async def test_multiselect_returns_the_union_of_the_scalar_results(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """A two-value list matches the union of the two scalar results.
+
+        Discriminates the membership branch: today a list is a 422. Set
+        equality, not a count, so an "any non-empty list" stub cannot pass.
+       """
+        dashboard_id, graph_id = await _dashboard_with_rows(
+            async_db_session, test_user["id"], rows=5
+        )
+
+        multi = await authenticated_client.get(
+            _url(dashboard_id, graph_id),
+            params=_params(
+                dashboard_id,
+                graph_id,
+                json.dumps({"category": ["Filter-cat-1", "Filter-cat-3"]}),
+            ),
+        )
+        assert multi.status_code == status.HTTP_200_OK
+        graph = multi.json()["graphs"][0]
+        assert graph["returned_rows"] == 2
+        assert graph["total_rows"] == 2
+        assert sorted(r["category"] for r in graph["data"]) == [
+            "Filter-cat-1",
+            "Filter-cat-3",
+        ]
+
+        # Cross-check the same two values as scalars, so "union" is proven.
+        for value in ("Filter-cat-1", "Filter-cat-3"):
+            scalar = await authenticated_client.get(
+                _url(dashboard_id, graph_id),
+                params=_params(
+                    dashboard_id, graph_id, json.dumps({"category": value})
+                ),
+            )
+            assert scalar.status_code == status.HTTP_200_OK
+            assert scalar.json()["graphs"][0]["returned_rows"] == 1
+
+    async def test_single_element_multiselect_matches_that_element(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """A one-element list matches exactly that element."""
+        dashboard_id, graph_id = await _dashboard_with_rows(
+            async_db_session, test_user["id"], rows=5
+        )
+
+        response = await authenticated_client.get(
+            _url(dashboard_id, graph_id),
+            params=_params(
+                dashboard_id,
+                graph_id,
+                json.dumps({"category": ["Filter-cat-2"]}),
+            ),
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        graph = response.json()["graphs"][0]
+        assert graph["returned_rows"] == 1
+        assert graph["data"][0]["category"] == "Filter-cat-2"
+
+    async def test_empty_multiselect_is_not_a_constraint(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """An empty list imposes no constraint, returning every row.
+
+        Pins the chosen semantics: ``in_([])`` compiles to an always-false
+        predicate and would return zero rows, blanking every chart.
+        """
+        dashboard_id, graph_id = await _dashboard_with_rows(
+            async_db_session, test_user["id"], rows=5
+        )
+
+        response = await authenticated_client.get(
+            _url(dashboard_id, graph_id),
+            params=_params(
+                dashboard_id, graph_id, json.dumps({"category": []})
+            ),
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        graph = response.json()["graphs"][0]
+        assert graph["returned_rows"] == 5
+        assert graph["total_rows"] == 5
+
+    async def test_multiselect_does_not_match_an_unlisted_value(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """A list with one matching and one unknown value matches only the known."""
+        dashboard_id, graph_id = await _dashboard_with_rows(
+            async_db_session, test_user["id"], rows=5
+        )
+
+        response = await authenticated_client.get(
+            _url(dashboard_id, graph_id),
+            params=_params(
+                dashboard_id,
+                graph_id,
+                json.dumps({"category": ["Filter-cat-0", "Nope"]}),
+            ),
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        graph = response.json()["graphs"][0]
+        assert graph["returned_rows"] == 1
+        assert graph["data"][0]["category"] == "Filter-cat-0"
+
+    async def test_scalar_filter_result_is_unchanged(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """The compatibility floor: a scalar filter returns the same rows.
+
+        This passes before and after the branch by design; it exists to fail if
+        the scalar expression is ever touched.
+        """
+        dashboard_id, graph_id = await _dashboard_with_rows(
+            async_db_session, test_user["id"], rows=5
+        )
+
+        response = await authenticated_client.get(
+            _url(dashboard_id, graph_id),
+            params=_params(
+                dashboard_id,
+                graph_id,
+                json.dumps({"category": "Filter-cat-4"}),
+            ),
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        graph = response.json()["graphs"][0]
+        assert graph["returned_rows"] == 1
+        assert graph["total_rows"] == 1
+        assert graph["data"][0] == {
+            "category": "Filter-cat-4",
+            "revenue": 104,
+        }
+
+    async def test_list_value_element_respects_the_value_length_bound(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """An over-long list element is rejected, naming the value-length bound.
+
+        Discriminates the per-element bound: after a naive widening the list
+        would measure its repr and this would return 200. The route wraps the
+        model's ``ValidationError`` into a generic 422, so the bound's own
+        message is pinned against the model -- the thing that enforces it --
+        rather than the discarded route body.
+        """
+        from pydantic import ValidationError
+
+        from mkobi.models.data import AggregatedFiltersRequest
+
+        dashboard_id, graph_id = await _dashboard_with_rows(
+            async_db_session, test_user["id"], rows=1
+        )
+        element = "v" * (MAX_FILTER_VALUE_LENGTH + 1)
+
+        response = await authenticated_client.get(
+            _url(dashboard_id, graph_id),
+            params=_params(
+                dashboard_id, graph_id, json.dumps({"category": [element]})
+            ),
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.json()["code"] == "VALIDATION_ERROR"
+
+        try:
+            AggregatedFiltersRequest(filters={"category": [element]})
+        except ValidationError as exc:
+            message = exc.errors()[0]["msg"]
+        else:  # pragma: no cover - the bound is enforced by construction
+            raise AssertionError("an over-long list element was accepted")
+        assert "category" in message
+        assert str(MAX_FILTER_VALUE_LENGTH) in message
+
+
+async def _dashboard_declaring_filters(
+    async_db_session,
+    owner_id,
+    *,
+    filters: list[dict[str, object]],
+    rows: int = 5,
+) -> tuple[str, str]:
+    """Create a dashboard whose stored config declares ``filters``.
+
+    Mirrors ``_setup_dashboard_with_aggregates`` (same service calls, grant and
+    commit) with an extra ``filters`` config argument, so the read backstop has
+    a declared type to compare against. The shared helper hard-codes a config
+    with no ``filters`` key and is left unmodified.
+    """
+    from uuid import uuid4
+
+    from mkobi.data.storage.manager import StorageManager
+    from mkobi.db.repositories.access_repo import AccessRepository
+    from mkobi.db.repositories.dashboard_repo import DashboardRepository
+    from mkobi.db.repositories.graph_repo import GraphRepository
+    from mkobi.models.enums import DashboardPermission
+    from mkobi.models.graph import GraphCreate
+    from mkobi.services.dashboard_service import DashboardService
+    from mkobi.services.graph_service import GraphService
+
+    ds = DashboardService(DashboardRepository(), AccessRepository())
+    dashboard = await ds.create_dashboard(
+        name=f"filter-backstop-{uuid4().hex[:8]}",
+        config={"graph_types": ["bar"], "filters": filters},
+        owner_id=owner_id,
+        db=async_db_session,
+    )
+
+    graph_service = GraphService(GraphRepository())
+    graph = await graph_service.create(
+        GraphCreate(
+            name="Filter",
+            type="bar",
+            dashboard_id=dashboard.id,
+            config={"title": "Filter"},
+            dimensions=["category"],
+            metrics=["revenue"],
+        ),
+        db=async_db_session,
+    )
+
+    await AccessRepository().grant_access(
+        db=async_db_session,
+        user_id=owner_id,
+        dashboard_id=dashboard.id,
+        permission=DashboardPermission.VIEW,
+    )
+    await async_db_session.commit()
+
+    storage = StorageManager(db=async_db_session)
+    await storage.save_aggregates(
+        dashboard_id=dashboard.id,
+        aggregates=[
+            {
+                "graph_id": graph.id,
+                "dims": {"category": f"Filter-cat-{i}"},
+                "metrics": {"revenue": 100 + i},
+            }
+            for i in range(rows)
+        ],
+        clear_old=True,
+    )
+    return str(dashboard.id), str(graph.id)
+
+
+class TestFilterValueAdmissibilityBackstop:
+    """The read backstop refuses an undevaluable value by its declared type."""
+
+    async def test_read_backstop_refuses_a_range_declared_filter_by_name(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """A stored ``range`` filter refuses a list value, naming the reason.
+
+        The payload must be ``["0","100"]``: a numeric list is refused by the
+        union before the service sees it, so only the string form reaches the
+        backstop. Today this is a 422 with no ``details``; after the widening
+        alone it would be a silent 200 with zero rows.
+        """
+        dashboard_id, graph_id = await _dashboard_declaring_filters(
+            async_db_session,
+            test_user["id"],
+            filters=[{"field": "price", "type": "range"}],
+        )
+
+        response = await authenticated_client.get(
+            _url(dashboard_id, graph_id),
+            params=_params(
+                dashboard_id, graph_id, json.dumps({"price": ["0", "100"]})
+            ),
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        body = response.json()
+        assert body["code"] == "VALIDATION_ERROR"
+        assert body["details"]["filter"] == "price"
+        assert body["details"]["declared_type"] == "range"
+
+    async def test_read_backstop_permits_a_list_on_a_declared_multiselect(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """A list on a declared ``multiselect`` is permitted and evaluated."""
+        dashboard_id, graph_id = await _dashboard_declaring_filters(
+            async_db_session,
+            test_user["id"],
+            filters=[{"field": "category", "type": "multiselect"}],
+        )
+
+        response = await authenticated_client.get(
+            _url(dashboard_id, graph_id),
+            params=_params(
+                dashboard_id,
+                graph_id,
+                json.dumps({"category": ["Filter-cat-0", "Filter-cat-1"]}),
+            ),
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["graphs"][0]["returned_rows"] == 2
+
+    async def test_read_backstop_permits_an_undeclared_filter_key(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """An undeclared key stays permitted, so existing fixtures keep working.
+
+        Anti-over-refusal: this fails if the backstop ever demands that every
+        submitted key be declared.
+        """
+        dashboard_id, graph_id = await _dashboard_with_rows(
+            async_db_session, test_user["id"], rows=5
+        )
+
+        response = await authenticated_client.get(
+            _url(dashboard_id, graph_id),
+            params=_params(
+                dashboard_id,
+                graph_id,
+                json.dumps({"category": ["Filter-cat-0", "Filter-cat-1"]}),
+            ),
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["graphs"][0]["returned_rows"] == 2
+

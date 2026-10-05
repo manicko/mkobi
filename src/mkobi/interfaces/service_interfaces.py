@@ -519,6 +519,21 @@ class IDataService(abc.ABC):
         pass
 
     @abc.abstractmethod
+    async def validate_filter_values(
+        self,
+        dashboard_id: UUID,
+        filters: dict[str, Any] | None,
+        db: AsyncSession,
+    ) -> None:
+        """Refuse a submitted filter value its declared type cannot evaluate.
+
+        Read admissibility: a declared ``range`` filter, or a ``list`` value on
+        a filter not declared ``multiselect``, is refused by name with the
+        existing ``VALIDATION_ERROR``. An undeclared key is permitted.
+        """
+        pass
+
+    @abc.abstractmethod
     async def get_available_metrics(
         self,
         dashboard_id: UUID,

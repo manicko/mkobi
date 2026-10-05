@@ -499,6 +499,16 @@ MAX_FILTER_VALUE_LENGTH = 256
 MAX_FILTER_PAYLOAD_BYTES = 4096
 
 
+# One admissible filter value as it arrives on the wire. This alias decides
+# **shape** only; ``DataService.validate_filter_values`` decides admissibility
+# (which declared filter types may carry a given shape). ``list[str]`` is the
+# only list form -- the sole list producer the application has is a
+# ``<Select multiple>`` over ``FilterValuesResponse.values``, and a numeric list
+# (the retired slider's output) is refused here rather than reaching a text
+# comparison in the repository.
+FilterValue = str | int | float | bool | list[str]
+
+
 class AggregatedFiltersRequest(BaseModel):
     """Validated ``filters`` payload for the aggregated data endpoint.
 
@@ -507,11 +517,17 @@ class AggregatedFiltersRequest(BaseModel):
     count, a maximum key-name length, a maximum value length, and a maximum
     serialised payload size. See ``MAX_FILTER_*`` for the derivation.
 
+    A ``list[str]`` value here means **"a list was supplied"**, not "a
+    multiselect was meant" -- this model decides shape only. Which declared
+    filter types may carry a list is decided by
+    ``DataService.validate_filter_values`` (read admissibility); ``range`` is
+    refused there **by name**.
+
     The enforced limits reject with a Pydantic ``ValidationError``, which the
     route maps to the same RFC 7807 ``VALIDATION_ERROR`` as malformed JSON.
     """
 
-    filters: dict[str, str | int | float | bool]
+    filters: dict[str, FilterValue]
 
     model_config = ConfigDict(
         extra="forbid",
@@ -528,9 +544,17 @@ class AggregatedFiltersRequest(BaseModel):
     @field_validator("filters")
     @classmethod
     def validate_filter_bounds(
-        cls, v: dict[str, str | int | float | bool]
-    ) -> dict[str, str | int | float | bool]:
-        """Enforce key-count, key-length, value-length and payload-size bounds."""
+        cls, v: dict[str, FilterValue]
+    ) -> dict[str, FilterValue]:
+        """Enforce key-count, key-length, value-length and payload-size bounds.
+
+        A list value is measured element-wise: today's ``len(str(value))``
+        measures the *repr* of the list, which lets a list evade
+        ``MAX_FILTER_VALUE_LENGTH`` per element. No per-key element-count bound
+        is applied: a list compiles to **one** membership predicate regardless
+        of element count, so ``PRF-5``'s plan-time rationale does not apply, and
+        ``MAX_FILTER_PAYLOAD_BYTES`` already caps the total element count.
+        """
         if len(v) > MAX_FILTER_KEYS:
             raise ValueError(
                 f"filters accepts at most {MAX_FILTER_KEYS} keys, got {len(v)}"
@@ -541,6 +565,15 @@ class AggregatedFiltersRequest(BaseModel):
                     f"filter key names accept at most {MAX_FILTER_KEY_LENGTH} "
                     f"characters, got {len(key)}"
                 )
+            if isinstance(value, list):
+                for element in value:
+                    if len(element) > MAX_FILTER_VALUE_LENGTH:
+                        raise ValueError(
+                            f"filter '{key}' list values accept at most "
+                            f"{MAX_FILTER_VALUE_LENGTH} characters each, got "
+                            f"{len(element)}"
+                        )
+                continue
             if len(str(value)) > MAX_FILTER_VALUE_LENGTH:
                 raise ValueError(
                     f"filter values accept at most {MAX_FILTER_VALUE_LENGTH} "

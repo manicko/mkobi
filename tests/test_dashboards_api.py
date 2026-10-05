@@ -751,3 +751,129 @@ class TestAdminBypass:
         data = response.json()
         assert data["id"] == str(dashboard.id)
         assert data["name"] == "dashboard_for_admin_bypass"
+
+
+class TestDashboardFilterTypeBoundary:
+    """The dashboard write boundary refuses an unevaluable declared filter type.
+
+    ``DashboardWriteConfig`` types each ``filters`` element with
+    ``EvaluableFilterType``, while ``DashboardRead.config`` keeps the tolerant
+    ``DashboardConfig``. The last two tests are tripwires against making the
+    element shared between the write and read paths.
+    """
+
+    async def test_stored_range_filter_is_refused_by_name(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """A ``range`` filter is refused with the RFC 7807 body naming the field."""
+        response = await authenticated_client.post(
+            "/dashboards/",
+            json={
+                "name": "range-refused-dashboard",
+                "config": {
+                    "graph_types": ["bar"],
+                    "filters": [{"field": "price", "type": "range"}],
+                },
+            },
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        body = response.json()
+        assert body["code"] == "VALIDATION_ERROR"
+        assert body["status"] == status.HTTP_422_UNPROCESSABLE_ENTITY
+        error = body["errors"][0]
+        # The RFC 7807 handler prefixes the body location, so the tail is what
+        # names the failing field: ``config.filters.0.type``.
+        assert error["loc"][-4:] == ["config", "filters", 0, "type"]
+        assert "'select', 'multiselect' or 'date'" in error["msg"]
+
+    async def test_stored_multiselect_filter_is_accepted(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """A ``multiselect`` filter is accepted, so the vocabulary is not over-tight."""
+        response = await authenticated_client.post(
+            "/dashboards/",
+            json={
+                "name": "multiselect-accepted-dashboard",
+                "config": {
+                    "graph_types": ["bar"],
+                    "filters": [{"field": "category", "type": "multiselect"}],
+                },
+            },
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+
+    async def test_a_stored_range_filter_still_reads_back(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """A ``range`` element stored directly still reads back unchanged.
+
+        Tripwire against a shared typed element: a ``Literal``/``StrEnum`` on
+        ``DashboardConfig.filters`` would make this read a failure and blank the
+        dashboard page.
+        """
+        repo = DashboardRepository()
+        dashboard = await repo.create(
+            db=async_db_session,
+            name="legacy-range-dashboard",
+            created_by=test_user["id"],
+            config={
+                "graph_types": ["bar"],
+                "filters": [
+                    {"field": "price", "type": "range", "min": 0, "max": 100}
+                ],
+            },
+        )
+        await async_db_session.flush()
+
+        access_repo = AccessRepository()
+        await access_repo.grant_access(
+            db=async_db_session,
+            user_id=test_user["id"],
+            dashboard_id=dashboard.id,
+            permission=DashboardPermission.VIEW,
+        )
+        await async_db_session.flush()
+
+        response = await authenticated_client.get(f"/dashboards/{dashboard.id}")
+
+        assert response.status_code == status.HTTP_200_OK
+        served = response.json()["config"]["filters"]
+        assert served[0]["type"] == "range"
+        assert served[0]["min"] == 0
+        assert served[0]["max"] == 100
+
+    async def test_undeclared_filter_keys_survive_a_save_round_trip(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """Extra keys on a filter element survive create -> read.
+
+        Tripwire against a typed storage element under ``extra="ignore"``, which
+        would silently delete ``options`` / ``min`` on the save round trip.
+        """
+        response = await authenticated_client.post(
+            "/dashboards/",
+            json={
+                "name": "extra-keys-dashboard",
+                "config": {
+                    "graph_types": ["bar"],
+                    "filters": [
+                        {
+                            "field": "category",
+                            "type": "multiselect",
+                            "options": ["a", "b"],
+                            "min": 0,
+                        }
+                    ],
+                },
+            },
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        dashboard_id = response.json()["id"]
+
+        detail = await authenticated_client.get(f"/dashboards/{dashboard_id}")
+        assert detail.status_code == status.HTTP_200_OK
+        served = detail.json()["config"]["filters"][0]
+        assert served["options"] == ["a", "b"]
+        assert served["min"] == 0

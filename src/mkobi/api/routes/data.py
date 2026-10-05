@@ -154,6 +154,11 @@ async def get_aggregated_data_endpoint(
 
         caps = get_config().data
 
+        # Read admissibility: one call covers both response shapes (with and
+        # without ``graph_id``) before any branch is taken. The service holds
+        # the business rule; the route keeps no logic.
+        await data_service.validate_filter_values(dashboard_id, parsed_filters, db)
+
         # When graph_id is provided, return data for single graph
         if graph_id is not None:
             # Get graph to retrieve type and name using repository
