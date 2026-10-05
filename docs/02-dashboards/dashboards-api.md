@@ -1041,25 +1041,32 @@ Browser                          FastAPI                     PostgreSQL
   │                                │                           │
   │  GET /data/aggregated          │                           │
   │  ?dashboard_id=:id             │                           │
-  │  &graph_id=:id                 │                           │
   │  &filters=...                  │                           │
+  │  (graph_id omitted)            │                           │
   │ ──────────────────────────────►│                           │
   │                                │  Check dashboard access   │
   │                                │  Apply filters (JSONB)    │
   │                                │  SELECT dims, metrics     │
   │                                │  FROM aggregated_data     │
-  │                                │  WHERE graph_id = :id     │
+  │                                │  WHERE dashboard_id = :id │
+  │                                │  ORDER BY id LIMIT ...    │
   │                                │──────────────────────────►│
   │                                │                           │
   │                                │  { dims: {...},           │
   │                                │    metrics: {...} }[]     │
   │                                │◄──────────────────────────│
   │  200 OK                        │                           │
-  │  [{dims, metrics}, ...]        │                           │
+  │  {graphs:[...], total_rows,    │                           │
+  │   truncated}                   │                           │
   │ ◄──────────────────────────────│                           │
   │                                │                           │
   │  Plotly.js renders chart       │                           │
 ```
+
+The dashboard view issues **one** request for the whole dashboard with
+`graph_id` **absent** — there is no per-graph fan-out (`DP-13-A`). The
+`graph_id` parameter remains accepted by the endpoint but the client never sends
+it; each chart reads its own graph out of the single bounded response.
 
 ---
 

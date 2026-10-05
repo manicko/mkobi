@@ -148,7 +148,7 @@ The application consists of **7 UI pages** (plus a 404 fallback). Authenticated 
 | Action | Method | Endpoint | Query Params |
 | --- | --- | --- | --- |
 | Get dashboard | `GET` | `/api/v1/dashboards/:id` | — |
-| Get aggregated data | `GET` | `/api/v1/data/aggregated` | `dashboard_id`, `graph_id` (optional), `filters` (optional) |
+| Get aggregated data | `GET` | `/api/v1/data/aggregated` | `dashboard_id`, `filters` (optional) — the client **omits** `graph_id` and issues one dashboard-wide request |
 | Upload file | `POST` | `/api/v1/upload/:dashboard_id` | Query: `mode=overwrite\|append`; Body: `multipart/form-data` |
 | Check status | `GET` | `/api/v1/upload/status/:task_id` | Polled after upload |
 
@@ -167,10 +167,12 @@ The aggregate response is bounded server-side (per-graph and per-dashboard row
 caps; see [Dashboards API](../02-dashboards/dashboards-api.md)). The client
 presents this without inventing its own signal: when a graph's
 `rows_truncated` field is `true`, the chart renders a status line reading
-**"Showing N of M"**, where `N` is the number of rows actually returned
-(`data.length`) and `M` is the server's `total_rows`. The upper bound is always
-read from the server field (`DP-13-C`) — the client never derives `M` from its
-own data. A graph that is not truncated renders **no** status line.
+**"Showing N of M"**, where both numbers come from the server —
+`N` is the server's `returned_rows` (the number of rows the server actually
+placed in `data`) and `M` is the server's `total_rows`. The client never derives
+either number from its own array length (`DP-13-C`): a client that later
+transforms `data` would otherwise show a count that stops describing what the
+server sent. A graph that is not truncated renders **no** status line.
 
 The dashboard-wide fetch is unchanged: the view issues one request for the
 whole dashboard (`graph_id` absent) and each chart reads its own graph's

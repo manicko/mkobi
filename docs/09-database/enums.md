@@ -328,7 +328,7 @@ class BarmodeEnum(StrEnum):
     STACK = "stack"
 ```
 
-**Not a PostgreSQL ENUM** — stored in graph `config` JSONB.
+**Not a PostgreSQL ENUM** — stored in graph `config` JSONB. The frontend mirrors this family: `frontend/src/shared/types/enums.ts` exports `BarmodeEnum` with the same two values so the client renders a bar chart with the mode the server stored. `SERVER_ONLY_FAMILIES` and `CLIENT_ONLY_FAMILIES` in the same module record the families that are deliberately *not* mirrored, so a missing mirror is an explicit decision rather than an omission.
 
 ---
 
@@ -362,7 +362,7 @@ class ButtonVariant(StrEnum):
     DARK = "dark"
 ```
 
-**Not a PostgreSQL ENUM** — declared in `src/mkobi/models/enums.py` as the shared vocabulary for dashboard layout presentation, and **not enforced by the server**: `layouts.definition` is unconstrained `JSONB` and `LayoutService.create_layout` performs no variant check, so a definition carrying an unknown variant is stored unchanged. Server-side validation of layout definitions is a stated intent, not an implemented capability, and the accepted shape of a valid definition is undecided. The values match the frontend's button-styling vocabulary; the frontend declares its own literals and does not import this enum.
+**Not a PostgreSQL ENUM** — declared in `src/mkobi/models/enums.py` as the shared vocabulary for dashboard layout presentation, and **not enforced by the server**: `layouts.definition` is unconstrained `JSONB` and `LayoutService.create_layout` performs no variant check, so a definition carrying an unknown variant is stored unchanged. Server-side validation of layout definitions is a stated intent, not an implemented capability, and the accepted shape of a valid definition is undecided. The frontend keeps its own button-styling vocabulary and records `ButtonVariant` in `SERVER_ONLY_FAMILIES` (`frontend/src/shared/types/enums.ts`), with no import of this enum.
 
 ---
 
@@ -377,7 +377,7 @@ class ComponentSize(StrEnum):
     LARGE = "lg"
 ```
 
-**Not a PostgreSQL ENUM** — declared in `src/mkobi/models/enums.py` as the shared vocabulary for dashboard layout presentation, and **not enforced by the server**: `layouts.definition` is unconstrained `JSONB` and `LayoutService.create_layout` performs no size check, so a definition carrying an unknown size is stored unchanged. Server-side validation of layout definitions is a stated intent, not an implemented capability, and the accepted shape of a valid definition is undecided. The values match the frontend's component-sizing vocabulary; the frontend declares its own literals and does not import this enum.
+**Not a PostgreSQL ENUM** — declared in `src/mkobi/models/enums.py` as the shared vocabulary for dashboard layout presentation, and **not enforced by the server**: `layouts.definition` is unconstrained `JSONB` and `LayoutService.create_layout` performs no size check, so a definition carrying an unknown size is stored unchanged. Server-side validation of layout definitions is a stated intent, not an implemented capability, and the accepted shape of a valid definition is undecided. The frontend keeps its own component-sizing vocabulary and records `ComponentSize` in `SERVER_ONLY_FAMILIES` (`frontend/src/shared/types/enums.ts`), with no import of this enum.
 
 ---
 
