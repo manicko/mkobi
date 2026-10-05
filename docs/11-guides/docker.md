@@ -423,19 +423,22 @@ database no other run targets. The schema is created and migrated by `conftest`,
 Runs the Redis Queue worker for background task processing (CSV uploads, data
 aggregation). It is part of the base stack, not a production-only service.
 
-- **Command:** `/app/.venv/bin/rqworker --url redis://redis:6379/0`
+- **Command:** `["/app/.venv/bin/python", "-m", "mkobi.rq_worker_wrapper"]` —
+  identical in both the base file and the dev override
 - **Depends on:** `redis` (healthy), `migrate` (completed successfully)
 - **Environment:** as `app`, plus `AUTO_MIGRATE: "false"` — migrations belong to
   the `migrate` service
 - **Shares volume:** `app_data`, so it sees the same upload and temp files as
   the app
 - **Mounts** `alembic/` and `alembic.ini` read-only, for migration rollback
-- **Does not need `REDIS__HOST`/`REDIS__PORT`**: it receives its target from the
-  explicit `--url` on the command line
+- **Redis target:** both tiers set `REDIS__HOST`, `REDIS__PORT` and `REDIS__DB`
+  in the service environment; the worker derives its connection from those
+  settings, the same settings the producer uses.
 
-> **Note:** the RQ worker is the production implementation of the task queue. The
-> in-memory `asyncio.Queue` is used when it is not running. See
-> [Task Queue Migration](./task-queue-migration.md) for the migration plan.
+> **Note:** the RQ worker is the only execution path for background work. There
+> is no in-process fallback queue; `core/task_queue.py` is an RQ submission seam
+> that enqueues onto Redis. See
+> [Task Queue Migration](./task-queue-migration.md) for the historical plan.
 
 ### Nginx Reverse Proxy
 
@@ -680,17 +683,18 @@ file is the build context for all of them; there is no `docker/.dockerignore`.
 | `db` | `pg_isready -U postgres -d bidb` | |
 | `app` | `curl -f http://localhost:8000/health` | `start_period: 40s`; inherited by the dev override, so `up --wait` gates on it in development too |
 | `redis` | `redis-cli ping` | |
-| `rq-worker` | Python one-liner, `Redis(...).ping()` | **disabled in the dev override** |
+| `rq-worker` | Python one-liner: `from mkobi.rq_worker_wrapper import main; main()` | A registry probe against `rq:workers` with a fresh-heartbeat check, not a broker ping; window `interval 10s / timeout 5s / retries 3 / start_period 60s`. Kept identically in the dev override — the override disables nothing. |
 | `nginx` | `wget --spider -q http://localhost/` | Verifies nginx is serving, not merely config-valid |
 
 The dev override no longer disables the `app` healthcheck, so
 `.\Makefile.ps1 up` (which runs `up -d --wait`) waits for `/health` to answer
 before returning. See [Readiness and Start Order](#readiness-and-start-order).
 
-> **Note on the `rq-worker` row:** the worker command and healthcheck are owned
-> by [audit phase 10](./task-queue-migration.md#decision-record) and are being
-> corrected separately. The annotation above is deliberately left for that owner
-> to fix, so this guide does not carry a second, divergent account.
+> **Note on the `rq-worker` probe:** it observes the worker registry, not the
+> broker. A Redis `ping` is green even when the worker is dead, wedged or in a
+> startup retry; the registry probe instead requires a live worker with a fresh
+> heartbeat. It does not inspect which queue the worker consumes — that
+> agreement is pinned by the shared `DEFAULT_QUEUE_NAME` constant.
 
 ## PostgreSQL Locale Configuration
 

@@ -37,7 +37,7 @@ The migration this guide plans is complete **in direction**. `core/task_queue.py
 
 ### What this guide is now
 
-A historical plan. Read *Current State*, *Limitations* and *Migration Steps* as a description of the system **before** 2026-09-30, not as the current system. The file paths, line numbers, class names and code snippets in those sections no longer match the repository: `TaskQueue`, `default_queue` and `get_task_queue()` are gone, and `enqueue_job()` is an `async` RQ submission that raises `AppException` rather than returning `None`.
+A historical plan. Read *Prior State*, *Limitations* and *Migration Steps* as a description of the system **before** 2026-09-30, not as the current system. The file paths, line numbers, class names and code snippets in those sections no longer match the repository: `TaskQueue`, `default_queue` and `get_task_queue()` are gone, and `enqueue_job()` is an `async` RQ submission that raises `AppException` rather than returning `None`.
 
 The authoritative account of the current submission path is
 [Backend Architecture](../06-backend/architecture.md) plus the source itself —
@@ -55,9 +55,16 @@ Audit phase 10 recorded `OPS-002` as a duplicate of `TOPO-002` and ruled that **
 | The `rq-worker` service entry | [Deployment](../10-deployment/deployment.md), *Production Profiles* | phase 10 |
 | The whole plan text, duplicated | [Task Queue](../03-processing/task-queue.md) | phase 10 |
 
-## Current State
+## Prior State (the system before 2026-09-30)
 
-The `TaskQueue` class in `src/mkobi/core/task_queue.py` uses `asyncio.Queue` for in-memory task queuing. This is an MVP implementation designed for simplicity during initial development.
+> **Historical section.** Every statement below describes the system *before*
+> the migration recorded in the [Decision Record](#decision-record). It is not a
+> description of the current repository: `TaskQueue`, `default_queue` and
+> `get_task_queue()` no longer exist, and `core/task_queue.py` is an RQ
+> submission seam. The authoritative current account is
+> [Backend Architecture](../06-backend/architecture.md).
+
+The `TaskQueue` class in `src/mkobi/core/task_queue.py` used `asyncio.Queue` for in-memory task queuing. This was an MVP implementation designed for simplicity during initial development.
 
 ### Architecture Overview
 
