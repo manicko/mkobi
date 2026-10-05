@@ -6,7 +6,7 @@ data processing status for dashboards.
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,7 +29,22 @@ from mkobi.utils.exceptions import AppException
 logger = get_logger(__name__)
 
 
-def _served_row_keys(records: list[Any]) -> tuple[list[str], list[str]]:
+class _ServedRow(Protocol):
+    """The two columns ``_served_row_keys`` reads off a stored aggregate row.
+
+    The repository interface (``IAggregatedDataRepository``) declares its read
+    methods as returning ``list[Any]`` -- it does not commit to the ORM entity
+    -- so ``_served_row_keys`` cannot name ``AggregatedData`` without a blind
+    cast. This structural protocol instead names exactly the two attributes the
+    function touches: the writer's entity satisfies it, and a misspelt access
+    such as ``record.mtric`` becomes a type error rather than a silent ``Any``.
+    """
+
+    metrics: dict[str, Any]
+    dims: dict[str, Any]
+
+
+def _served_row_keys(records: list[_ServedRow]) -> tuple[list[str], list[str]]:
     """Return the ``(metric_keys, dimension_keys)`` served on the rows.
 
     The keys are read directly off each record's ``metrics`` / ``dims`` columns

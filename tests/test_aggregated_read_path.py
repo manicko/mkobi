@@ -587,8 +587,10 @@ class TestServedRowKeys:
 
         Guards against an implementation that serves ``metrics[0]`` only -- the
         exact ``[0]`` bug class the renderer has. The expected order is the
-        stored row's own key order (``metrics`` are key-sorted on write), which
-        the served list must match rather than reorder.
+        stored row's own key order: PostgreSQL ``jsonb`` canonicalises object
+        keys (length-then-bytes) on write, so the stored order is
+        input-independent. The served list must match that stored order rather
+        than reorder it or drop all but the first key.
         """
         dashboard_id, graph_id = await _setup_dashboard_with_aggregates(
             async_db_session,
@@ -687,6 +689,71 @@ class TestServedRowKeys:
             assert set(metric_keys) <= set(row)
             assert set(dimension_keys) <= set(row)
 
+    async def test_served_keys_union_a_later_row_that_row_zero_lacks(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """A key carried only by a later row is still served, never dropped.
+
+        ``_served_row_keys`` is required to take an order-preserving union over
+        the **whole page**, never ``records[0]``. Every other fixture in this
+        class stores **uniform** keys across rows, so row 0 already carries every
+        key and a ``records[0]``-only implementation would pass them all; the
+        requirement is otherwise unguarded.
+
+        Heterogeneous **stored** rows are reachable here: the only unique index
+        is ``uq_aggregated_data_dashboard_graph_dims`` on
+        ``(dashboard_id, graph_id, dims::text)``, keyed on ``dims`` only. Two
+        rows of one graph whose ``dims`` differ are two rows, and each keeps its
+        own ``metrics`` mapping -- so row 0 can carry ``revenue`` alone while
+        row 1 adds ``profit`` and ``segment``. This test stores exactly that and
+        asserts the served lists contain **all** of ``revenue`` / ``profit`` and
+        ``category`` / ``segment``.
+
+        Red against a ``records[0]``-only implementation: it would serve
+        ``["revenue"]`` / ``["category"]``, missing the keys that appear only on
+        row 1.
+        """
+        dashboard_id, graph_id = await _setup_dashboard_with_aggregates(
+            async_db_session, test_user["id"], rows=0
+        )
+
+        # Two rows of one graph that disagree on their key sets. Distinct
+        # ``dims`` make them distinct rows; ``ORDER BY id`` serves row 0 first.
+        storage = StorageManager(db=async_db_session)
+        await storage.save_aggregates(
+            dashboard_id=dashboard_id,
+            aggregates=[
+                {
+                    "graph_id": graph_id,
+                    "dims": {"category": "cat-0"},
+                    "metrics": {"revenue": 1},
+                },
+                {
+                    "graph_id": graph_id,
+                    "dims": {"category": "cat-1", "segment": "seg-1"},
+                    "metrics": {"revenue": 2, "profit": 3},
+                },
+            ],
+            clear_old=True,
+        )
+        await async_db_session.commit()
+
+        response = await authenticated_client.get(
+            "/data/aggregated",
+            params={"dashboard_id": str(dashboard_id), "graph_id": str(graph_id)},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        graph = response.json()["graphs"][0]
+
+        # Row 0 really lacks the keys later rows carry: the fixture is not
+        # accidentally uniform, which is what would make the test vacuous.
+        assert "profit" not in graph["data"][0]
+        assert "segment" not in graph["data"][0]
+        assert "profit" in graph["data"][1]
+        assert "segment" in graph["data"][1]
+
+        assert set(graph["metrics"]) == {"revenue", "profit"}
+        assert set(graph["dimensions"]) == {"category", "segment"}
 
 
 class TestServedGraphLayout:

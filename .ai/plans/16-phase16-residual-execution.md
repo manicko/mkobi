@@ -359,3 +359,127 @@ response, in `DataService.get_bounded_aggregated_data`. Executed per
 7. **`R6` coupling, stated in `R3`'s brief:** a non-empty served `metrics` list does **not** mean
    "this graph has data" — the two are independent signals. `R6` must not use list non-emptiness as a
    proxy for the absent-vs-zero distinction.
+
+### 2026-10-05 — R4 (`CHTB-4`), Planner decisions
+
+Scope executed: `chartConversion.ts::makeTrace`'s per-type trace shape, the line branch's trace set,
+`LineChartProps`, and `convertToPlotlyData`'s consumption of `R3`'s served names. Hard-ordered after
+`R1` and `R3`; both landed (`716c755`, `eba2348`) and are ACCEPTED.
+
+1. **Three per-type builders behind `makeTrace`, not one builder with a `type` branch.** The split is
+   forced by the shipped types, not by taste: `Partial<Data>` **cannot** carry `labels`/`values`.
+   `@types/plotly.js` `PlotData` declares no `labels` and no `values`; both live on `PieData`
+   (`values: Array<number | string>`, plus `"labels"` through its
+   `Pick<PlotData, … | "labels" | …>`), and the only `x`/`y` in `lib/pie.d.ts` belong to `PieDomain`,
+   which this code never sets. A pie trace must therefore be built as `Partial<PieData>` and a
+   bar/scatter trace as `Partial<PlotData>`. `makeTrace` keeps its current signature and stays the only
+   exported entry point, so **both `ChartRenderer.tsx` call sites are unchanged**; the three builders
+   are module-private. `makeTrace`'s parameter type is lifted into one exported
+   `ChartTraceType = 'pie' | 'scatter' | 'bar'` alias, which `traceTypeFor` also returns — four
+   repetitions of the literal union is duplication a named type exists to remove. **Rejected:** a
+   single builder with a `type` branch — its parameter names (`xVals`, `yVals`) would have to lie for
+   the pie case, and that lie is the defect itself.
+
+2. **The line branch renders every trace: `LineChartProps.data` widens to `Data[]`,**
+   `LineChart` stops re-wrapping, and the `[0]` index is deleted. **User-visible consequence, stated
+   not hidden:** a grouped-colour line graph gains one line and one legend entry per distinct colour
+   value; for a high-cardinality colour column the figure becomes materially busier, and this block
+   introduces **no cap** — a cap is a new policy with no adjudicated owner, and silently capping would
+   recreate the "N−1 series disappear" lie at a different threshold. **Rejected:** one chart per
+   trace — it changes the page's layout for a local defect and is not what the operator's stored
+   `config.color` asked for. Note the bar branch already renders every group, so this makes the two
+   branches consistent rather than introducing a new convention.
+
+3. **`title` / `xAxisLabel` / `yAxisLabel` on `LineChart` are DELETED, not wired.** No file in
+   `frontend/src` ever passes them; `ChartRenderer.tsx`'s line branch passes exactly `data` and
+   `layout`, and the `LineChart` call sites in the three test files are mocks. Wiring them would mean
+   inventing a second naming path for a title the served `layout` already carries (`R2`), i.e.
+   re-opening an adjudicated decision from inside a different block; and a props surface nobody passes
+   is a lie a reader will trust. **Consequence, stated:** `LineChart` reduces to a pass-through to
+   `PlotlyChart`. It is **kept** regardless — `DashboardView.test.tsx` and
+   `features/dashboards/__tests__/filter-persistence.test.tsx` both `vi.mock` it **by path**, so
+   deleting the file would drag two out-of-scope test files into this block, and `R2`'s `VAL-16-006`
+   tripwire is written against `lastLineProps()`, which requires the component to stay.
+   `LineChart.tsx::convertDataToPlotlyFormat` — named in this block's brief as still hardcoding
+   `type: 'bar'` — **does not exist in the tree**; `f500d1f` reduced the file to a 27-line
+   pass-through. There is no typing half to decide here.
+
+4. **The served names win, and the rule is one small helper.** `resolveColumnName(configured, served)`
+   in `ChartRenderer.tsx`, private to that module: an **empty or absent** served list carries **no
+   authority** (use `configured`, exactly as today); a configured name that **is** among the served
+   names is used (operator intent, still correct by construction); a configured name that is **not**
+   among them is **unresolved**. Then:
+   * measure → `resolve(config.metrics?.[0], graph.metrics) ?? graph.metrics?.[0] ?? 'y'`
+   * axis → `resolve(config.x, graph.dimensions) ?? graph.dimensions?.[0] ?? 'x'`
+   * colour → `resolve(config.color, graph.dimensions)`, and **`undefined` means no grouping**
+   * **Consequences, stated:** a graph whose stored `config.metrics` names the pre-alias `revenue`
+     while its rows carry `revenue_sum` now draws real values instead of zeros — this is
+     `D-16-1`'s **second** acceptance criterion, still outstanding; and a graph whose stored
+     `config.color` names a column no served row carries stops grouping instead of emitting one
+     zeroed `'unknown'`-named trace (same trace count, correct data — a strict improvement, not a new
+     policy). **The colour deliberately has no served-first fallback:** guessing a different colour
+     column would split the chart by a dimension the operator never chose.
+   * **What an empty served list does:** nothing changes. The configured chain applies unchanged, and
+     the served list's emptiness is **not** read as "no data" — `R3`'s coordination item is honoured
+     literally, and `R6` owns the empty/absent states. This block must not pre-empt `R6` and must not
+     change the `?? 0` fallback's semantics; it changes **which column** is read, nothing else.
+
+5. **The empty-`data` crash is LATENT, not live — the brief's premise is refuted by symbol.**
+   `ChartRenderer` returns the empty-state `div` at its `graph.data.length === 0` guard, which
+   **precedes** the line branch, and `convertToPlotlyData` returns `[]` **only** under that same
+   condition: the already-Plotly-shaped passthrough returns `graph.data`, the colour branch yields one
+   `Map` entry per record, and the single-series branch always returns one trace — so for non-empty
+   `data` it returns at least one trace. No `TypeError` is reachable at the `[0]` today. The fix is
+   still correct and still in scope: the line branch stops indexing, so a function contract that now
+   permits `[]` no longer has a caller that cannot tolerate it. Its test is labelled a **tripwire**, not
+   a regression test, and the commit body says so.
+
+6. **`api.types.ts` staging — resolved by construction, no escalation.** The peer's hunk
+   (`FilterValuesResponse.total_values`, declared near the top of the file) and this block's hunk
+   (`GraphDataWithConfig.metrics` / `.dimensions`) are roughly sixty lines apart, so the two hunks are
+   independent and index-staging separates them exactly. **Primary recipe:** snapshot
+   `git diff -- frontend/src/shared/types/api.types.ts` **before** editing, `git add` the file, then
+   `git apply --cached -R <snapshot>` — this removes precisely the peer hunk **from the index only** and
+   never touches the working tree. **Fallback if that refuses** (the file is CRLF/LF-normalised, so it
+   may): `git add -p` on the file, `n` to the `total_values` hunk and `y` to the
+   `GraphDataWithConfig` hunk. **Verification is mandatory either way:** `git diff --cached` shows only
+   the two new members; `git diff` still shows only the peer's hunk.
+   **Rejected:** deleting and restoring the peer lines — it puts another agent's uncommitted work at
+   risk for a purely cosmetic convenience. **Rejected:** a separate commit that also declares
+   `total_values` — that field is `R7`'s work; committing it here would put another agent's change in
+   this block's diff and make it look authored and reviewed by `R4`. **Rejected:** escalation — there
+   is no contention to adjudicate, the file is not a barrier to anything, and escalating would block
+   the block for nothing. **Never** `git add -A` / `git add .` / `git add -- <path>` together with a
+   commit: `.kilo/plans/PLAN_01.md` and `.kilo/plans/PLAN_RECOVERY.md` are deleted-but-unstaged in the
+   working tree and would be swept in. Stage by explicit path and verify with `git status`.
+
+7. **The reversed-fixture test is VOID in the plan's original form and must not be written as
+   planned.** `660b6d5` made the read order server-determined
+   (`aggregated_data_repo.py` orders all three read methods by ascending `AggregatedData.id`), so
+   `groupByColor`'s `Map` follows the **first-seen** order of the served rows: a reversed fixture
+   yields a reversed trace order, and the plan's "identical trace set **and identical first trace**"
+   assertion fails against a *correct* implementation. The `CHTB-4` `[0]`-nondeterminism rationale is
+   therefore void for a second reason beyond the row above's, and the fix is **render every trace**,
+   not "make the order stable". The replacement pins the **count** and the **sorted** name set across
+   two renders — which is what actually guards against a dropped series.
+
+8. **Two brief premises refuted, both verified against the tree.**
+   * There is **no** comment on `makeTrace` — or anywhere in `frontend/src` or in history
+     (`git log -S`) — asserting that the server's flat records "always carry both". The gap is the
+     opposite one: `makeTrace`'s docstring says nothing about trace shape, which is exactly why a
+     reader believes `x`/`y` is universal. So this block **adds** the per-type statement and adds one
+     sentence to the module docstring naming `lib/pie.d.ts` as the reason; it deletes nothing.
+   * `LineChart.tsx::convertDataToPlotlyFormat` is not a real symbol (see item 3). Nothing to decide.
+
+9. **Filed, not done.** → **`R6`**: the "configured colour/measure names a key no served row carries"
+   state renders here as *no colour split* with **no message** — `D-16-4` owns the string set, and the
+   empty-vs-absent split is `R6`'s; → **`R6`/`R8`**: a pie graph with a configured colour still emits
+   N pie traces in Plotly's default single domain, which overlap; → **`R8`**:
+   `docs/11-guides/extend-graphs.md`'s "all work" / "first dimension column, first metric column" claim;
+   `api.types.ts::GraphDataWithConfig.config`'s RESERVED wording (`R1`'s filing) plus wording for the
+   **new** `metrics` / `dimensions` members, written so they cannot be confused with `config.metrics`;
+   `api/routes/data.py::get_aggregated_data_endpoint`'s abbreviated `Response format:` line (which omits
+   `metrics`, `dimensions`, `layout`, `config` and the count fields); whether `LineChart` should
+   survive as a pass-through wrapper; → **`R1`'s queue row correction**: `OrientationEnum` out of
+   `SERVER_ONLY_FAMILIES` is still unowned — this block reads `config.orientation` as a `string` and
+   does not touch the mirror, so the row still needs reassigning.
