@@ -365,9 +365,17 @@ class TestReconcilerLoop:
             await self._stop(task)
 
     async def test_zero_row_tick_still_updates_last_success(
-        self, status, sweep_recorder
+        self, status, sweep_recorder, setup_test_database
     ):
-        """A tick that marked 0 rows still advances last_success_at."""
+        """A tick that marked 0 rows still advances last_success_at.
+
+        The loop runs the real ``cleanup_stale_processing_logs`` (patched here)
+        and the real ``mark_orphaned_uploaded_logs_failed``, which opens a
+        database session through ``get_session()``. Requesting
+        ``setup_test_database`` makes this test self-sufficient: the run
+        database is created even when this module is selected alone, instead of
+        relying on another test in the selection to create it.
+        """
         assert status.last_success_at is None
         lease = ReconcilerLease(FakeAsyncRedis())
 
