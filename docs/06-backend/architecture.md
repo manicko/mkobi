@@ -99,6 +99,57 @@ records rather than makes.
 - Aggregation (groupby, YoY, shares, custom metrics)
 - Formula parser for custom metric expressions
 
+#### Loader Memory Ceiling and `.csv.gz` Expansion (`PRF-8`)
+
+The CSV loader is **measured, not optimised**: it is a known scaling ceiling,
+not a performance defect, and no code changed to record this. The figures below
+are one Implementor measurement run with its conditions attached. They differ
+from an earlier Phase-1 run (different synthetic data shape and host), so they
+are recorded as the current delivery rather than reconciled with it.
+
+**Measurement conditions.** 400,000 rows × 6 columns (`region`, `category`,
+`year`, `revenue`, `units`, `margin`), synthetic. `.csv.gz` at gzip level 6.
+Run as a **single isolated process**, never through the serving process, inside
+a throwaway container enforcing a **512 MiB** memory limit (`--memory 512m
+--memory-swap 512m`, network-disabled). The measured process is the production
+`prod` image's `/app/.venv/bin/python`; peak RSS is `ru_maxrss` and current RSS
+is `/proc/self/statm`. `lazy_threshold_mb` is the resolved default `10.0`, so a
+decompressed file past 10 MB is built through the lazy query engine
+(`_read_csv_via_scan`, i.e. `pl.scan_csv(...).collect()`) — the 10.73 MB CSV
+measured here takes that branch.
+
+| quantity, 400,000 rows × 6 cols | plain CSV | `.csv.gz` (level 6) |
+| --- | --- | --- |
+| on disk | 10.73 MB (11,253,908 B) | 2.72 MB (2,851,496 B) |
+| `CSVLoader.load()` wall | 0.11–0.18 s | 0.08–0.12 s |
+| RSS growth after load | ~53 MB | ~31 MB |
+| peak RSS growth (load) | ~58 MB | ~42 MB |
+| `df.estimated_size()` | 13.99 MB | 13.99 MB |
+| **gzip ratio (on-disk)** | — | **3.95×** |
+| **in-frame expansion (memory ÷ on-disk)** | **1.30×** | **5.14×** |
+| **peak-RSS expansion (peak RSS ÷ on-disk)** | **5.15×** | **14.6–15.2×** |
+| `group_by().agg()` wall | 0.02–0.06 s | 0.02–0.03 s |
+| RSS growth *during* `group_by` | 19–23 MB | 0 MB (release path) |
+| peak RSS total for the whole run | ~150 MB | ~192–195 MB |
+
+**The two ceilings it is measured against.** The `rq-worker` container limit is
+**512 MiB** (and 0.5 CPU); the `app` container limit is **1 GiB** (and 1.0
+CPU). The measured peak for the `.csv.gz` form is **~192–195 MB**, i.e. roughly
+**38 %** of the worker's 512 MiB ceiling and **~19 %** of the app's 1 GiB
+ceiling. Both fit with headroom.
+
+**The `.csv.gz` expansion is the number other phases consume.** A `.csv.gz` that
+passes the compressed-size check expands **~5.1× in frame memory** and
+**~14.6–15.2× in peak RSS** relative to its on-disk (compressed) size — i.e.
+~9× class expansion against the *decompressed* stream is what the compressed
+ratio plus the in-frame ratio compose to. The compressed artefact is what sits
+on disk (the `app_data` budget), while the expansion is **residency** that
+bounds the worker's memory ceiling, not the disk budget.
+
+**Naming defect, not this phase's.** `_read_csv_via_scan` materialises the whole
+file (`collect()`), so the "lazy" name is misleading; that naming is phase 05's
+`PB-12` / `D-05-O`, and `data/loaders/loader.py` is unmodified here.
+
 ### Core Layer (`src/mkobi/core/`)
 
 - Security utilities (JWT creation/verification, password hashing via bcrypt)
