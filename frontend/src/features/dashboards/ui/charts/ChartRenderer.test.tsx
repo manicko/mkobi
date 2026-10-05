@@ -377,7 +377,10 @@ describe('ChartRenderer', () => {
   it('hands LineChart exactly data and layout, no re-stated defaults as props', async () => {
     // Props-level VAL-16-006 tripwire: R2's shipped check inspects props.layout
     // and would miss <LineChart xAxisLabel="Category" />, the idiomatic way to
-    // write the mistake. The key set is the whole contract.
+    // write the mistake. The key set pins this call site's prop set: any
+    // declared or spread default the renderer adds here grows it and fails.
+    // It does NOT cover LineChart re-stating its own defaults internally, which
+    // leaves this key set unchanged.
     render(
       <ChartRenderer
         graph={makeGraph({

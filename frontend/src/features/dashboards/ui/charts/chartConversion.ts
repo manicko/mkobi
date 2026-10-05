@@ -10,9 +10,14 @@
  * Everything here narrows with a real type guard; no assertion is used to
  * silence the compiler.
  *
- * A trace's shape is per chart type: @types/plotly.js declares `PieData` with
- * `labels`/`values` (see `lib/pie.d.ts`) while `PlotData` carries `x`/`y` only,
- * so each builder writes just the members its own type accepts.
+ * A trace's shape is per chart type, and each shipped trace type pins its own
+ * `type` literal (`PieData.type` is `"pie"`; the bar and scatter types pin
+ * theirs). A pie trace built from `x`/`y` is the defect this split prevents:
+ * `PieData` declares no top-level `x`/`y` — the only `x`/`y` in `lib/pie.d.ts`
+ * belong to `PieDomain`, reachable solely through `domain`, which this code
+ * never sets — so such a trace carries members its own type does not accept and
+ * the plot renders a pie with no slices. Splitting the builders means the trace
+ * type and the payload can no longer be paired wrongly.
  */
 
 import type { Data, Layout } from 'react-plotly.js'
@@ -125,10 +130,12 @@ export function toLayoutTemplate(value: string | undefined): Template | undefine
 /**
  * Builds a Plotly pie trace.
  *
- * A pie trace carries `labels`/`values`, never `x`/`y`: `Partial<PlotData>`
- * declares neither of the former, which is why this builder takes its own
- * `Partial<PieData>`. Absent members are omitted, never emitted as explicit
- * `undefined`.
+ * A pie trace carries `labels`/`values`, never `x`/`y`: `PieData` declares no
+ * top-level `x`/`y` — the only `x`/`y` in `lib/pie.d.ts` belong to `PieDomain`,
+ * reachable solely through `domain`, which this code never sets — and it pins
+ * its own `type` literal (`"pie"`), so only this builder can supply a pie
+ * payload that its trace type accepts. Absent members are omitted, never
+ * emitted as explicit `undefined`.
  */
 function makePieTrace(
   labels: ChartElement[],

@@ -541,3 +541,48 @@ Two commits, both local-validated before committing.
 
 8. **No browser-render claim anywhere.** The evidence is the emitted trace and layout objects plus the
    component props captured by the spies.
+
+### 2026-10-05 — R4 (`CHTB-4`), corrective pass
+
+A documentation/hygiene correction on the accepted block (`f8581e0`, `cfab3e0`). **No behaviour change;
+the code is unchanged.** Three edits, one commit.
+
+1. **F1 — the per-type split's *stated reason* was false, and is corrected in the two docstrings.**
+   The old claims — `chartConversion.ts`'s module docstring ("`PlotData` carries `x`/`y` only") and
+   `makePieTrace`'s docstring ("`Partial<PlotData>` declares neither of the former") — were checked
+   against the installed `frontend/node_modules/@types/plotly.js` and are **wrong**: `index.d.ts`
+   declares `values: Datum[]` (line 1698) and `labels: Datum[]` (line 1699) **inside `PlotData`**
+   (interface opened at line 1514, closed at 1742), alongside `x`/`y` (1516–1517). The corrected text
+   states the genuine type-level facts: `PieData` declares no top-level `x`/`y` — the only `x`/`y` in
+   `lib/pie.d.ts` belong to `PieDomain` (lines 58–63), reachable solely through `domain`, which this
+   code never sets — and each shipped trace type pins its own `type` literal (`PieData.type: "pie"` at
+   `lib/pie.d.ts:103`; bar/scatter pin theirs through the `PlotType` union at `index.d.ts:1448`), so the
+   split is what stops a builder pairing the wrong trace type with the wrong payload. The false claim
+   is dropped; the split would NOT have been a compile error, and that is not claimed. The accepted
+   commit's body (`cfab3e0`) repeats the same false statement, but history is not rewritten; this entry
+   and the corrective commit record the correction.
+
+2. **F2 — the fixture cast stays; removing it does not work, verified against `tsc`.** The premise was
+   that the ONE `as unknown as Data[]` in `ChartRenderer.test.tsx`'s reversed-fixture test exists only
+   because of a self-imposed `Data[]` annotation. Dropping the annotation and typing the row helper
+   `(data: unknown[])` compiles the raw literals, but then the annotation-less `rows` is inferred as the
+   flat-record type and `graph(rows)` passes it into `makeGraph`, where the intersection
+   `Partial<GraphDataWithConfig> & { data?: unknown[] }` narrows the override to `Data[] & unknown[]`
+   and `npm run build` reports **TS2322** at the `graph(rows)` argument. Typing the helper `Data[]`
+   instead makes every other raw-literal fixture fail **TS2353** ("'category' does not exist in type
+   'Data'") — 22 diagnostics in total. The `as unknown as Data[]` is therefore load-bearing under this
+   file's own helper design. Rather than force it, **the cast was restored** and the file is
+   byte-identical to the accepted commit for this item.
+
+3. **F3 — the tripwire comment is narrowed; no assertion added.** Chose to narrow the test #9 comment
+   to state precisely that the key set pins the **call site's** prop set, and that re-stating defaults
+   inside `LineChart` leaves the key set unchanged and is covered by no assertion here. Reason: R4's
+   scope is the renderer's emitted trace/layout and call site, `R6` owns the empty/absent states and the
+   `LineChart` pass-through's fate is filed for `R8` (see item 9 of the implementor decisions above), so
+   pinning `LineChart`'s internal shape belongs to whichever block finalizes `LineChart`, not to this
+   corrective pass. The comment now makes no claim the test cannot defend.
+
+4. **Gates, all observed on the corrected tree.** Focused `ChartRenderer.test.tsx` **16 passed / 16**;
+   `fe-lint` **0 errors**; `npm run build` **exit 0**; `fe-test` **24 files / 207 passed / 0 failed**;
+   backend `.\Makefile.ps1 test` **1654 passed** — untouched. `api.types.ts`'s peer hunk
+   (`FilterValuesResponse.total_values`) is left unstaged, as before.
