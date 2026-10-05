@@ -17,6 +17,7 @@ import {
   DASHBOARD_MEASURE_ABSENT_MESSAGE,
   MEASURE_ABSENT_MESSAGE,
   NO_CHARTS_MESSAGE,
+  STALE_DATA_MESSAGE,
   DashboardDataState,
   GraphRenderState,
   classifyDashboard,
@@ -30,6 +31,7 @@ import {
   CHART_DATA_LOAD_FAILED_MESSAGE,
   DASHBOARD_LOAD_FAILED_MESSAGE,
 } from '../../../shared/api/errorSurfaces'
+import { formatDateTime } from '../../../shared/utils/formatDate'
 
 const UploadModal = lazy(() =>
   import('../../upload/ui/UploadModal').then((module) => ({ default: module.UploadModal })),
@@ -129,6 +131,7 @@ export function DashboardView() {
     data: aggregatedData,
     isLoading: dataLoading,
     error: dataError,
+    dataUpdatedAt,
   } = useAggregatedData(id || '', filters)
   const { invalidateAggregatedData } = useInvalidateDashboard()
 
@@ -194,6 +197,15 @@ export function DashboardView() {
   const canEdit = ['edit', 'admin'].includes(dashboard.permission)
 
   const hasGraphs = aggregatedData !== undefined && aggregatedData.graphs.length > 0
+  // P13: a failed *background* refetch of a query that already succeeded keeps
+  // its last good `data` (the probe in `aggregated-stale-data.test.tsx` pins
+  // this). That retained data is shown, marked out of date, instead of being
+  // replaced by a bare failure — and the failure Alert is suppressed for it.
+  const isStale =
+    dataError !== null &&
+    aggregatedData !== undefined &&
+    aggregatedData.graphs.length > 0 &&
+    dataUpdatedAt > 0
   // The empty branch is reached when no graph row stack renders: either the
   // response has no graphs, or there is no response. Both are the NO_CHARTS
   // state, so the served list -- absent or empty -- is classified the same way.
@@ -248,9 +260,15 @@ export function DashboardView() {
             <SkeletonChart count={dashboard.config.charts?.length ?? 1} />
           )}
 
-          {dataError && (
+          {dataError && !isStale && (
             <Alert severity="error" sx={{ mb: 2 }}>
               {CHART_DATA_LOAD_FAILED_MESSAGE}
+            </Alert>
+          )}
+
+          {isStale && (
+            <Alert severity="warning" sx={{ mb: 2 }}>
+              {STALE_DATA_MESSAGE.replace('{time}', formatDateTime(new Date(dataUpdatedAt)))}
             </Alert>
           )}
 

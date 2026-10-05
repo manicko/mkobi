@@ -586,3 +586,245 @@ the code is unchanged.** Three edits, one commit.
    `fe-lint` **0 errors**; `npm run build` **exit 0**; `fe-test` **24 files / 207 passed / 0 failed**;
    backend `.\Makefile.ps1 test` **1654 passed** — untouched. `api.types.ts`'s peer hunk
    (`FilterValuesResponse.total_values`) is left unstaged, as before.
+
+### 2026-10-05 — R5 (`CHTB-6`), Planner decisions
+
+Scope executed: make a filter value something the repository can evaluate (`multiselect` → membership
+predicate) and retire the `range` **control** per `D-16-2`. Executed per
+`.ai/plans/_code-context/16-phase16-r5-filter-research.md`, with two corrections below that the research
+does not contain.
+
+1. **TWO commits, in this order — server, then client.** The four server pieces (write-boundary
+   vocabulary, boundary union widening, repository membership branch, read backstop) land **together**;
+   the client pair (`range` control removal, `number[]` restore-drop) lands second. **The ordering
+   constraint: the backstop must not be deferred past the union widening.** A server split would open a
+   window in which `{"price": ["0","100"]}` returns **silent zero rows** — strictly worse than today's
+   loud 422 — so the split is refused, not merely discouraged. A standalone backstop commit is refused
+   for a second reason: while the union is scalar-only no list reaches the service, so that commit's
+   code cannot fire.
+
+2. **`DashboardConfig.filters` typing is IN scope, but NOT as one shared typed element — the research's
+   §4.2 shape is unsafe.** Executed: `DashboardRead.model_validate` **succeeds today** with a stored
+   `{"field": "price", "type": "range", …}` filter, and `DashboardRead.config` **is** `DashboardConfig`.
+   A `Literal`/`StrEnum` on the shared element therefore converts every already-stored `range` dashboard
+   into a **`GET /dashboards/{id}` failure** — `DashboardView`'s `DASHBOARD_LOAD_FAILED_MESSAGE`, the
+   whole page — a strictly larger blast radius than the 422 this block closes. Split by direction
+   instead: `DashboardConfig.filters` stays `list[dict[str, Any]] | None` (the storage + read shape); a
+   new write-only `DashboardWriteConfig(DashboardConfig)` narrows **only** `filters` to a new
+   `DashboardFilterConfig` (`extra="allow"`, `field: str`, `type: EvaluableFilterType`, `source`,
+   `multi`), used by `DashboardCreate` and `DashboardUpdate`.
+
+3. **"Ignore unknown keys" is NOT acceptable for the storage shape — it is data loss.** Executed:
+   `DashboardService.create_dashboard` stores `DashboardConfig(**config).model_dump()`, and a typed
+   element under the default `extra="ignore"` dumps `{'field', 'type'}`, silently deleting `options`,
+   `min`, `max` and anything else an operator stored. This phase has no dashboard write path and
+   `C14-17` owns stored-row cleanup, so silent mutation of stored configs is out.
+
+4. **The vocabulary is a NEW `EvaluableFilterType(StrEnum)` in `models/dashboard.py`** — not
+   `models/enums.py` (out of scope) and not `FilterType`. It must not alias the storage enum: aliasing
+   the two would recreate the exact trap this block closes. Verified that Pydantic's message is
+   identical to a bare `Literal`'s (`Input should be 'select', 'multiselect' or 'date'`, `loc=('type',)`),
+   so nothing is lost and the published schema gains a named component. **`FilterType.RANGE` stays**,
+   and gains a second job the research does not name: it is the backstop's **named sentinel**, so
+   keeping it is what lets the service compare a declared type against a constant instead of a bare
+   `"range"` string.
+
+5. **The value union discriminates `number[]` for us.** `list[str]` (not `list[str | int | float]`)
+   means the live slider output `[0, 100]` is refused by the model itself, because the only list
+   producer the application has is `<Select multiple>` over `FilterValuesResponse.values: list[str]`.
+   The **ambiguous** case is therefore only `["0", "100"]` — exactly what an unvalidated
+   `sessionStorage` cast produces. That is what the client restore-drop cannot decide from the value
+   alone and what the backstop exists for.
+
+6. **Backstop permissiveness, exactly:** undeclared key → permissive; declared `range` → refuse **by
+   name whatever the value's shape**; declared non-`multiselect` + `list` value → refuse; otherwise
+   permit. A dashboard declaring **no** `filters` at all that receives `["0", "100"]` is **permitted**
+   and matched as a membership test. That residual is recorded as a **bound, not a closed hole**.
+
+7. **Filed, not done:** every `docs/**` `range` table, plus `docs/09-database/indexes.md`'s **false**
+   `@>` claim (measured — `@>` and `@@` both reach the GIN index; only `->>` does not) → `CHTB-8`;
+   `models/dashboard.py`'s `"multi_select"` example is **in this block**, because it would otherwise
+   publish a value the new boundary refuses; `FilterConfig.min` / `.max` in `api.types.ts` become
+   unreferenced client declarations in a peer-owned file → its owner / `R8`;
+   `DashboardView.tsx::filterDetails` forwards no `min`/`max`, so `config.min || 0` always fell back —
+   a **filed observation**, not work, because the control is removed; enum-label removal + stored-row
+   migration → `C14-17`; the `a3db812` `aria-labelledby` deletion is recorded as *in name only* (the
+   control never bound to anything real); `DataService.get_aggregated_data`, the unbounded sibling, gets
+   **no** backstop — it has no `src/` caller, and any future caller must reuse it.
+
+8. **Test count: 18, all additions, no existing test modified.** The brief's 17 = the research's 16
+   written (its #13, `FilterService._validate_filter_type`, is **not** written — unreachable over HTTP)
+   plus 2 this plan adds, because they discriminate decisions the research's set does not cover: a
+   stored-`range` dashboard still **reads back 200**, and an undeclared filter-element key survives a
+   create→read round trip. Both fail against the research's §4.2 shape.
+
+### 2026-10-05 — R6 (`CHTB-5`), Planner decisions
+
+Scope executed: the client half of "absent is not zero" — the `Number(metric ?? 0)` collapse in
+`ChartRenderer`'s two series builders, the state census `D-16-4` owns, and `P13`'s stale marker. The
+server half is landed and **not re-touched**. Two corrections to the brief are recorded first, because
+both change the design.
+
+1. **CORRECTION — the brief's "the backend serves NO job id, so there is nothing to poll" is FALSE.**
+   Verified in the tree: `api/routes/upload.py::upload_file_endpoint` is `response_model=UploadResponse`
+   (not a bare `UploadOut`) and `models/data.py::UploadResponse` declares `task_id: UUID`;
+   `api/routes/upload.py::get_status_endpoint` serves `GET /upload/status/{task_id}` as
+   `ProcessingStatusResponse`; and the client already consumes both — `uploadApi.uploadFile` returns
+   `UploadResponse`, `uploadApi.useProcessingStatus` polls that id every 2 s, and
+   `UploadModal::UploadModal` calls `onUploadComplete()` **only** when `statusData.status ===
+   'completed'`. So a job id and a poll both exist, and the dashboard's `invalidateAggregatedData` is
+   already ordered **after** processing finished. Consequence for `P13`: the reachable "flip to empty"
+   is **not** an upload/processing race, and no polling design is needed or permitted. The genuinely
+   missing piece is that `onUploadComplete` is a **bare callback** — the completed status never reaches
+   `DashboardView` — so "the new data is ready" is not an input the view can be given without changing
+   the upload feature's prop contract. **That is filed, not built** (see item 10).
+
+2. **CORRECTION — `GraphDataResponse.metrics` emptiness is NOT an independent signal.** Precise
+   statement, from `services/data_service.py::_served_row_keys` and
+   `services/aggregation_service.py::aggregate_for_dashboard`: `metrics` is the first-seen union of the
+   keys of the stored `metrics` JSONB column over the served page, and the writer `continue`s unless
+   **both** `groupby_cols` and `metric_cols` are non-empty, so **every written row carries at least one
+   metric key** and every `dims` key. Therefore, on the current server, `metrics.length > 0` **iff**
+   `data.length > 0` (and likewise for `dimensions`) — the two are the *same* signal, so
+   `metrics.length === 0` can never be a state distinct from `data.length === 0`, and a predicate built
+   on it would be unreachable-and-lying. `R3`'s "rows exist but their metrics are all absent" is a
+   *hypothetical* the current writer cannot produce. `R4`'s reading of the brief was correct and this
+   block does not build on the alternative.
+
+3. **The four states are two dashboard-scope and two graph-scope predicates, plus one age state.**
+   Over the served `GraphDataWithConfig` `G` (`R` is the `AggregatedDataResponse`,
+   `measureColumn := resolveColumnName(G.config?.metrics?.[0], G.metrics) ?? G.metrics?.[0]`, i.e. exactly
+   the column `convertToPlotlyData` reads, moved to one function so the marker and the trace cannot
+   disagree):
+
+   | state | scope | predicate | signal |
+   | --- | --- | --- | --- |
+   | `NO_CHARTS` | dashboard | `R.graphs.length === 0` | the served graph list |
+   | `NO_ROWS` | graph | `G.data.length === 0` | the served row list |
+   | `MEASURE_ABSENT` | graph | `G.data.length > 0 && measureColumn !== undefined && !G.data.some(row => isChartRecord(row) && readScalar(row, measureColumn) !== undefined)` | the rows themselves |
+   | `RENDERED` | graph | `G.data.some(row => isChartRecord(row) && readScalar(row, measureColumn) !== undefined)` | the rows themselves |
+   | `STALE` (`P13`) | query | `error !== null && data !== undefined && data.graphs.length > 0 && dataUpdatedAt > 0` | the query result, **not** the response |
+
+   **No two can hold at once:** `NO_CHARTS` needs an empty graph list while `NO_ROWS`/`MEASURE_ABSENT`/
+   `RENDERED` each need one graph; `NO_ROWS` needs `data.length === 0` while the other two need
+   `data.length > 0`; `MEASURE_ABSENT` and `RENDERED` are complementary on the same `some`/`every`
+   question. `rows_truncated` is deliberately **not** a state predicate — it is a status line
+   (`DashboardView`, landed), and a truncated response is still one of the four. **A present-but-`0`
+   measure is `RENDERED`, never `MEASURE_ABSENT`** — that is the block's whole point. `STALE` is
+   orthogonal to the other four by construction: it is the only predicate over the query result.
+
+4. **`D-16-4`'s absent-graph card is satisfied by construction — no card is added.** Per `R3`'s
+   verified finding, the endpoint enumerates the `graphs` table, so a graph the writer skipped appears
+   with `data: []` and already gets a card. The four states are therefore four *content* states, and the
+   "graph absent from the response" situation has no reachable instance. The residual — a graph skipped
+   at write time is still **skipped on every future read** for that dataset — is the upstream
+   `continue`, which is phase 05's pipeline behaviour; **filed, not touched** (a backend change is out
+   of this block's scope).
+
+5. **The absent value is `null`, and only a real finite number becomes a number.** One exported
+   `toMeasureValue(value: unknown): number | null` in `chartConversion.ts` replaces the two
+   `Number(metric ?? 0)` coercions (in `collectSeries` **and** in `groupByColor` — both sites, or the
+   grouped branch keeps the defect): `number` and finite → itself (**including `0`**); `null`,
+   `undefined`, non-finite (`NaN`/`Infinity`), and every non-numeric value → **`null`**. No `Number()`
+   call survives anywhere on the measure path. Non-numeric-but-present becomes `null` rather than `0`
+   because coercing a garbage value to a number is the *same* defect as `?? 0` wearing a different hat;
+   numeric **strings** are not accepted, because the served measure values are Polars numerics
+   (`_coerce_dim_value` canonicalises dims to strings, and a string in a measure position is a contract
+   violation, not a number to guess at). `ChartElement` splits into a label type
+   (`string | number | boolean`) and a measure type (`number | null`), and `makeTrace` plus the three
+   per-type builders take the measure type. `connectgaps` is **not** set: Plotly's default is `false`,
+   which is what produces the gap.
+
+6. **`isChartRecord` is itself part of the defect and must widen.** It currently accepts only
+   `string | number` values, so a row carrying a **`null` measure** (a Polars `sum` over an all-null
+   group is `None` on the wire) or a **boolean dim** (`_coerce_dim_value` preserves `bool`) fails the
+   guard and makes `readScalar` return `undefined` for **every** field of that row — blanking the
+   category *and* forcing the measure to `0`. The record type widens to
+   `Record<string, string | number | boolean | null>`. A present-but-`null` key and an absent key stay
+   distinguishable inside `readScalar` (`null` vs `undefined`) but **deliberately render the same gap**:
+   Plotly's `y` has no second channel, and the visual result is identical.
+
+7. **One string home: `ui/charts/chartStates.ts` (new, co-located with `chartConversion.ts`).** It
+   holds both state enums, the three predicates, `resolveColumnName` (**moved verbatim** out of
+   `ChartRenderer` — a move, not a rewrite; R4's 16 tests assert behaviour, not location), the
+   `toMeasureValue`-adjacent absent test, and every string. A `model/` module was rejected because the
+   predicate needs `isChartRecord`/`readScalar`, which live in `ui/charts/`, and `model/` must not import
+   `ui/`; the folder's existing convention (`chartConversion.ts`, `resolveColumnName`) already places
+   pure chart logic in `ui/charts/`. Strings — five, exact, this block decides them
+   (`CHTB-5`'s "the string set is a product artefact"):
+
+   - `NO_CHARTS_MESSAGE` = `This dashboard has no charts to display.` — **the one changed string.**
+     Today's "No data available for this dashboard. Upload data to see charts." is false advice for the
+     state it names: uploading data creates no graphs. Rejected: keeping it (a wrong instruction is the
+     same class of defect as a wrong figure).
+   - `NO_ROWS_MESSAGE` = `No data available for this chart` — **unchanged verbatim**; the existing
+     `ChartRenderer.test.tsx` assertion pins it, and it is accurate. `TableChart`'s empty case adopts
+     the same constant (today it says `No data available`, a second sentence for one situation).
+   - `MEASURE_ABSENT_MESSAGE` = `The measure "{column}" is not in the served data, so this chart shows a
+     gap instead of a value.` — per graph, in the card, **names the column**.
+   - `DASHBOARD_MEASURE_ABSENT_MESSAGE` = `One or more charts have a measure that is not in the served
+     data. Those charts are drawn as gaps, not zeros.` — `D-16-4`'s warning, **once per dashboard**,
+     at dashboard scope, `severity="warning"`.
+   - `STALE_DATA_MESSAGE` = `Data may be out of date — last updated {time}` — **`P13`'s ruled text**,
+     `time` interpolated with `shared/utils/formatDate.ts::formatDateTime`. Cause-free by necessity:
+     TanStack's `refetchOnWindowFocus` can trigger the same refetch with no upload at all, so the
+     marker may not name a cause.
+
+8. **Placement, and the two failure kinds stay apart.** The per-graph marker renders in
+   `DashboardView`'s existing `Paper` **beside the truncation caption** — same element, same place, so
+   the card's status lines stay visually consistent and nothing new is wrapped inside the fixed-height
+   `Stack sx={{ height: 400 }}` (a marker inside `ChartRenderer` would need a fragment there and
+   squeeze the chart). `ChartRenderer` keeps only the trace-level consequence. The `D-16-4` warning
+   renders **once, above the graphs `Stack`**, gated on `R.graphs.some(g => classify(g) === MEASURE_ABSENT)`.
+   It cannot collide with `R5`'s in-panel filter warning (different component, different subject, and
+   that one names a filter and a declared type) nor with the two failure Alerts (severity `warning` vs
+   `error`). **A real double-message bug is closed here**: today a `dataError` with no cached data
+   renders *both* `CHART_DATA_LOAD_FAILED_MESSAGE` and the empty-state Alert, asserting a false "no
+   data" on a failed load. The empty-state Alert now requires `!dataError`.
+
+9. **`P13`'s mechanism: `dataUpdatedAt` + `error` from the existing query result. No `placeholderData`,
+   no snapshot ref, no change to `dashboardApi.ts`.** `placeholderData: keepPreviousData` is **rejected**:
+   it only supplies data while a query has *no* cached data for its key, so it does nothing on the path
+   `P13` is about (a refetch of a key that already has data), and it would additionally mask a *filter
+   change* by showing the previous filter's data — a new lie for an old one. The last-good payload is
+   whatever the query already retains on a failed background refetch; `dataUpdatedAt` supplies the
+   timestamp the ruled marker text needs, which the response cannot (`GraphDataResponse` serves no
+   generation timestamp — see item 10). When `STALE` holds, the view renders the retained data **and**
+   the marker, and **suppresses** `CHART_DATA_LOAD_FAILED_MESSAGE`, because "what you see is old" and
+   "the load broke" must not both be asserted. With no retained data there is no stale state, the
+   existing error Alert is the only available truth, and the marker is absent — which is also the
+   first-load case the ruling names. **One precondition must be verified before the code is written**:
+   that a failed background refetch leaves `data` populated. The implementor runs that probe with a
+   real `QueryClient`; if it fails, the **only** sanctioned fallback is a `useRef` last-good snapshot in
+   `DashboardView` (plus the test that proves the snapshot path), and the deviation is reported, not
+   absorbed.
+
+10. **Limits, stated as limits.** (a) The upload's completed status is **not** an input the view can
+    receive without changing `UploadModal`'s `onUploadComplete` prop contract — **filed**. (b) A
+    *successful* response with no rows is shown as the truthful empty state, never as stale: the client
+    cannot distinguish "the server is mid-rewrite" from "the server has no data", and no served field
+    says a response is provisional. (c) `dataUpdatedAt` is when the data reached the **browser**, not
+    when it was computed; an honest "as of" time needs a server field, which is a backend change —
+    **filed**. (d) Beyond TanStack's `gcTime` there is no retained data, so no marker is possible and
+    the error Alert is all there is. (e) `R7`'s `staleTime: Infinity` **narrows** this trigger to
+    upload-driven refetches (focus no longer refetches a never-stale query) and does not collide:
+    **zero edits to `dashboardApi.ts`**.
+
+11. **Leave alone.** No `src/mkobi/**` edit; **no** `api.types.ts` edit — every state predicate reads
+    fields it already declares (`metrics?`, `dimensions?`, the three counts), so the peer's
+    uncommitted `FilterValuesResponse.total_values` hunk is not at risk. `shared/types/enums.ts` is
+    untouched, which matters: `shared/types/__tests__/enums.test.ts` pins `CLIENT_ONLY_FAMILIES` at
+    exactly `['FileUploadStatus']`, so the two new enums are **feature-local**. `shared/api/errorSurfaces.ts`,
+    `DashboardFilters.tsx`, `DashboardList.tsx` (its `No dashboards available…` string is already correct
+    and distinct), `SkeletonChart.tsx`, `PlotlyChart.tsx`, `LineChart.tsx`, `upload/**`, `docs/**`, and
+    this file's other entries — all untouched. `P13` touches `DashboardView` only.
+
+12. **Test target: 3 new files, ~26 new tests, no existing test rewritten or deleted.** One per state
+    plus a pairwise-exclusivity matrix (`ui/charts/chartStates.test.ts`); the `null`/`0`/garbage/second-
+    coercion-site/widening assertions on the **emitted trace** in `ChartRenderer.test.tsx`;
+    `getDisplayValue`'s first ever tests in a new `TableChart.test.tsx`; the marker, the once-per-dashboard
+    warning, the `dataError`-without-empty-state fix and `P13` in `DashboardView.test.tsx`; the
+    `P13` precondition probe in its own file. `fe-test` goes 25 files / 211 passed → **28 files / 237
+    passed**. `ChartRenderer.test.tsx`'s 16 existing tests must pass **unmodified** — they are the
+    regression net for the `resolveColumnName` move. No test may claim pixels: there is no
+    browser-render harness, so evidence stops at the emitted trace/layout objects and component props.

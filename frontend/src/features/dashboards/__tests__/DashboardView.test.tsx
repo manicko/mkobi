@@ -99,6 +99,10 @@ let mockAggregatedData: {
 // failure so the view's persistent inline surface can be asserted.
 let mockDashboardError: Error | null = null
 let mockAggregatedError: Error | null = null
+// P13: whether a failed aggregated query retained its last good data, and the
+// timestamp that data reached the browser.
+let mockRetainedOnError = false
+let mockDataUpdatedAt = 0
 
 // Mock dashboard API
 vi.mock('../api/dashboardApi', () => ({
@@ -118,9 +122,11 @@ vi.mock('../api/dashboardApi', () => ({
     error: mockDashboardError,
   }),
   useAggregatedData: () => ({
-    data: mockAggregatedError ? undefined : mockAggregatedData,
+    data:
+      mockAggregatedError && !mockRetainedOnError ? undefined : mockAggregatedData,
     isLoading: false,
     error: mockAggregatedError,
+    dataUpdatedAt: mockDataUpdatedAt,
   }),
   useInvalidateDashboard: () => ({
     invalidateDashboard: vi.fn(),
@@ -187,6 +193,8 @@ describe('DashboardView', () => {
     mockAggregatedData = defaultGraphs()
     mockDashboardError = null
     mockAggregatedError = null
+    mockRetainedOnError = false
+    mockDataUpdatedAt = 0
   })
 
   it('renders dashboard title', async () => {
@@ -530,5 +538,45 @@ describe('DashboardView', () => {
     expect(
       screen.queryByText('This dashboard has no charts to display.'),
     ).not.toBeInTheDocument()
+  })
+
+  // --- P13: stale data is shown, marked, and not replaced by an error ---
+
+  it('keeps the last good graphs and marks them out of date on a failed refetch', async () => {
+    mockAggregatedError = new Error('refetch failed')
+    mockRetainedOnError = true
+    mockDataUpdatedAt = Date.UTC(2024, 5, 15, 10, 30)
+
+    const Wrapper = createWrapper()
+    render(
+      <Wrapper>
+        <DashboardView />
+      </Wrapper>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText(/Data may be out of date — last updated/)).toBeInTheDocument()
+    })
+    // The retained graphs still render.
+    expect(screen.getByText('Sales by Category')).toBeInTheDocument()
+    // The failure Alert is suppressed while the retained data is shown.
+    expect(screen.queryByText('Failed to load chart data.')).not.toBeInTheDocument()
+  })
+
+  it('shows no stale marker on a first load that fails with no previous data', async () => {
+    mockAggregatedError = new Error('boom')
+    mockRetainedOnError = false
+
+    const Wrapper = createWrapper()
+    render(
+      <Wrapper>
+        <DashboardView />
+      </Wrapper>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to load chart data.')).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/Data may be out of date/)).not.toBeInTheDocument()
   })
 })
