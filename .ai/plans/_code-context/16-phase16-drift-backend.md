@@ -1,0 +1,150 @@
+# Phase 16 — backend/API drift audit (plan authored at `907e052`, tree at `3f0b2ae`)
+
+Scope: backend / API / repository / model / backend-test surfaces of blocks `CHTB-0,1,2,3,5,6,8,9`.
+Method: re-derived from the tree by symbol. The referenced `.ai/plans/_code-context/16-chart-presentation-contract-code-context.md`
+**does exist** (59 261 bytes, tracked) but was not read end-to-end; it is itself a snapshot of the same `907e052` era.
+
+---
+
+## 1. Commit → surface → block table
+
+| Commit | Subject | Touches a phase-16 surface? (symbol) | Block |
+|---|---|---|---|
+| `3f01601` | fix(graphs): refuse undeclared keys inside the graph config | **YES** — `models/types.py::GraphConfigDict` widened 11→**15** keys (`+metrics, +orientation, +barmode, +showlegend`), `types.py::GraphConfigModel` mirrored; `models/graph.py::_reject_unknown_config_keys` + `@field_validator("config", mode="before")` on **`GraphCreate`** and **`GraphUpdate`**. `GraphBase.config`, `GraphRead` untouched | **`CHTB-1` — backend contract LANDED** |
+| `2f3cc1a` | fix(models): forbid undeclared fields on the four route-facing request models | **YES** — `extra="forbid"` on `GraphCreate`/`GraphUpdate`/`DashboardUpdate`/`ProcessingConfigUpdate`; `models/types.py::ProcessingSettingsDict` **deleted** (→ `ProcessingSettingsModel`), `FilterConfigDict` **unchanged** (`extra="allow"` on `FilterConfigModel` honoured per `DP-6`) | `CHTB-1` (top level); constrains `CHTB-6` |
+| `d059b16` | fix(access): scope the aggregate graph_id to its parent dashboard | **NO** — touched `api/routes/data.py` (+20 lines, the `single_graph.dashboard_id != dashboard_id` → 404 assertion only). **`models/data.py` NOT touched.** No `GraphDataResponse` construction site changed | `AZ-8`; **defuses `D-16-6`** |
+| `5ca453f` | perf(aggregated): bound the dashboard aggregate read and make truncation visible | **YES** — `models/data.py::GraphDataResponse` (+`returned_rows`, `total_rows`, `rows_truncated`) and **`AggregatedDataResponse`** (+`total_rows`, `truncated`); `aggregated_data_repo.py` +`get_by_graph_id_limited` / `count_by_graph_id` / `count_by_dashboard_id`; `config.py::DataSettings` (`max_rows_per_graph=2000`, `max_rows_total=20000`) | **`CHTB-5` — count/total field LANDED** |
+| `05a06a0` | fix(aggregated): take the displayed row count from the server | **YES** — `models/data.py::GraphDataResponse.returned_rows` (mandatory) + `AggregatedDataResponse` docstrings | `CHTB-5` |
+| `c01bacd` | fix(aggregated): give the top-level row count one meaning on both paths | **YES** — `api/routes/data.py` single-graph path now reports the **dashboard-wide** `AggregatedDataResponse.total_rows`; per-graph count stays on `GraphDataResponse.total_rows` | `CHTB-5` |
+| `660b6d5` | fix(repositories): pin the stored row order on the aggregated-data read paths | **YES** — `aggregated_data_repo.py`: `.order_by(AggregatedData.id)` on `get_by_dashboard_id` / `get_by_graph_id`; `get_dims_values` → `GROUP BY` + `ORDER BY MIN(id)` | **`CHTB-6` — `[0]`-nondeterminism premise GONE**; still no filter *shape* branch |
+| `a34b56b` | fix(api): bound and validate the filters query payload | **YES** — `models/data.py::AggregatedFiltersRequest` (**new**, `extra="forbid"`, `filters: dict[str, str|int|float|bool]`, `MAX_FILTER_*` bounds); `api/routes/data.py` now parses filters via `AggregatedFiltersRequest.model_validate_json` | **`CHTB-6` — half-landed, and it CHANGES the failure mode** |
+| `a6ad7d2`, `31397db`, `ea1061a`, `7eb1ac7`, `1e869f6`, `297b1c9`, `d4acdbd`, `67e28fa` | processing / model / enum / metric_agg fixes | **NO** — no phase-16 surface. `ea1061a` adds `frontend/src/shared/types/enums.ts::BarmodeEnum` mirror + `__tests__/enums.test.ts` cross-tier parity; backend `enums.py` unchanged by it | `CHTB-4`/`CHTB-8` client half only |
+
+---
+
+## 2. Four required answers
+
+**(a) Is `CHTB-1`'s contract work already landed?**
+**Yes — the backend half is fully landed by `3f01601`.** `models/types.py::GraphConfigDict` declares **15** keys (`x, y, color, metrics, orientation, barmode, showlegend, title, xaxis, yaxis, yoy, secondary_y, sort_x, sort_color, layout`); `models/graph.py::GraphCreate` / `::GraphUpdate` each carry `@field_validator("config", mode="before") → _reject_unknown_config_keys`, which raises `ValueError(f"unknown graph config key(s): {named}")` computed against `_DECLARED_GRAPH_CONFIG_KEYS = frozenset(GraphConfigDict.__annotations__)`. `GraphRead` deliberately keeps **no** forbid (`2f3cc1a`'s recorded trap: Pydantic propagates the parent extra policy into nested TypedDicts and would break the read path for seeded `config.metrics`). Residual: the round-trip acceptance criterion (`create → read → update → read unchanged`) is **not** asserted anywhere; `tests/test_request_boundary_extra_forbid.py::TestGraphConfigNestedVocabulary` asserts declared-accept / undeclared-refuse at the model and route boundary only.
+
+**(b) Does `GraphDataResponse` now carry `metrics` / `dimensions` / `layout` / a count?**
+Declared fields NOW — exactly nine: `graph_id, type, name, data, returned_rows, total_rows, rows_truncated, layout, config`.
+- `metrics`: **NO** field exists. `db/models/graphs.py::Graph.metrics` (`JSONB`, line 76) exists but is **not** serialised anywhere.
+- `dimensions`: **NO** field exists. `db/models/graphs.py::Graph.dimensions` (`JSONB`, line 70) likewise unread by the response.
+- `layout`: **field declared, never populated.** Type `ChartLayoutConfig | None = None`; `json_schema_extra` still advertises `"layout": {"title": "Sales Chart"}`; the class docstring still reads *"Contains the graph metadata (id, type, name) and Plotly.js data"* — false on both counts (they are row dicts, not Plotly data). Neither `GraphDataResponse(...)` construction site (`api/routes/data.py:204`, `:250`) passes `layout`. `tests/test_aggregated_read_path.py::TestAggregateResponseShape::test_single_graph_response_has_expected_shape` asserts `layout` is present **and** states in its docstring that *"this phase does not start populating it."*
+- count: **YES** — `returned_rows: int` (mandatory), `total_rows: int` (mandatory), `rows_truncated: bool`, plus dashboard-wide `AggregatedDataResponse.total_rows` / `.truncated`.
+
+**(c) Is `get_by_graph_id`'s filter comparison still `dims[key].astext == str(value)`?**
+**Yes, byte-identical.** `db/repositories/aggregated_data_repo.py::_graph_filter_conditions` (lines 199–231) builds `AggregatedData.dims[key].astext == str(value)` per key. **No shape branch** (no `in_(...)`, no JSONB containment, no numeric-range predicate). `660b6d5` extracted that helper without touching its comparison semantics — it is now shared by `get_by_graph_id`, `get_by_graph_id_limited` and `count_by_graph_id`. **DRIFT with teeth:** `models/data.py::AggregatedFiltersRequest.filters` is typed `dict[str, str | int | float | bool]`, so a **list value is refused at the request boundary with 422** (verified by executing `AggregatedFiltersRequest(filters={'category': ['A','B']})` → `ValidationError`). `CHT-009`'s premise ("a multiselect filter silently returns zero rows") is therefore **no longer accurate**: a multiselect filter now returns a 422 for the whole dashboard. The failure mode got louder, and the blast radius is dashboard-scoped, not per-chart.
+
+**(d) Does `ORDER BY` now exist on the aggregate read?**
+**Yes.** `ORDER BY aggregated_data.id` on `get_by_dashboard_id` (:183), `get_by_graph_id` (:260) and `get_by_graph_id_limited` (:309). `get_dims_values` orders by `MIN(id)` over `GROUP BY dims[dim].astext` (dedup preserved, order deterministic). The plan's `[0]`-nondeterminism / second-model rationale is **void**. Documented limitation: `ORDER BY id` is wrong under APPEND mode (`_bulk_upsert` keeps stale ids) — recorded as a **phase-14 hand-over `C05-5`** needing an `aggregated_data.ordinal` column, pinned by `tests/test_repositories.py::TestAggregatedDataReadOrder::test_append_mode_upsert_keeps_stale_id_order`.
+
+---
+
+## 3. Per-block verdict table
+
+| Block | Verdict | Evidence |
+|---|---|---|
+| **`CHTB-0`** (inventory / drift contract) | **STILL OPEN** | Every "clustered in one commit" premise is void: `5ca453f` landed the count/truncation contract **and** the client signal atomically *before* phase 16; `c01bacd` fixed the top-level count; `a34b56b` split `CHTB-6`'s two halves across two commits already. The plan's block boundary no longer describes the git reality. |
+| **`CHTB-1`** (`GraphConfigDict` / `GraphCreate` / `GraphUpdate` config contract) | **PARTIALLY LANDED** (backend contract done; round-trip + docs outstanding) | `models/types.py::GraphConfigDict` = 15 keys (`3f01601`); `models/graph.py::GraphCreate`/`::GraphUpdate` refuse undeclared nested keys by name. `tests/test_request_boundary_extra_forbid.py::TestGraphConfigNestedVocabulary` covers model + route refusal. `tests/test_graphs.py::TestGraphsAPI` (17 tests in file) asserts **neither** undeclared-key refusal **nor** a round trip. `GraphConfigDict`'s docstring still claims "the rest are server-side chart options" rather than the adjudicated **reserved** reclassification for `yoy / secondary_y / xaxis / yaxis / layout / sort_x / sort_color`. |
+| **`CHTB-2`** (`metrics` / `dimensions` on the response) | **STILL OPEN** | `models/data.py::GraphDataResponse` declares no `metrics` and no `dimensions`. `db/models/graphs.py::Graph.dimensions` (:70) / `::Graph.metrics` (:76) are populated but unread. Neither construction site (`api/routes/data.py:204`, `:250`) passes them. `d059b16` (AZ-8) did **not** touch them → `D-16-6` no longer gates. |
+| **`CHTB-3`** (`layout` populated + typed) | **STILL OPEN** | `models/data.py::GraphDataResponse.layout` = `ChartLayoutConfig | None = None`, `json_schema_extra` advertises `{"title": "Sales Chart"}` (false), class docstring still claims Plotly.js data. Not passed at either site. `tests/test_aggregated_read_path.py::TestAggregateResponseShape` currently *pins* the un-populated state in prose. `D-16-3` = (b)=(a) is adjudicated and unreclaimed. |
+| **`CHTB-5`** (count / truncation honesty) | **ALREADY LANDED** (backend) · `ALREADY LANDED` (client read) | `GraphDataResponse.returned_rows` + `.total_rows` (both mandatory) + `.rows_truncated`; `AggregatedDataResponse.total_rows` + `.truncated`. Pinned in the published schema by `tests/test_openapi.py::TestAggregatedDataResponseCarriesTruncationContract` (3 tests). Client reads `returned_rows`/`total_rows` in `frontend/src/shared/types/api.types.ts::GraphDataWithConfig`. The `D-16-4` empty-state half (`null` vs `0` distinguishable on the wire) is **not** landed — that half stays open. |
+| **`CHTB-6`** (`filters` semantics: `multiselect` + `range`) | **PARTIALLY LANDED — and the plan's premise is now wrong** | `db/repositories/aggregated_data_repo.py::_graph_filter_conditions` still `dims[key].astext == str(value)`, no shape branch. `ORDER BY id` added (`660b6d5`). `api/routes/data.py::get_aggregated_data_endpoint` now parses through `models/data.py::AggregatedFiltersRequest` (`a34b56b`: `extra="forbid"`, `MAX_FILTER_*` bounds, scalar values only) — **a list value is a 422, not a silent empty result**. `models/types.py::FilterConfigDict.type` is still a bare `str | None` whose comment reads `("select", "multiselect", "range", "date")`; `enums.py::FilterType.RANGE` still exists; `frontend/.../DashboardFilters.tsx` still renders `case 'multiselect'` (arrays) and `case 'range'` (Slider). |
+| **`CHTB-8`** (documentation corrections) | **STILL OPEN** | False claims live: `docs/02-dashboards/dashboards-api.md:398,401,449` document `y_axis` / `colors` (never declared); `docs/09-database/schema-core.md:195-198` same; `docs/11-guides/extend-graphs.md:177` still says *"Bar, line, and pie graphs all work with the default … first metric column"* and `:252` says *"first two dims + first metric"*. `docs/07-frontend/data-api.md` (named by the plan) **does not exist**. |
+| **`CHTB-9`** (filter-value freshness + coverage gate) | **PARTIALLY LANDED** (server `total_values` exists; invalidation + `staleTime: Infinity` do not) | Server: `api/routes/filter_values.py::get_filter_values_endpoint` (`GET /{dashboard_id}/filter-values`) serves `models/data.py::FilterValuesResponse.total_values: int` (true untruncated count) from `services/filter_values_service.py::FilterValuesService.get_filter_values` → `db/repositories/dashboard_filter_values_repo.py::count_filter_values` (index-only `COUNT(*)` over `dashboard_filter_values`). `tests/test_collection_route_bounds.py` line 275 asserts `body["total_values"] == 5`. The **uncommitted** `frontend/src/shared/types/api.types.ts` diff adds `total_values: number` to `FilterValuesResponse` — the client mirror is the only missing server-adjacent piece. Frontend: **zero** `['filterValues']` invalidation call sites (`dashboardApi.ts:92,94` invalidate `['dashboards', id]` and `['aggregatedData', dashboardId]` only) and **no** `staleTime: Infinity` on `useFilterValues` (`dashboardApi.ts:98-102`). |
+
+---
+
+## 4. Plan-vs-tree drift list (plan coordinates / premises now wrong)
+
+1. **Construction-site count.** Plan says "exactly two `GraphDataResponse(...)` construction sites." **Still true** (`api/routes/data.py:204` single-graph, `:250` all-graphs). ✅ Not drift.
+2. **`GraphConfigDict` key count.** Plan §Context says "eleven declared keys." **NOW 15** (`3f01601`). Any implementor reading "eleven" will mis-plan.
+3. **`GraphDataResponse` field list.** Plan says it carries `graph_id / type / name / data / layout / config`. **NOW 9 fields** — `returned_rows`, `total_rows`, `rows_truncated` were added (`5ca453f`, `05a06a0`). The plan's "declared fields" paragraph is stale.
+4. **`CHTB-5`'s truncation signal.** Plan treats "a count/total field on the response" as *not existing* ("`GraphDataResponse` has no count/total field"). **It exists, three of them, and is schema-pinned.** `CHTB-5`'s backend half is obsolete, not open.
+5. **`D-16-6` / `AZ-8` premise.** Plan says AZ-8 (phase 12) "will touch `models/data.py` and the two construction sites." **It touched neither** — `d059b16`'s diff is `api/routes/data.py` +20 lines (an ownership assertion), two doc lines, and a new test class. `CHTB-2` is therefore free to land without co-committing or serialising.
+6. **`[0]`-nondeterminism rationale for `CHTB-6`.** Plan §Rationale and §Risk argue from "the aggregate read carries **no `ORDER BY`**." **`ORDER BY id` landed** (`660b6d5`). Two of the four implementation options collapse; the second-model concern is void; the field/name-refusal work is unaffected.
+7. **`CHT-009`'s multiselect failure mode.** Plan: "a multiselect filter silently returns zero rows." **`a34b56b` turned it into a 422** at the dashboard-scope request boundary. The plan understates the existing defect's blast radius (whole dashboard, not one chart) and mis-describes the mechanism.
+8. **`AggregatedFiltersRequest` exists and the plan does not mention it.** Any implementor who plans a `filters` shape branch inside the repository without reading this model will implement unreachable code (a list can never reach the repo) or will re-open a boundary `a34b56b` already closed.
+9. **`ProcessingSettingsDict` is deleted.** Plan's `CHTB-1` context mentions it as a parallel vocabulary; `31397db` replaced it with `ProcessingSettingsModel`.
+10. **`docs/07-frontend/data-api.md`.** Named by `CHTB-8`/§Context as carrying the response contract. **Does not exist** (`Test-Path` → `False`).
+11. **The referenced code-context file *does* exist** (`.ai/plans/_code-context/16-chart-presentation-contract-code-context.md`, 59 261 bytes, tracked, same `907e052` vintage) despite the task brief stating it does not.
+12. **`ea1061a` added a `BarmodeEnum` frontend mirror + `__tests__/enums.test.ts` cross-tier parity detector**, which the plan's enum-parity step anticipates as new work. Backend `enums.py` already carried `OrientationEnum`, `BarmodeEnum`, `YoyModeEnum`; nothing changed server-side.
+
+---
+
+## 5. Current state of each named test suite
+
+| Suite | Exists? | What it asserts about the surfaces above | Plan pin still valid? |
+|---|---|---|---|
+| `tests/test_graphs.py::TestGraphsAPI` | ✅ (file has **17** test methods; classes `TestGraphsAPI`, `TestDashboardGraphCreateAudience`) | Admin/editor CRUD, 409 name conflict, cross-dashboard 403. `test_create_graph_admin_success` sends `config={"xaxis":…, "yaxis":…}` (declared → accepted). **No undeclared-key assertion. No round trip.** | ✅ "must stay green unmodified" holds; ❌ the plan's expectation that `CHTB-1` adds its assertions here is unmet — they live in `test_request_boundary_extra_forbid.py` instead. |
+| `tests/test_request_boundary_extra_forbid.py::TestGraphConfigNestedVocabulary` | ✅ (6 tests) | Declared keys accepted at create/update; undeclared nested key refused at create/update (`"bogus" in str(exc)`); top-level undeclared still refused; nested refusal reaches the route as **422 `VALIDATION_ERROR`**. | **Not named by the plan.** This is the real `CHTB-1` gate. |
+| `tests/test_data_endpoint.py::TestAggregatedDataEndpointContract` | ✅ (4 tests) | `graph_id` optional → 200 + `graphs` array; with `graph_id` → exactly 1 graph with matching `graph_id`; single-graph response has `graph_id`/`type`/`name`/`data`; no access → 403. **Asserts nothing about `metrics`, `dimensions`, `layout` or counts.** | ✅ valid pin. `CHTB-2`/`CHTB-3` will extend it, not break it. |
+| `tests/test_aggregated_read_path.py::TestAggregateResponseShape` | ✅ | `set(body.keys()) == {"graphs","total_rows","truncated"}`; per-graph key set is the exact nine including `layout`. **Prose pins `layout` as deliberately unpopulated.** | ⚠️ A `CHTB-3` implementation that *populates* `layout` keeps the key present, so the assertion survives — but its docstring becomes false and must be updated. |
+| `tests/test_aggregate_row_caps.py` (`TestAggregateRowCaps`, `TestTopLevelTotalRowsHasOneMeaning`) | ✅ (7 tests) | No silent truncation; per-graph and total caps; under-cap unchanged; determinism; counts are true; top-level `total_rows` is dashboard-wide on both paths. | ✅ hard `CHTB-5` gate, already green. |
+| `tests/test_openapi.py::TestAggregatedDataResponseCarriesTruncationContract` | ✅ (3 tests) | `GraphDataResponse.total_rows` required `int` in the published schema; `returned_rows` required; `rows_truncated` declared. | ✅ **hard pin** — renaming/removing a count field fails here. Must be respected by any `CHTB-2` field addition. |
+| `tests/test_filter_payload_bounds.py::TestFilterPayloadBounds` | ✅ (7 tests, `a34b56b`) | 20 keys ok / 21 rejected; over-long key; over-long value; over-sized payload; malformed JSON; valid payload returns the same rows. **No list-valued test** (a list is a 422 today, untested). | ✅ valid pin. The untested list rejection is exactly the `CHTB-6` seam. |
+| `tests/test_filter_persistence.py::TestFilterStatePersistence` | ✅ (3 tests) | Filter values available; persist across dashboard navigation; cleared on new upload. **Scalar-only.** | ✅ valid pin, unchanged by phase-16 backend work. |
+| `tests/test_filter_values_consistency.py::TestFilterValuesConsistency` | ✅ (2 tests) | Filter values after overwrite; after append. | ✅ valid pin. |
+| `tests/test_data_service.py::TestDataServiceIntegration` | ✅ (11 tests in class) | `test_get_aggregated_data_with_filters` asserts `result == []` for `{"year": 2023, "category": "Electronics"}` — i.e. **it pins the existing silently-empty behaviour** for scalar filters only. | ✅ valid pin. Note it calls `DataService.get_aggregated_data` (the unbounded legacy path), **not** `get_bounded_aggregated_data` — so `CHTB-6` work in the bounded path is not covered by it. |
+| `tests/test_services_integration.py::TestDataServiceIntegration` | ✅ (4 tests) | Missing task → 404; empty aggregate; no metrics; no dimensions. Nothing about filters or counts. | ✅ valid pin. |
+| `tests/test_error_response_format.py::TestErrorResponseFormat` | ✅ (7 tests) | RFC 7807 body for 400/401/403/404/500 + `error`/`code` presence; no stack trace in 500. | ✅ valid pin, unaffected. |
+| `tests/test_enum_db_consistency.py::TestAllMappedEnumsConsistency` | ✅ | `ENUM_MAPPINGS = [("user_role", UserRole), ("dashboard_permission_level", DashboardPermission), ("processing_status", ProcessingStatus)]` only. `BarmodeEnum`/`OrientationEnum` are **not** DB-mapped, so enum work never hits this. | ✅ valid pin; **no** DB-enum consequence from any `CHTB-1` change. |
+
+---
+
+## 6. `D-16-1` … `D-16-8` — backend-side status
+
+> Note: the two registers **disagree on the ruling letter** for `D-16-1`/`D-16-2`/`D-16-3`/`D-16-4` (`.ai/plans/00-owner-rulings-2026-10-03.md` says (d)/(a)/(a)/(a); `.ai/decisions/ADJUDICATED-2026-10-03-product-owner-rulings.md` cluster 4 says **(B)** and states it overrides the earlier cluster-E entry). **The adjudicated file is the SSOT** — cluster 4 reads "INPUT A … INPUT B is better", i.e. it *is* the second ruling. `9568c98 docs(plans): adjudicate the Product Owner decision register` is the commit that applied it.
+
+| ID | Backend-side status |
+|---|---|
+| **`D-16-1`** | **MOOT — closed by landed code.** The chart-config key set is decided and shipped by `3f01601` (15 declared keys, undeclared refused by name). Both rulings agree the backend is the superset. Nothing backend remains for `CHTB-1`. |
+| **`D-16-2`** | **STILL LIVE.** Adjudicated **(B)**: remove `range` from the control and **reject any stored `range` filter with a message naming the reason**, plus a phase-14 participation for existing rows. Backend still ships `enums.py::FilterType.RANGE`, a `range` branch in `DashboardFilters.tsx`, and a `FilterConfigDict.type` comment listing `"range"`. Zero backend work has landed. |
+| **`D-16-3`** | **STILL LIVE, unimplemented.** Adjudicated **(B)=(A)**: `'category'` survives as the bar default, bar branch merges `xaxis` per `VAL-16-003`. Current client sets `xaxis: { type: 'category' }` unconditionally and ignores `config.xaxis`. Purely client-side; backend unaffected. |
+| **`D-16-4`** | **STILL LIVE, unimplemented.** Adjudicated **(B)**: phase 16 owns all four empty/absent states and **distinguishes absent from zero on the wire**. Backend: `GraphDataResponse.data: list[dict[str, Any]]` cannot express "absent" — no `metrics` field, so a null measure is indistinguishable from an omitted one. Backend work required. |
+| **`D-16-5`** | **CLOSED (ruling made), nothing to build.** All four `H-1…H-4` hand-overs are "held by phase 16, deferred by decision" — i.e. `CHTB-9` carries **no** work. |
+| **`D-16-6`** | **MOOT — the premise it arbitrated no longer exists.** Adjudicated register lists it as the single remaining coordinator-owned technical chooser, but its subject (`CHT-003` vs `AZ-8` serialise/co-commit/defer) is resolved by `d059b16` having landed **without touching `models/data.py` or the construction sites**. Options (b) co-commit and (c) defer are both vacuous; option (a) serialise is now trivially satisfied. **`CHTB-2`/`CHTB-3` can land as ordinary independent commits.** Recommend closing the record rather than re-deciding it. |
+| **`D-16-7`** | **RULED (cluster 12, Tech Lead), NOT IMPLEMENTED.** `filterValues` must invalidate on upload **and** pin `staleTime: Infinity`. Backend has no part; frontend has zero `['filterValues']` invalidation sites and no `staleTime`. The one backend-adjacent half — `FilterValuesResponse.total_values` — **is** served (`get_filter_values_endpoint`), and the uncommitted `api.types.ts` diff mirrors it. |
+| **`D-16-8`** | **RULED (B), NOT IMPLEMENTED, out of backend scope.** Coverage thresholds enforced after this phase's blocks land tests. No backend surface. (Recall from the brief: do not run `fe-test`/`--coverage`.) |
+
+---
+
+## 7. Recommended execution order — still-open backend work, minimal scope
+
+Ordered by dependency; no speculative redesign.
+
+1. **`CHTB-2` — add `metrics: list[str] = []` and `dimensions: list[str] = []` to `models/data.py::GraphDataResponse`, populate both at `api/routes/data.py:204` and `:250` from `GraphRepository` reads.**
+   *Why first:* `D-16-6` is void, so nothing blocks it. It is the precondition the adjudicated `D-16-1` explicitly relied on (an additive widening only because names become available).
+   *Must respect:* `tests/test_openapi.py::TestAggregatedDataResponseCarriesTruncationContract` (additive fields are fine; do not touch the three count assertions), `tests/test_aggregated_read_path.py::TestAggregateResponseShape` (**exact key-set assertion — it will FAIL on the two new keys and must be updated in the same commit**), `tests/test_data_endpoint.py::TestAggregatedDataEndpointContract` (still green).
+   *Watch:* `GraphRepository.get` is not `load_only`-restricted here, but `_response_columns_only()` in the repo deliberately `noload`s `AggregatedData.graph` — the endpoint reads graph metadata from `GraphRepository`, so confirm that repo actually loads `dimensions`/`metrics` before assuming they are free.
+
+2. **`CHTB-3` — populate `layout`, fix its type and its three false statements.**
+   Two viable shapes, both minimal: (i) drop the dead `layout` field and its `json_schema_extra`; (ii) keep it and pass the converted `ChartLayoutConfig`. (i) is strictly less code and matches what the client actually consumes (`graph.config.layout` already exists and is what `convertChartLayoutToPlotly(graph.layout)` reads — see `ChartRenderer.tsx:153,162`, which reads the **response** `layout`). **(ii) is the coherent choice given the client already binds to it.** Either way: fix the class docstring ("Plotly.js data" is false — `data` is row dicts) and the `{"layout": {"title": "Sales Chart"}}` example. Update `test_aggregated_read_path.py`'s prose assertion in the same commit.
+
+3. **`CHTB-6` — split the block; do not treat it as one unit.**
+   - **(3a) `multiselect` semantics — highest-value, lowest-risk.** The filter comparison in `_graph_filter_conditions` needs a shape branch, but the *boundary* now forbids the shape entirely. Decide and state, in the model docstring, whether `AggregatedFiltersRequest.filters` widens to accept `list[str]` (then the repo branch becomes reachable) or whether multiselect is refused with a naming message. The current state — client sends arrays, server 422s the **whole dashboard** — is a live defect and should be resolved deliberately, not inherited. Add the missing list-valued test to `tests/test_filter_payload_bounds.py`.
+   - **(3b) `range` — `D-16-2`(B), independently unblocked, must not wait for 3a.** Remove `FilterType.RANGE` (or keep the enum and reject at `filter_service.py::_validate_filter_type`), remove the `range` branch from `DashboardFilters.tsx`, drop `"range"` from the `FilterConfigDict.type` comment, and reject any stored `range` filter with a message naming the reason. Record the existing-row migration as a phase-14 participation. `FilterType` is **not** DB-mapped (`tests/test_enum_db_consistency.py::ENUM_MAPPINGS`), so no migration is implied — **verify** before assuming.
+   - Drop the `ORDER BY`/determinism rationale from the block text; `660b6d5` closed it.
+
+4. **`CHTB-8` — documentation, last, after the code settles.** Correct `dashboards-api.md:398,401,449`, `schema-core.md:195-198`, `extend-graphs.md:177,252`; create `docs/07-frontend/data-api.md` or drop the reference. Update `GraphConfigDict`'s docstring to the adjudicated **reserved** reclassification for `yoy / secondary_y / xaxis / yaxis / layout / sort_x / sort_color`. **Note:** `dashboards-api.md` was already rewritten by `5ca453f` and `a34b56b` — re-read before editing.
+
+5. **Do not touch** `CHTB-5` (landed, schema-pinned) or `CHTB-9`'s gate (ruled, no backend work). `CHTB-9`'s only remaining server-adjacent item is the **uncommitted** `total_values: number` line in `frontend/src/shared/types/api.types.ts` — owned by another agent; do not edit.
+
+**Do not forget:** `tests/test_graphs.py::TestGraphsAPI` is a valid "stay green" pin but is **not** where `CHTB-1`'s assertions live; if the adjudicated round-trip acceptance criterion (`create → read → update → read unchanged`) is in scope, it must be *added*, and `tests/test_request_boundary_extra_forbid.py` is where its sibling assertions already are.
+
+---
+
+## 8. Risks the plan text will mislead a later implementor
+
+- **`CHTB-5` looks open and is not.** Re-implementing a count field collides with a schema-pinned required field.
+- **`CHTB-6`'s "silently returns zero rows" is wrong today.** The real, current failure is a dashboard-scope **422**. An implementor trusting the plan will fix a nonexistent silent-zero bug and leave the live 422 in place.
+- **`AggregatedFiltersRequest` is not in the plan.** Repository-layer shape-branch work is unreachable unless the boundary model is widened first.
+- **`test_aggregated_read_path.py::TestAggregateResponseShape` uses an exact key-set assertion** — it is the one backend test that *must* change for `CHTB-2`, and the plan does not mention it.
+- **`GraphRead` must keep `extra` permissive.** `2f3cc1a` records the reproduced trap: forbidding on `GraphBase` breaks the read path for seeded `config.metrics`. Any "tidy the models" reflex re-breaks it.
+- **The two decision registers disagree on letters.** Reading `00-owner-rulings-2026-10-03.md` gives `(a)` where the adjudicated file gives **(B)** — and for `D-16-2` those are materially different (dimension-only vs removal). Use the adjudicated file.
+- **`docs/02-dashboards/dashboards-api.md` has been rewritten by two phase-11/12 commits.** The plan's line references into it are stale.
+- **`tests/test_data_service.py` exercises the unbounded `get_aggregated_data`, not `get_bounded_aggregated_data`.** `CHTB-6` work in the bounded path has no existing backend coverage.
+
+*Produced by Auditor, block 3.1 of the phase-16 workflow. Read-only; no code, test, doc, migration or config file was modified.*
