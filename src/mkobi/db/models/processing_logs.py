@@ -75,6 +75,9 @@ class ProcessingLog(Base):
         Index("idx_processing_logs_dashboard_id", "dashboard_id"),
         Index("idx_processing_logs_status_finished_at", "status", "finished_at"),
         Index("idx_processing_logs_status_started_at", "status", "started_at"),
+        # Leads with started_at so the repository's unconditional
+        # ``ORDER BY started_at DESC`` can be satisfied from the index.
+        Index("idx_processing_logs_started_at", "started_at"),
     )
 
     # Relationship with dashboard
