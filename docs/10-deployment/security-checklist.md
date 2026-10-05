@@ -30,7 +30,7 @@ The rate limiter is Redis-based and has configurable fail-open/fail-closed behav
 
 | Setting | Development Default | Production Default | Recommendation |
 | --- | --- | --- | --- |
-| `RATE_LIMITER_FAIL_CLOSED` | `false` (fail-open) | `true` (fail-closed) | Always `true` in production |
+| `RATE_LIMITER_FAIL_CLOSED` | `true` (fail-closed) | `true` (fail-closed) | Always `true` in production. Both compose tiers resolve to closed (`docker/docker-compose.yml`, `docker/docker-compose.override.yml`); the dev override exists so a developer **can** set the key, not because the dev default differs. |
 
 #### Behavior
 

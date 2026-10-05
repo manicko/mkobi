@@ -62,7 +62,8 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # Health check endpoints (no auth required) - matches /health and /health/detailed
+        # /health is unauthenticated; /health/detailed is admin-gated at the
+        # application layer (unsatisfied callers get 401/403 through this proxy).
         location ~ ^/health(/detailed)?$ {
             proxy_pass http://app:8000;
             proxy_set_header Host $host;

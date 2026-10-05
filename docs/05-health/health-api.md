@@ -207,7 +207,7 @@ The lease is a load-and-observability optimisation, never a correctness gate: on
 
 **The gate is Redis-dependent — a known, accepted consequence (`SECB-4`).** The gate is `api/deps.py::require_admin_role` (not `require_dashboard_admin_access`, which requires a `dashboard_id` path parameter this endpoint has no way to supply). That dependency resolves the current user, which reads the revocation store from Redis: `require_admin_role` → `get_current_user_dependency` → `get_redis_client_dependency` → `RevocationStoreUnavailableError` → `503`. The gate therefore answers **`503` during a full Redis outage** — while `/health` keeps answering `200`. The chosen implementation accepts that 503 rather than authenticating without a Redis revocation read: weakening revocation to keep one probe usable is the larger risk, and `/health` already covers liveness.
 
-**On the nginx layer.** The health `location` block forwards to the application and overrides only the `Host` header, so an application-level gate on `/health/detailed` **is** effective through nginx; there is no separate nginx access control to change. nginx's own "no auth required" comment near that block is now stale — a phase-12 hand-over, not a claim that production is controlled by nginx rather than the application.
+**On the nginx layer.** The health `location` block forwards to the application and overrides only the `Host` header, so an application-level gate on `/health/detailed` **is** effective through nginx; there is no separate nginx access control to change. nginx's own comment near that block states which endpoint is anonymous (`/health`) and which is admin-gated (`/health/detailed`), and it no longer describes both as auth-free.
 
 ---
 
