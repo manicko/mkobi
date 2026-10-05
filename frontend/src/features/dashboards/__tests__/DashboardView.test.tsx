@@ -55,6 +55,9 @@ let mockAggregatedData: {
     returned_rows: number
     total_rows: number
     rows_truncated: boolean
+    metrics?: string[]
+    dimensions?: string[]
+    config?: { x?: string; metrics?: string[] }
   }>
   total_rows: number
   truncated: boolean
@@ -362,5 +365,170 @@ describe('DashboardView', () => {
       expect(screen.getByText('Failed to load chart data.')).toBeInTheDocument()
     })
     expect(toastError).not.toHaveBeenCalled()
+  })
+
+  // --- R6: the dashboard render states ---
+
+  it('shows the no-charts message for an empty graph list and not the upload advice', async () => {
+    mockAggregatedData = { graphs: [], total_rows: 0, truncated: false }
+
+    const Wrapper = createWrapper()
+    render(
+      <Wrapper>
+        <DashboardView />
+      </Wrapper>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('This dashboard has no charts to display.')).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/Upload data to see charts/)).not.toBeInTheDocument()
+  })
+
+  it('shows the per-graph marker naming the absent measure column', async () => {
+    mockAggregatedData = {
+      graphs: [
+        {
+          graph_id: 'graph-1',
+          type: 'bar',
+          name: 'Sales by Category',
+          data: [{ category: 'A' }, { category: 'B' }],
+          returned_rows: 2,
+          total_rows: 2,
+          rows_truncated: false,
+          metrics: ['revenue'],
+          dimensions: ['category'],
+        },
+      ],
+      total_rows: 2,
+      truncated: false,
+    }
+
+    const Wrapper = createWrapper()
+    render(
+      <Wrapper>
+        <DashboardView />
+      </Wrapper>
+    )
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          'The measure "revenue" is not in the served data, so this chart shows a gap instead of a value.',
+        ),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('warns once per dashboard and marks each absent-measure graph', async () => {
+    mockAggregatedData = {
+      graphs: [
+        {
+          graph_id: 'graph-1',
+          type: 'bar',
+          name: 'Sales by Category',
+          data: [{ category: 'A' }],
+          returned_rows: 1,
+          total_rows: 1,
+          rows_truncated: false,
+          metrics: ['revenue'],
+          dimensions: ['category'],
+        },
+        {
+          graph_id: 'graph-2',
+          type: 'bar',
+          name: 'Cost by Category',
+          data: [{ category: 'A' }],
+          returned_rows: 1,
+          total_rows: 1,
+          rows_truncated: false,
+          metrics: ['cost'],
+          dimensions: ['category'],
+        },
+      ],
+      total_rows: 2,
+      truncated: false,
+    }
+
+    const Wrapper = createWrapper()
+    render(
+      <Wrapper>
+        <DashboardView />
+      </Wrapper>
+    )
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          'Sales by Category',
+        ),
+      ).toBeInTheDocument()
+    })
+    // The roll-up names the aggregate: exactly one, at dashboard scope.
+    expect(
+      screen.getAllByText(
+        'One or more charts have a measure that is not in the served data. Those charts are drawn as gaps, not zeros.',
+      ),
+    ).toHaveLength(1)
+    // The per-graph marker names each column: once per affected graph.
+    expect(screen.getAllByText(/The measure ".+" is not in the served data/)).toHaveLength(2)
+  })
+
+  it('does not warn for a present-zero measure', async () => {
+    // The volume discriminator: today's dashboards are full of zeros and this
+    // block must not warn about them.
+    mockAggregatedData = {
+      graphs: [
+        {
+          graph_id: 'graph-1',
+          type: 'bar',
+          name: 'Sales by Category',
+          data: [{ category: 'A', revenue: 0 }],
+          returned_rows: 1,
+          total_rows: 1,
+          rows_truncated: false,
+          metrics: ['revenue'],
+          dimensions: ['category'],
+        },
+      ],
+      total_rows: 1,
+      truncated: false,
+    }
+
+    const Wrapper = createWrapper()
+    render(
+      <Wrapper>
+        <DashboardView />
+      </Wrapper>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Sales by Category')).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByText(
+        'One or more charts have a measure that is not in the served data. Those charts are drawn as gaps, not zeros.',
+      ),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText(/is not in the served data/)).not.toBeInTheDocument()
+  })
+
+  it('renders only the error alert on a failed load with no cached data', async () => {
+    mockAggregatedError = new Error('boom')
+
+    const Wrapper = createWrapper()
+    render(
+      <Wrapper>
+        <DashboardView />
+      </Wrapper>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to load chart data.')).toBeInTheDocument()
+    })
+    // Today both render, so the view asserts a false "no data" on a failure.
+    expect(
+      screen.queryByText('This dashboard has no charts to display.'),
+    ).not.toBeInTheDocument()
   })
 })

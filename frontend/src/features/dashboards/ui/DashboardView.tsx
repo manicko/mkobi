@@ -13,6 +13,17 @@ import { useDashboard, useAggregatedData, useInvalidateDashboard } from '../api/
 import { DashboardFilters } from './DashboardFilters'
 import { ChartRenderer } from './charts/ChartRenderer'
 import { SkeletonChart } from './charts/SkeletonChart'
+import {
+  DASHBOARD_MEASURE_ABSENT_MESSAGE,
+  MEASURE_ABSENT_MESSAGE,
+  NO_CHARTS_MESSAGE,
+  DashboardDataState,
+  GraphRenderState,
+  classifyDashboard,
+  classifyGraph,
+  hasAbsentMeasure,
+  resolveMeasureColumn,
+} from './charts/chartStates'
 import type { GraphDataWithConfig, FilterDetail } from '../../../shared/types/api.types'
 import type { FilterType } from '../../../shared/types/enums'
 import {
@@ -182,6 +193,15 @@ export function DashboardView() {
 
   const canEdit = ['edit', 'admin'].includes(dashboard.permission)
 
+  const hasGraphs = aggregatedData !== undefined && aggregatedData.graphs.length > 0
+  // The empty branch is reached when no graph row stack renders: either the
+  // response has no graphs, or there is no response. Both are the NO_CHARTS
+  // state, so the served list -- absent or empty -- is classified the same way.
+  const dashboardDataState =
+    aggregatedData !== undefined
+      ? classifyDashboard(aggregatedData)
+      : DashboardDataState.NO_CHARTS
+
   return (
     <Stack sx={{ p: 3 }} spacing={2}>
       <Stack
@@ -234,8 +254,11 @@ export function DashboardView() {
             </Alert>
           )}
 
-          {aggregatedData?.graphs && aggregatedData.graphs.length > 0 ? (
+          {hasGraphs ? (
             <Stack spacing={2}>
+              {aggregatedData.graphs.some(hasAbsentMeasure) && (
+                <Alert severity="warning">{DASHBOARD_MEASURE_ABSENT_MESSAGE}</Alert>
+              )}
               {aggregatedData.graphs.map((graph: GraphDataWithConfig) => (
                 <Paper key={graph.graph_id} variant="outlined" sx={{ p: 2 }}>
                   <Typography variant="h6" gutterBottom>
@@ -251,6 +274,19 @@ export function DashboardView() {
                       Showing {graph.returned_rows} of {graph.total_rows}
                     </Typography>
                   )}
+                  {classifyGraph(graph) === GraphRenderState.MEASURE_ABSENT && (
+                    <Typography
+                      variant="caption"
+                      color="warning.main"
+                      component="p"
+                      sx={{ mb: 1 }}
+                    >
+                      {MEASURE_ABSENT_MESSAGE.replace(
+                        '{column}',
+                        resolveMeasureColumn(graph) ?? '',
+                      )}
+                    </Typography>
+                  )}
                   <Stack sx={{ height: 400 }}>
                     <ChartRenderer graph={graph} />
                   </Stack>
@@ -258,9 +294,12 @@ export function DashboardView() {
               ))}
             </Stack>
           ) : (
-            !dataLoading && (
+            !dataLoading &&
+            !dataError && (
               <Alert severity="info">
-                No data available for this dashboard. Upload data to see charts.
+                {dashboardDataState === DashboardDataState.NO_CHARTS
+                  ? NO_CHARTS_MESSAGE
+                  : null}
               </Alert>
             )
           )}

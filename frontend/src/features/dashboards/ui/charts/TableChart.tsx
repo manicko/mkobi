@@ -1,4 +1,5 @@
 import { formatDate } from '../../../../shared/utils/formatDate'
+import { ABSENT_CELL_MARKER, NO_ROWS_MESSAGE, isAbsentValue } from './chartStates'
 
 interface TableChartData {
   columns?: string[]
@@ -11,8 +12,8 @@ interface TableChartProps {
 }
 
 function getDisplayValue(value: unknown): string {
-  if (value === null || value === undefined) {
-    return ''
+  if (isAbsentValue(value)) {
+    return ABSENT_CELL_MARKER
   }
   if (typeof value === 'object') {
     return JSON.stringify(value)
@@ -30,7 +31,7 @@ export function TableChart({ data, title }: TableChartProps) {
   const displayColumns = data.columns || Object.keys(data.rows[0] || {})
 
   if (!data.rows || data.rows.length === 0) {
-    return <p>No data available</p>
+    return <p>{NO_ROWS_MESSAGE}</p>
   }
 
   return (

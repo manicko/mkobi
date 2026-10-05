@@ -24,25 +24,51 @@ import type { Data, Layout } from 'react-plotly.js'
 import type { PieData, PlotData } from 'plotly.js'
 import type { AxisType, Template } from 'plotly.js'
 
-/** A flat aggregated record as the server emits it. */
-export type ChartRecord = Record<string, string | number>
+/**
+ * A flat aggregated record as the server emits it.
+ *
+ * The value set is widened to the wire truth: a Polars `sum` over an all-null
+ * group is `None` (a `null` field), and `_coerce_dim_value` preserves `bool`
+ * dimensions. A guard that rejected those would drop the whole row, blanking
+ * the category and coercing the measure to a value it never had.
+ */
+export type ChartRecord = Record<string, string | number | boolean | null>
 
-/** A rendered trace plus the type of its `x`/`y` payload. */
-export type ChartElement = string | number
+/**
+ * A rendered trace label: an `x` or pie label. This is exactly the value set
+ * Plotly's `Datum` accepts for a label (`string | number`; a boolean dimension
+ * is stringified by {@link toLabelValue}).
+ */
+export type ChartLabel = string | number
+
+/**
+ * A rendered trace measure: a `y` or pie value. `null` is a gap for a cartesian
+ * `y` (`Datum` includes `null`); a pie has no gapped slice, so the pie builder
+ * drops the paired label instead (see {@link makePieTrace}).
+ */
+export type ChartMeasure = number | null
+
+/** The historical payload alias for the `x`/`y` element union. */
+export type ChartElement = ChartLabel
 
 /** The trace types this module builds; each maps to a distinct payload shape. */
 export type ChartTraceType = 'pie' | 'scatter' | 'bar'
 
 /**
  * True when a value is a flat chart record (a plain object whose fields are
- * strings or numbers). `null`, arrays and non-record objects are rejected.
+ * strings, numbers, booleans, or `null`). Arrays and non-record objects are
+ * rejected.
  */
 export function isChartRecord(value: unknown): value is ChartRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false
   }
   return Object.values(value).every(
-    (field) => typeof field === 'string' || typeof field === 'number',
+    (field) =>
+      typeof field === 'string' ||
+      typeof field === 'number' ||
+      typeof field === 'boolean' ||
+      field === null,
   )
 }
 
@@ -51,11 +77,43 @@ export function isChartRecord(value: unknown): value is ChartRecord {
  *
  * The server may send already-Plotly traces (`{ x: [...], y: [...] }`) or flat
  * records. Both are `Data` at the type level, so access goes through an
- * `unknown` step guarded by `isChartRecord`.
+ * `unknown` step guarded by `isChartRecord`. A present-but-`null` key and an
+ * absent key stay distinguishable here (`null` vs `undefined`) even though both
+ * render as the same gap downstream.
  */
-export function readScalar(value: unknown, key: string): ChartElement | undefined {
+export function readScalar(
+  value: unknown,
+  key: string,
+): string | number | boolean | null | undefined {
   if (!isChartRecord(value)) return undefined
   return value[key]
+}
+
+/**
+ * Narrows a served measure value to a gauge or gap.
+ *
+ * A finite `number` is itself — including `0`, which is checked first so a real
+ * zero is never mistaken for absence. `null`, `undefined`, `NaN`, `Infinity`
+ * and every non-number become `null`: coercing a garbage value to a number is
+ * the same defect as the `?? 0` fallback it replaces.
+ */
+export function toMeasureValue(value: unknown): ChartMeasure {
+  if (typeof value !== 'number') return null
+  return Number.isFinite(value) ? value : null
+}
+
+/**
+ * Narrows a served label value to the `string | number` Plotly accepts.
+ *
+ * An absent label becomes the empty string (the historical default); a boolean
+ * dimension is stringified, since `Datum` excludes `boolean`.
+ */
+export function toLabelValue(
+  value: string | number | boolean | null | undefined,
+): ChartLabel {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'boolean') return String(value)
+  return value
 }
 
 /** The exact set of axis types react-plotly.js declares. */
@@ -134,15 +192,27 @@ export function toLayoutTemplate(value: string | undefined): Template | undefine
  * top-level `x`/`y` — the only `x`/`y` in `lib/pie.d.ts` belong to `PieDomain`,
  * reachable solely through `domain`, which this code never sets — and it pins
  * its own `type` literal (`"pie"`), so only this builder can supply a pie
- * payload that its trace type accepts. Absent members are omitted, never
- * emitted as explicit `undefined`.
+ * payload that its trace type accepts.
+ *
+ * A pie carries no gap: `PieData.values` is `Array<number | string>` and admits
+ * no `null`, so a measure that is absent drops its paired label rather than
+ * becoming a slice — the pie-honest equivalent of a cartesian gap, and never a
+ * zero slice. Absent members are omitted, never emitted as explicit
+ * `undefined`.
  */
 function makePieTrace(
-  labels: ChartElement[],
-  values: ChartElement[],
+  labels: ChartLabel[],
+  values: ChartMeasure[],
   options: { name?: string } = {},
 ): Partial<PieData> {
-  const trace: Partial<PieData> = { labels, values, type: 'pie' }
+  const slices = values.flatMap((value, index) =>
+    value === null ? [] : [{ label: labels[index] ?? '', value }],
+  )
+  const trace: Partial<PieData> = {
+    labels: slices.map((slice) => slice.label),
+    values: slices.map((slice) => slice.value),
+    type: 'pie',
+  }
   if (options.name !== undefined) trace.name = options.name
   return trace
 }
@@ -155,8 +225,8 @@ function makePieTrace(
  * emitted as explicit `undefined`.
  */
 function makeBarTrace(
-  xVals: ChartElement[],
-  yVals: ChartElement[],
+  xVals: ChartLabel[],
+  yVals: ChartMeasure[],
   options: { name?: string; orientation?: 'h' | 'v' } = {},
 ): Partial<PlotData> {
   const trace: Partial<PlotData> = { x: xVals, y: yVals, type: 'bar' }
@@ -173,8 +243,8 @@ function makeBarTrace(
  * omitted, never emitted as explicit `undefined`.
  */
 function makeLineTrace(
-  xVals: ChartElement[],
-  yVals: ChartElement[],
+  xVals: ChartLabel[],
+  yVals: ChartMeasure[],
   options: { name?: string; mode?: 'lines' | 'markers' | 'lines+markers' } = {},
 ): Partial<PlotData> {
   const trace: Partial<PlotData> = { x: xVals, y: yVals, type: 'scatter' }
@@ -194,8 +264,8 @@ function makeLineTrace(
  */
 export function makeTrace(
   type: ChartTraceType,
-  xVals: ChartElement[],
-  yVals: ChartElement[],
+  xVals: ChartLabel[],
+  yVals: ChartMeasure[],
   options: {
     name?: string
     orientation?: 'h' | 'v'

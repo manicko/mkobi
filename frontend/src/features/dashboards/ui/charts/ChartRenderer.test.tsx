@@ -394,4 +394,124 @@ describe('ChartRenderer', () => {
     await waitFor(() => expect(screen.getByTestId('line')).toBeInTheDocument())
     expect(Object.keys(lastLineProps()).sort()).toEqual(['data', 'layout'])
   })
+
+  // --- R6: an absent measure is a gap, not a zero ---
+
+  it('draws an absent measure as a null point in y, not a zero', async () => {
+    render(
+      <ChartRenderer
+        graph={makeGraph({
+          data: [{ category: 'A' }, { category: 'B' }],
+          metrics: ['revenue'],
+          dimensions: ['category'],
+          config: { x: 'category', metrics: ['revenue'] },
+        })}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByTestId('plotly')).toBeInTheDocument())
+    const y = (lastPlotlyProps().data?.[0] as { y?: Array<number | null> }).y ?? []
+    expect(y).toEqual([null, null])
+    expect(y).not.toContain(0)
+  })
+
+  it('renders the chart and suppresses the no-rows message when the measure is absent', async () => {
+    render(
+      <ChartRenderer
+        graph={makeGraph({
+          data: [{ category: 'A' }],
+          metrics: ['revenue'],
+          dimensions: ['category'],
+          config: { x: 'category', metrics: ['revenue'] },
+        })}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByTestId('plotly')).toBeInTheDocument())
+    expect(screen.queryByText('No data available for this chart')).not.toBeInTheDocument()
+  })
+
+  it('keeps a present zero as a number, never a gap', async () => {
+    // Discriminates D3's key order: the number check must run before any
+    // absence test, or a real `0` becomes `null`.
+    render(
+      <ChartRenderer
+        graph={makeGraph({
+          data: [{ category: 'A', revenue: 0 }],
+          metrics: ['revenue'],
+          dimensions: ['category'],
+          config: { x: 'category', metrics: ['revenue'] },
+        })}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByTestId('plotly')).toBeInTheDocument())
+    const y = (lastPlotlyProps().data?.[0] as { y?: Array<number | null> }).y ?? []
+    expect(y).toEqual([0])
+    expect(y[0]).not.toBeNull()
+  })
+
+  it('draws a non-numeric string measure as a gap, not NaN and not zero', async () => {
+    render(
+      <ChartRenderer
+        graph={makeGraph({
+          data: [{ category: 'A', revenue: 'abc' }],
+          metrics: ['revenue'],
+          dimensions: ['category'],
+          config: { x: 'category', metrics: ['revenue'] },
+        })}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByTestId('plotly')).toBeInTheDocument())
+    const y = (lastPlotlyProps().data?.[0] as { y?: Array<number | null> }).y ?? []
+    expect(y).toEqual([null])
+    expect(y).not.toContain(NaN)
+    expect(y).not.toContain(0)
+  })
+
+  it('reads the measure correctly when a record carries an extra null field', async () => {
+    // D4 widening: today `isChartRecord` rejects the whole row, so the measure
+    // reads as absent and becomes `0`; a `null` field must not poison the row.
+    render(
+      <ChartRenderer
+        graph={makeGraph({
+          data: [{ category: 'A', revenue: 7, note: null }],
+          metrics: ['revenue'],
+          dimensions: ['category'],
+          config: { x: 'category', metrics: ['revenue'] },
+        })}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByTestId('plotly')).toBeInTheDocument())
+    const y = (lastPlotlyProps().data?.[0] as { y?: Array<number | null> }).y ?? []
+    expect(y).toEqual([7])
+  })
+
+  it('draws a null point in the grouped-colour branch too', async () => {
+    // Fails if only `collectSeries` is fixed: `groupByColor` has its own
+    // coercion site and its own `y` array.
+    render(
+      <ChartRenderer
+        graph={makeGraph({
+          data: [
+            { category: 'A', year: '2023' },
+            { category: 'A', year: '2024' },
+          ],
+          config: { x: 'category', color: 'year', metrics: ['revenue'] },
+          metrics: ['revenue'],
+          dimensions: ['category', 'year'],
+        })}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByTestId('plotly')).toBeInTheDocument())
+    const data = lastPlotlyProps().data ?? []
+    expect(data).toHaveLength(2)
+    for (const trace of data) {
+      const y = (trace as { y?: Array<number | null> }).y ?? []
+      expect(y).toEqual([null])
+    }
+  })
 })

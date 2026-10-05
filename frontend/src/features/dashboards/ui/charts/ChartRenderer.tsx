@@ -7,12 +7,20 @@ import type { Data, Layout } from 'react-plotly.js'
 import {
   makeTrace,
   readScalar,
+  toLabelValue,
   toLayoutAxis,
   toLayoutTemplate,
+  toMeasureValue,
   toOrientation,
-  type ChartElement,
+  type ChartMeasure,
+  type ChartLabel,
   type ChartTraceType,
 } from './chartConversion'
+import {
+  NO_ROWS_MESSAGE,
+  resolveColumnName,
+  resolveMeasureColumn,
+} from './chartStates'
 
 interface ChartRendererProps {
   graph: GraphDataWithConfig
@@ -33,36 +41,16 @@ function traceTypeFor(graphType: GraphDataWithConfig['type']): ChartTraceType {
   return 'bar'
 }
 
-/**
- * Resolves an operator-configured column name against the served column names.
- *
- * Precedence: the served names are keys on served rows by construction, while
- * the configured names are the operator's pre-alias guess — a guess that misses
- * zeroes the measure. So a configured name that is also served wins (operator
- * intent survives on a multi-measure graph), an absent/empty served list is no
- * authority at all and the configured name stands, and anything else is
- * unresolved.
- */
-function resolveColumnName(
-  configured: string | undefined,
-  served: string[] | undefined,
-): string | undefined {
-  if (served === undefined || served.length === 0) return configured
-  if (configured !== undefined && served.includes(configured)) return configured
-  return undefined
-}
-
 function collectSeries(
   records: Data[],
   xCol: string,
   metricCol: string,
-): { xVals: ChartElement[]; yVals: ChartElement[] } {
-  const xVals: ChartElement[] = []
-  const yVals: ChartElement[] = []
+): { xVals: ChartLabel[]; yVals: ChartMeasure[] } {
+  const xVals: ChartLabel[] = []
+  const yVals: ChartMeasure[] = []
   for (const record of records) {
-    xVals.push(readScalar(record, xCol) ?? '')
-    const metric = readScalar(record, metricCol)
-    yVals.push(typeof metric === 'number' ? metric : Number(metric ?? 0))
+    xVals.push(toLabelValue(readScalar(record, xCol)))
+    yVals.push(toMeasureValue(readScalar(record, metricCol)))
   }
   return { xVals, yVals }
 }
@@ -72,15 +60,14 @@ function groupByColor(
   colorCol: string,
   xCol: string,
   metricCol: string,
-): Map<string, { x: ChartElement[]; y: ChartElement[] }> {
-  const groups = new Map<string, { x: ChartElement[]; y: ChartElement[] }>()
+): Map<string, { x: ChartLabel[]; y: ChartMeasure[] }> {
+  const groups = new Map<string, { x: ChartLabel[]; y: ChartMeasure[] }>()
   for (const record of records) {
     const colorValue = readScalar(record, colorCol)
     const color = colorValue === undefined || colorValue === null ? 'unknown' : String(colorValue)
     const group = groups.get(color) ?? { x: [], y: [] }
-    group.x.push(readScalar(record, xCol) ?? '')
-    const metric = readScalar(record, metricCol)
-    group.y.push(typeof metric === 'number' ? metric : Number(metric ?? 0))
+    group.x.push(toLabelValue(readScalar(record, xCol)))
+    group.y.push(toMeasureValue(readScalar(record, metricCol)))
     groups.set(color, group)
   }
   return groups
@@ -94,8 +81,9 @@ function convertToPlotlyData(graph: GraphDataWithConfig): Data[] {
   // name rather than a column that is not on the rows.
   const xCol = resolveColumnName(config.x, graph.dimensions) ?? graph.dimensions?.[0] ?? 'x'
   const colorCol = resolveColumnName(config.color, graph.dimensions)
-  const metricCol =
-    resolveColumnName(config.metrics?.[0], graph.metrics) ?? graph.metrics?.[0] ?? 'y'
+  // The same resolution the state predicate reads, so the trace and the
+  // classification can never disagree about which column is the measure.
+  const metricCol = resolveMeasureColumn(graph) ?? 'y'
   const orientation = config.orientation ?? 'v'
   const traceType = traceTypeFor(graph.type)
 
@@ -166,7 +154,7 @@ export function ChartRenderer({ graph }: ChartRendererProps) {
   if (graph.data.length === 0) {
     return (
       <div className="flex items-center justify-center h-64 text-gray-500">
-        No data available for this chart
+        {NO_ROWS_MESSAGE}
       </div>
     )
   }
