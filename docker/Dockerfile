@@ -7,7 +7,13 @@
 # -----------------------------------------------------------------------------
 # Stage: frontend-builder - Build React SPA inside Docker
 # -----------------------------------------------------------------------------
-FROM node:20-alpine AS frontend-builder
+# Pinned by digest (resolved from the registry on 2026-10-05 with
+# ``docker buildx imagetools inspect node:20-alpine --format '{{.Manifest.Digest}}'``).
+# A floating tag is not a reproducible build input: the same Dockerfile would
+# resolve to a different image tomorrow and a rollback would not reproduce.
+# The tag is kept alongside the digest for human readability only; the digest
+# is what the build resolves.
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS frontend-builder
 
 WORKDIR /app/frontend
 
@@ -25,9 +31,20 @@ RUN npm run build
 # Stage: base - Stable Python 3.12 on Debian Bookworm (FAST mirrors)
 # Includes build tools for dev/test stages
 # -----------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS base
+# Pinned by digest (resolved from the registry on 2026-10-05 with
+# ``docker buildx imagetools inspect python:3.12-slim-bookworm --format '{{.Manifest.Digest}}'``).
+# The tag is retained for human readability; the digest is the build input.
+FROM python:3.12-slim-bookworm@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3 AS base
 
-# Configure Debian mirror (configurable via --build-arg)
+# Debian mirror policy (RULED: state it, do not invent it).
+# Default: ``deb.debian.org``, the upstream Debian archive, which is correct for
+# a host with unrestricted network access. This argument exists solely so an
+# environment behind a regional mirror (a corporate proxy, an air-gapped
+# network, a slow path to the Debian pool) can override it with a deliberate,
+# recorded ``--build-arg DEBIAN_MIRROR=<host>``. Overriding it changes where
+# package bytes are fetched from, so it is an operator decision that must be
+# recorded next to the build invocation, not a value to be guessed here. It is
+# never overridden by default and is not wired through compose's env surface.
 ARG DEBIAN_MIRROR=deb.debian.org
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -47,9 +64,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv via official installer (pinned version for reproducibility)
+# Install uv via the official installer with an integrity check.
+# UV_VERSION pins the *path* of the installer (the version whose script runs),
+# not the script's integrity: a substituted response at that URL would still
+# execute under a plain ``curl | sh``. The installer is therefore downloaded to
+# a file, checked against UV_INSTALLER_SHA256, and only run on a match; a
+# mismatch aborts the build. The checksum is pinned alongside the version and
+# must be refreshed deliberately whenever UV_VERSION moves.
 ARG UV_VERSION=0.11.16
-RUN curl -LsSf https://astral.sh/uv/${UV_VERSION}/install.sh | sh
+ARG UV_INSTALLER_SHA256=b9f925505899533f36a3acfdf8684c661ff2d5c8735f759fca768367b5996123
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" -o /tmp/uv-install.sh && \
+    echo "${UV_INSTALLER_SHA256}  /tmp/uv-install.sh" | sha256sum -c - && \
+    sh /tmp/uv-install.sh && \
+    rm -f /tmp/uv-install.sh
 ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
@@ -61,8 +88,12 @@ RUN addgroup --system app && adduser --system --group app
 # Stage: prod-base - Minimal runtime base for production
 # Contains only runtime dependencies (no build tools)
 # -----------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS prod-base
+# Pinned by digest (resolved from the registry on 2026-10-05, same command as base).
+FROM python:3.12-slim-bookworm@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3 AS prod-base
 
+# Debian mirror policy: see the ``base`` stage above. Same default, same
+# operator-override contract; kept on both stages because they are independent
+# images and a mirror override must apply to each.
 ARG DEBIAN_MIRROR=deb.debian.org
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -81,9 +112,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv via official installer (pinned version for reproducibility)
+# Install uv via the official installer with an integrity check. See the base
+# stage for why the checksum check exists; the same version and checksum govern
+# both stages so dev/test and prod resolve to the same uv.
 ARG UV_VERSION=0.11.16
-RUN curl -LsSf https://astral.sh/uv/${UV_VERSION}/install.sh | sh
+ARG UV_INSTALLER_SHA256=b9f925505899533f36a3acfdf8684c661ff2d5c8735f759fca768367b5996123
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" -o /tmp/uv-install.sh && \
+    echo "${UV_INSTALLER_SHA256}  /tmp/uv-install.sh" | sha256sum -c - && \
+    sh /tmp/uv-install.sh && \
+    rm -f /tmp/uv-install.sh
 ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app

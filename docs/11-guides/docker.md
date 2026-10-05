@@ -836,8 +836,13 @@ without `--env-file .env` fails in exactly the same way.
    mutates `COMPOSE_PROJECT_NAME`, which would leak into unrelated invocations
 6. **`.env` is never committed** to version control
 7. **Production:** change all default passwords and the JWT secret
-8. **Image scanning:** `docker/scripts/scan-images.ps1` scans built images for
-   CVEs
+8. **Base images are pinned by digest** in the Dockerfile and the compose files,
+   so every build resolves the same bytes; the `uv` installer is verified
+   against a pinned SHA-256 before it runs
+9. **Image scanning is not wired.** The former `docker/scripts/scan-images.ps1`
+   had no schedule, no target and no CI path, so it was deleted rather than kept
+   as a control that reads as one. Add a real scanner to CI before claiming CVE
+   coverage.
 
 > **Important:** the dev override sets `read_only: false` on `app` and
 > `rq-worker`, because both stream and process files under
@@ -879,8 +884,6 @@ without `--env-file .env` fails in exactly the same way.
 │   │   └── 01-create-app-role.sh     # DB initialization (creates mkobi_app role)
 │   ├── nginx/
 │   │   └── nginx.conf                # Nginx configuration (production profile)
-│   └── scripts/
-│       └── scan-images.ps1           # Trivy vulnerability scanner for built images
 └── frontend/
     ├── dist/                         # Built frontend (generated)
     └── ...

@@ -13,6 +13,7 @@ import pytest
 
 from mkobi.config import Settings
 from mkobi.models.enums import EnvironmentEnum, FileExtensionEnum
+import re
 
 
 def _validation_msg(exc_info: pytest.ExceptionInfo) -> str:
@@ -1844,3 +1845,159 @@ class TestRuntimeBoundaryAndSupervision:
                 ("start_period", "60s"),
             ):
                 assert f"{key}: {value}" in block, f"{name}:{key}"
+
+
+
+class TestBuildInputPinning:
+    """OPS-016 (integrity half): every build input resolves to a pinned digest.
+
+    A build that is not reproducible is not a build that can be rolled back to.
+    These tests read docker/Dockerfile and all three compose files directly and
+    pin three properties: every external base image is digest-pinned (an internal
+    stage reference is allowed, since it resolves within the same Dockerfile);
+    the ``uv`` installer is downloaded and checksum-verified rather than piped
+    straight to a shell; and all three locally-built services (``migrate``,
+    ``app``, ``rq-worker``) receive the same ``UV_VERSION`` value, so no service
+    builds from a different input than its peers.
+    """
+
+    # The digest form accepted: ``name[:tag]@sha256:<64 hex>``.
+    _DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
+
+    @staticmethod
+    def _docker_dir():
+        from pathlib import Path
+
+        return Path(__file__).resolve().parent.parent / "docker"
+
+    def _dockerfile_text(self) -> str:
+        return (self._docker_dir() / "Dockerfile").read_text(encoding="utf-8")
+
+    def _base_images(self, text: str) -> list:
+        """Return the image reference of every ``FROM`` line in the Dockerfile."""
+        images = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.upper().startswith("FROM "):
+                # FROM <image> [AS <stage>]
+                images.append(stripped.split()[1])
+        return images
+
+    def _stage_names(self, text: str) -> set:
+        """Return every ``AS <name>`` stage name declared in the Dockerfile."""
+        names = set()
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.upper().startswith("FROM ") and " AS " in stripped.upper():
+                names.add(stripped.split()[-1].lower())
+        return names
+
+    def test_every_external_from_is_digest_pinned(self) -> None:
+        """No external base image is left on a floating tag.
+
+        An internal stage reference (a name declared by another ``FROM ... AS``)
+        is not an external input and is allowed. Anything else must carry a
+        resolved ``@sha256:`` digest or the build is not reproducible.
+        """
+        text = self._dockerfile_text()
+        stages = self._stage_names(text)
+        froms = self._base_images(text)
+        assert froms, "no FROM instructions found"
+        external = [img for img in froms if img.lower() not in stages]
+        assert external, "expected at least one external base image"
+        for image in external:
+            assert self._DIGEST_RE.search(image), f"unpinned base image: {image}"
+
+    def test_compose_images_are_digest_pinned(self) -> None:
+        """Every external ``image:`` in the three compose files is digest-pinned.
+
+        Locally-built services carry a repository-local tag (``mkobi/...``) that
+        is built, never pulled, so the digest rule does not apply to them. Every
+        other image is pulled from a registry and must be pinned.
+        """
+        for compose_path in self._compose_files().values():
+            text = compose_path.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("image:") or stripped.startswith("#"):
+                    continue
+                value = stripped.split(":", 1)[1].strip()
+                # Locally-built artefact: tag is overridable and never pulled.
+                if value.startswith("mkobi/"):
+                    continue
+                assert self._DIGEST_RE.search(value), (
+                    f"{compose_path.name}: unpinned image: {value}"
+                )
+
+    @staticmethod
+    def _compose_files() -> dict:
+        from pathlib import Path
+
+        docker_dir = Path(__file__).resolve().parent.parent / "docker"
+        return {
+            "base": docker_dir / "docker-compose.yml",
+            "override": docker_dir / "docker-compose.override.yml",
+            "test": docker_dir / "docker-compose.test.yml",
+        }
+
+    def test_uv_installer_is_checksum_verified(self) -> None:
+        """The uv installer is fetched to a file and verified, never piped to sh.
+
+        An unverified ``curl | sh`` executes whatever the URL returns; pinning
+        ``UV_VERSION`` pins only the path, not the bytes. The build must download,
+        check a pinned SHA-256 and run the installer only on a match, and it must
+        fail closed on a mismatch.
+        """
+        text = self._dockerfile_text()
+        # The old pipe-to-shell form must be gone entirely.
+        assert "curl -LsSf https://astral.sh/uv/${UV_VERSION}/install.sh | sh" not in text
+        # The download-then-verify mechanism must be present for the pinned version.
+        assert "UV_INSTALLER_SHA256" in text
+        assert "sha256sum -c -" in text
+        # A mismatch must abort: the check runs before the installer is invoked.
+        check_index = text.index("sha256sum -c -")
+        run_index = text.index("sh /tmp/uv-install.sh")
+        assert check_index < run_index, "checksum check must precede installer run"
+
+    def test_all_built_services_receive_the_same_uv_version(self) -> None:
+        """migrate, app and rq-worker pass an identical UV_VERSION build arg.
+
+        The defect was divergence: ``app`` passed an explicit ``UV_VERSION`` while
+        ``migrate`` and ``rq-worker`` passed none and silently fell back to the
+        Dockerfile default. One mechanism must govern all three.
+        """
+        base_text = self._compose_files()["base"].read_text(encoding="utf-8")
+        override_text = self._compose_files()["override"].read_text(encoding="utf-8")
+
+        def uv_arg(block: str) -> str | None:
+            for line in block.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("- UV_VERSION="):
+                    return stripped.split("=", 1)[1].strip()
+            return None
+
+        for name, text in (("base", base_text), ("override", override_text)):
+            values = set()
+            for service in ("migrate", "app", "rq-worker"):
+                block = self._service_block(text, service)
+                value = uv_arg(block)
+                assert value is not None, f"{name}:{service} declares no UV_VERSION arg"
+                values.add(value)
+            assert len(values) == 1, f"{name}: UV_VERSION diverges across services: {values}"
+
+    @staticmethod
+    def _service_block(text: str, service: str) -> str:
+        """Return one top-level service block from a compose file's text."""
+        lines = text.splitlines()
+        start = None
+        for index, line in enumerate(lines):
+            if line.rstrip() == f"  {service}:":
+                start = index
+                break
+        assert start is not None, f"{service} service not found"
+        block = [lines[start]]
+        for line in lines[start + 1:]:
+            if line.startswith("  ") and not line.startswith("    ") and line.strip():
+                break
+            block.append(line)
+        return "\n".join(block)

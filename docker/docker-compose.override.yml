@@ -23,6 +23,10 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: dev
+      # DP-10-8/B5: the tools image builds from the ``base`` stage, which
+      # installs uv, so it receives the same uv version as every other build.
+      args:
+        - UV_VERSION=${UV_VERSION:-0.11.16}
     # Static analysis needs no network, no database and no broker; keeping the
     # tool container off the default network makes an accidental credential
     # fetch from a peer service impossible rather than merely unlikely.
@@ -63,6 +67,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: dev
+      # DP-10-8/B5: the dev tier receives the same uv version as the base tier.
+      args:
+        - UV_VERSION=${UV_VERSION:-0.11.16}
     command: ["alembic", "upgrade", "head"]
     environment:
       ENV: development
@@ -113,6 +120,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: dev
+      # DP-10-8/B5: the dev tier receives the same uv version as the base tier.
+      args:
+        - UV_VERSION=${UV_VERSION:-0.11.16}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -195,6 +205,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: prod
+      # DP-10-8/B5: the dev tier receives the same uv version as the base tier.
+      args:
+        - UV_VERSION=${UV_VERSION:-0.11.16}
     command: ["/app/.venv/bin/python", "-m", "mkobi.rq_worker_wrapper"]
     depends_on:
       redis:

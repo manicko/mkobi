@@ -27,7 +27,9 @@ name: mkobi-test
 
 services:
   test-db:
-    image: postgres:18-bookworm
+    # Pinned by digest (resolved from the registry on 2026-10-05 with
+    # ``docker buildx imagetools inspect postgres:18-bookworm --format '{{.Manifest.Digest}}'``).
+    image: postgres:18-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
     environment:
       POSTGRES_DB: bidb_test
       POSTGRES_USER: postgres
@@ -61,7 +63,9 @@ services:
       - test_network
 
   test-redis:
-    image: redis:7.4-alpine
+    # Pinned by digest (resolved from the registry on 2026-10-05 with
+    # ``docker buildx imagetools inspect redis:7.4-alpine --format '{{.Manifest.Digest}}'``).
+    image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     volumes:
       - test_redis_data:/data
     ports:

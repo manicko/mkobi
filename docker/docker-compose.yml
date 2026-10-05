@@ -14,7 +14,10 @@ services:
   # Note: Using explicit config instead of YAML anchors for clarity
 
   db:
-    image: postgres:18-bookworm
+    # Pinned by digest (resolved from the registry on 2026-10-05 with
+    # ``docker buildx imagetools inspect postgres:18-bookworm --format '{{.Manifest.Digest}}'``).
+    # The tag is retained for human readability; the digest is the build input.
+    image: postgres:18-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
     environment:
       POSTGRES_DB: bidb
       POSTGRES_USER: postgres
@@ -62,6 +65,13 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: prod
+      # DP-10-8/B5: all three built services receive the same uv version from one
+      # place. If this is set on ``app`` only, the other two fall back to the
+      # Dockerfile default and the three services silently build from different
+      # inputs. The value is repeated here so a single edit to UV_VERSION (or an
+      # override from .env) governs migrate, app and rq-worker identically.
+      args:
+        - UV_VERSION=${UV_VERSION:-0.11.16}
     command: ["alembic", "upgrade", "head"]
     environment:
       # The production tier is pinned: this file is the production deployment
@@ -114,8 +124,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: ${DOCKER_TARGET:-prod}
+      # DP-10-8/B5: same uv version as migrate and rq-worker, from one place.
       args:
-        - UV_VERSION=0.11.16
+        - UV_VERSION=${UV_VERSION:-0.11.16}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -202,7 +213,9 @@ services:
 
   # Redis for task queue (RQ workers)
   redis:
-    image: redis:7.4-alpine
+    # Pinned by digest (resolved from the registry on 2026-10-05 with
+    # ``docker buildx imagetools inspect redis:7.4-alpine --format '{{.Manifest.Digest}}'``).
+    image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     volumes:
       - redis_data:/data
     restart: unless-stopped
@@ -228,6 +241,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: prod
+      # DP-10-8/B5: same uv version as migrate and app, from one place.
+      args:
+        - UV_VERSION=${UV_VERSION:-0.11.16}
     command: ["/app/.venv/bin/python", "-m", "mkobi.rq_worker_wrapper"]
     depends_on:
       redis:
@@ -328,7 +344,9 @@ services:
   # This service is production-only (profiles: [production])
   # Optional: Nginx reverse proxy for production
   nginx:
-    image: nginx:1.27-alpine
+    # Pinned by digest (resolved from the registry on 2026-10-05 with
+    # ``docker buildx imagetools inspect nginx:1.27-alpine --format '{{.Manifest.Digest}}'``).
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     depends_on:
       app:
         condition: service_healthy
