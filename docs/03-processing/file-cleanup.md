@@ -208,12 +208,12 @@ horizon (`STALE_FILE_THRESHOLD_HOURS`) and is *not* bounded by the reconciler's
 | `STALE_PROCESSING_TIMEOUT_MINUTES` | Horizon for the two **row** sweeps: an `uploaded` or `processing` row older than this is failed | 30 |
 | `STALE_PROCESSING_CLEANUP_INTERVAL_SECONDS` | Interval between reconciler ticks; all three sweeps ride it | 300 |
 | `STALE_FILE_THRESHOLD_HOURS` | Age before a temp **file** is considered stale | 24 |
-| `LOGS_RETENTION_DAYS` | Retention period for processing logs | 30 |
+| `LOGS_RETENTION_DAYS` | Retention period for processing logs | 90 |
 
 ```python
 # src/mkobi/config.py
 stale_file_threshold_hours: int = Field(default=24, alias="STALE_FILE_THRESHOLD_HOURS")
-logs_retention_days: int = Field(default=30, alias="LOGS_RETENTION_DAYS")
+logs_retention_days: int = Field(default=90, alias="LOGS_RETENTION_DAYS")
 stale_processing_timeout_minutes: int = Field(default=30, alias="STALE_PROCESSING_TIMEOUT_MINUTES")
 stale_processing_cleanup_interval_seconds: int = Field(default=300, alias="STALE_PROCESSING_CLEANUP_INTERVAL_SECONDS")
 ```

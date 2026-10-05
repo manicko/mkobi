@@ -932,7 +932,7 @@ correct ownership for the non-root `app` user.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `STALE_FILE_THRESHOLD_HOURS` | Age threshold for stale temp files | 24 |
-| `LOGS_RETENTION_DAYS` | Log retention period | 30 |
+| `LOGS_RETENTION_DAYS` | Log retention period | 90 |
 
 See [Temp File Cleanup](../03-processing/file-cleanup.md) for the complete
 cleanup architecture.

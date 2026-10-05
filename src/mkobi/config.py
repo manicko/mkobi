@@ -724,7 +724,7 @@ class Settings(BaseSettings):
     admin_password: str = Field(default="CHANGE_ME_ADMIN_PASSWORD", alias="ADMIN_PASSWORD")
 
     # --- Cleanup Settings ---
-    logs_retention_days: int = Field(default=30, alias="LOGS_RETENTION_DAYS")
+    logs_retention_days: int = Field(default=90, alias="LOGS_RETENTION_DAYS")
     stale_file_threshold_hours: int = Field(default=24, alias="STALE_FILE_THRESHOLD_HOURS")
     stale_processing_timeout_minutes: int = Field(default=30, alias="STALE_PROCESSING_TIMEOUT_MINUTES")
     stale_processing_cleanup_interval_seconds: int = Field(default=300, alias="STALE_PROCESSING_CLEANUP_INTERVAL_SECONDS")

@@ -478,7 +478,7 @@ This is configured in both `docker/docker-compose.yml` and `docker/docker-compos
 | Volume | Container Path | Purpose | Backup | Retention | Budget |
 |--------|---------------|---------|--------|-----------|--------|
 | `postgres_data` | `/var/lib/postgresql` | Database persistence | Yes — `pg_dump` + cluster globals, **daily** (`.\Makefile.ps1 backup`) | per `prune-backups` (7 days) | bounded by the database, not the 50 GB artefact budget |
-| `app_data` | `/app/data` | Uploads, logs, temp files | No (scratch; see the note below) | temp files **24 h**; processing logs **90 days** | **50 GB** artefact-and-log budget, enforced before accept — see [Artefact and log volume budget](#artefact-and-log-volume-budget) |
+| `app_data` | `/app/data` | Uploads, logs, temp files | No (scratch; see the note below) | temp files **24 h**; processing logs **90 days** | **50 GB** artefact-and-log budget, a **declared** ceiling — nothing currently admits against it; see [Artefact and log volume budget](#artefact-and-log-volume-budget) |
 | `redis_data` | `/data` | Task queue + reconciler lease | Yes — `BGSAVE` snapshot `bidb-<stamp>.redis.rdb` (`.\Makefile.ps1 backup`) | per `prune-backups` (7 days) | small; RQ registries and the lease marker |
 
 `app_data` holds **two** classes with different lifecycles and **no** backup:
@@ -522,36 +522,53 @@ startup.
 
 ### Artefact and log volume budget
 
-The `app_data` artefact-and-log volume carries a **50 GB** budget, enforced
-**before accepting** an upload that would exceed it. Retention is **temporary
-files 24 hours** and **processing logs 90 days** (the `logs_retention_days`
-setting). The figure is ruled (`DP-10-7` / `DP-11-H`, Product Owner,
-2026-10-03); this is the derivation it is bound to, published beside it:
+The `app_data` artefact-and-log volume carries a **50 GB** budget. It is a
+**declared ceiling**: **nothing currently admits against it** (see the enforcement
+note below). Retention is **temporary files 24 hours** and **processing logs
+90 days** (the `logs_retention_days` setting). The figure is ruled (`DP-10-7` /
+`DP-11-H`, Product Owner, 2026-10-03); this is the derivation it is bound to,
+published beside it:
 
-- **Processing logs (90-day retention, the dominant reclaimed term).** Under
-  `--workers 4` the log ceiling is four rotating handlers of 6 files × 10 MB ≈
-  240 MB live; at 90 days the retained log set is bounded by the rotating
-  ceiling plus the database-side `processing_logs` rows, not by the raw stream.
+- **Processing logs (90-day retention, the dominant reclaimed term).** The log
+  ceiling is expressed as rotating **file** handlers only when an operator
+  explicitly sets `LOGGING__LOG_FILE`; no compose service does so by default, so
+  the **default deployment installs zero rotating file handlers** and this term
+  is **0 MB**. In the conditional case where an operator sets
+  `LOGGING__LOG_FILE` under `--workers 4`, four rotating handlers of 6 files ×
+  10 MB ≈ **240 MB live** is the ceiling, and at 90 days the retained log set is
+  bounded by that rotating ceiling plus the database-side `processing_logs`
+  rows, not by the raw stream.
 - **Upload scratch (24-hour retention).** Uploads are admitted at up to
   `UPLOAD__MAX_FILE_SIZE_MB` (100 MiB default) and removed at a terminal job
   state or by the 24-hour stale sweep; the live set is bounded by the 24-hour
   horizon times the observed accept rate.
 - **Loader expansion.** A `.csv.gz` that passes the compressed-size check
-  expands ~9× in frame memory and ~30× in peak RSS (measured; see
+  expands **5.14× in frame memory** and **14.6–15.2× in peak RSS** relative to
+  its on-disk (compressed) size (measured; see
   `docs/06-backend/architecture.md`), but that is **residency**, not
   `app_data` bytes — the compressed artefact is what sits on the volume until
   the job terminalises it. The expansion bounds the worker's 512 MiB ceiling,
   not the disk budget.
 - **Headroom.** The 50 GB figure is a conservative ceiling with headroom above
-  the sum of the retained terms as configured today. It is an **admission
-  bound**, not an accounting balance: the check rejects an upload that would
-  push the resolved `app_data` path past the budget.
+  the sum of the retained terms as configured today. It is a **declared**
+  ceiling, not an accounting balance: **nothing currently admits against it**, so
+  an operator sizing this volume must not treat it as admission-bounded.
+
+**Corrected arithmetic.** The original derivation added an unconditional 240 MB
+for four rotating handlers. The shipped configuration installs none, so the
+default-case terms are: processing logs **0 MB** + upload scratch (24-hour horizon
+× accept rate) + headroom. The 240 MB term applies **only** in the conditional
+`LOGGING__LOG_FILE` case; even then it is 0.24 GB against a 50 GB budget, so the
+default-vs-conditional difference does not move the published figure — it moves
+the derivation. The 50 GB ruling stands either way.
 
 The budget is a ruling revised only if this derivation contradicts it; today it
-does not. The **ceiling** that enforces it (the pre-accept byte check expressed
-against the resolved upload directory) is phase 06's `FAB-5`; this section owns
-the **budget** figure and its derivation, per the ceiling-versus-budget
-separation (`C11-7`).
+does not. **Nothing currently enforces the ceiling.** There is no `disk_usage`,
+`statvfs`, `free_space`, `budget_bytes` or `MAX_VOLUME` check anywhere in
+`src/mkobi`: the budget is **declared**, not enforced. The check that would
+close the gap — a pre-accept byte check expressed against the resolved upload
+directory — is phase 06's `FAB-5`; this section owns the **budget** figure and
+its derivation, per the ceiling-versus-budget separation (`C11-7`).
 
 ### Capacity Register
 
@@ -564,7 +581,7 @@ Architecture rather than restated, so the register cannot drift from them.
 | Connection budget | `4 × 30 = 120` reachable `125`; `210` unconstrained ceiling | **By reference** — [Connection-Pool Budget](../06-backend/architecture.md#connection-pool-budget) (owns the engine census). The store's `max_connections` is configured nowhere; record in [Store Connection Ceiling](../06-backend/architecture.md#store-connection-ceiling-prf-9) |
 | Loader ceiling (memory) | `.csv.gz` peak ~192–195 MB at 400,000 × 6; worker ceiling 512 MiB | [Loader Memory Ceiling](../06-backend/architecture.md#loader-memory-ceiling-and-csvgz-expansion-prf-8) (`PRF-8`) |
 | Worker ceiling | one replica, 512 MiB / 0.5 CPU; no job timeout / result TTL / burst; throughput unbounded | [Worker Topology](../06-backend/architecture.md#worker-topology-and-throughput-ceiling-prf-7) (`PRF-7`) |
-| Artefact-and-log budget | **50 GB**, enforced before accept; retention temp files **24 h**, processing logs **90 days** | [Artefact and log volume budget](#artefact-and-log-volume-budget) above (`PRF-11` derivation beside it) |
+| Artefact-and-log budget | **50 GB**, a **declared** ceiling — nothing admits against it; retention temp files **24 h**, processing logs **90 days** | [Artefact and log volume budget](#artefact-and-log-volume-budget) above (`PRF-11` derivation beside it) |
 | Database durability | RPO **24 h** / RTO **4 h**, daily backups; rehearsed restore is the gate | [Backup and Restore](#backup-and-restore) above |
 
 **Per-tier memory and CPU limits** (`deploy.resources`, from

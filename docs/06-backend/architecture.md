@@ -140,11 +140,10 @@ ceiling. Both fit with headroom.
 
 **The `.csv.gz` expansion is the number other phases consume.** A `.csv.gz` that
 passes the compressed-size check expands **~5.1× in frame memory** and
-**~14.6–15.2× in peak RSS** relative to its on-disk (compressed) size — i.e.
-~9× class expansion against the *decompressed* stream is what the compressed
-ratio plus the in-frame ratio compose to. The compressed artefact is what sits
-on disk (the `app_data` budget), while the expansion is **residency** that
-bounds the worker's memory ceiling, not the disk budget.
+**~14.6–15.2× in peak RSS** relative to its on-disk (compressed) size. The
+compressed artefact is what sits on disk (the `app_data` budget), while the
+expansion is **residency** that bounds the worker's memory ceiling, not the disk
+budget.
 
 **Naming defect, not this phase's.** `_read_csv_via_scan` materialises the whole
 file (`collect()`), so the "lazy" name is misleading; that naming is phase 05's
