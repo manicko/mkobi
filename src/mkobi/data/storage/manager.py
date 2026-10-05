@@ -25,7 +25,8 @@ import warnings
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from sqlalchemy import and_, delete, select, text
+from sqlalchemy import and_, bindparam, delete, func, select, text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PG_UUID
 from sqlalchemy.dialects.postgresql import insert
 
 from mkobi.db.models.aggregated_data import AggregatedData
@@ -143,9 +144,31 @@ def _canonicalize_dims_value(value: Any) -> Any:
 
 
 class StorageManager:
-    """Storage manager for aggregated data."""
+    """Storage manager for aggregated data.
 
-    CHUNK_SIZE: int = 1000
+    Writes are set-based. The chunk size is derived from the store's
+    bind-parameter limit rather than an arbitrary constant, so the statement
+    count for a save is ``ceil(N / ROWS_PER_STATEMENT)`` and is bounded by a
+    protocol limit, not by a magic number.
+    """
+
+    # PostgreSQL's protocol limit on bind parameters in a single statement
+    # (``MaxBindParams`` in the backend). It is a property of the store, not a
+    # tuning choice.
+    MAX_BIND_PARAMS: int = 65535
+
+    # Columns written per row by ``_write_set_based`` for ``aggregated_data``:
+    # ``dashboard_id``, ``graph_id``, ``dims``, ``metrics``.
+    COLUMNS_PER_ROW: int = 4
+
+    # Largest number of rows a statement may carry before it would exceed the
+    # bind-parameter ceiling in the equivalent row-per-parameter form. With the
+    # four columns above this is 65535 // 4 = 16383. The ``unnest`` form uses a
+    # fixed four array parameters per statement regardless of row count, so
+    # this bound is conservative: it keeps any single array from growing
+    # without limit while still making the statement count a small fraction of
+    # the old per-1000-row chunking.
+    ROWS_PER_STATEMENT: int = MAX_BIND_PARAMS // COLUMNS_PER_ROW
 
     def __init__(self, db: AsyncSession) -> None:
         """Initialize manager.
@@ -394,30 +417,20 @@ class StorageManager:
         aggregates: list[dict[str, Any]],
         table_model: Any,
     ) -> int:
-        """Perform bulk insert."""
-        total_inserted = 0
+        """Perform the OVERWRITE write as one set-based statement per chunk.
 
-        for i in range(0, len(aggregates), self.CHUNK_SIZE):
-            chunk = aggregates[i : i + self.CHUNK_SIZE]
-
-            insert_data = [
-                {
-                    "dashboard_id": dashboard_id,
-                    "graph_id": agg["graph_id"],
-                    "dims": _canonicalize_dims(agg["dims"]),
-                    "metrics": agg["metrics"],
-                }
-                for agg in chunk
-            ]
-
-            await self.db.execute(
-                insert(table_model),
-                insert_data,
-            )
-
-            total_inserted += len(insert_data)
-
-        return total_inserted
+        Each statement is ``INSERT ... SELECT ... FROM unnest(...)`` so a chunk
+        of N rows costs a fixed four bind parameters regardless of N, not one
+        per row. The chunk size is still bounded, by the derived
+        :attr:`ROWS_PER_STATEMENT`, so no single statement carries an unbounded
+        array. Statement count is ``ceil(N / ROWS_PER_STATEMENT)``.
+        """
+        return await self._write_set_based(
+            dashboard_id=dashboard_id,
+            aggregates=aggregates,
+            table_model=table_model,
+            on_conflict=False,
+        )
 
     async def _bulk_upsert(
         self,
@@ -425,40 +438,104 @@ class StorageManager:
         aggregates: list[dict[str, Any]],
         table_model: Any,
     ) -> int:
-        """Perform bulk upsert."""
-        total_processed = 0
+        """Perform the APPEND write as one set-based upsert statement per chunk.
 
-        for i in range(0, len(aggregates), self.CHUNK_SIZE):
-            chunk = aggregates[i : i + self.CHUNK_SIZE]
+        Same ``unnest`` shape as :meth:`_bulk_insert`, plus the
+        ``ON CONFLICT ... DO UPDATE`` clause. The conflict target is the
+        expression unique index ``uq_aggregated_data_dashboard_graph_dims`` on
+        ``((dims)::text)``, named identically to every other write site.
+        """
+        return await self._write_set_based(
+            dashboard_id=dashboard_id,
+            aggregates=aggregates,
+            table_model=table_model,
+            on_conflict=True,
+        )
 
-            insert_data = [
-                {
-                    "dashboard_id": dashboard_id,
-                    "graph_id": agg["graph_id"],
-                    "dims": _canonicalize_dims(agg["dims"]),
-                    "metrics": agg["metrics"],
-                }
-                for agg in chunk
-            ]
+    async def _write_set_based(
+        self,
+        dashboard_id: UUID,
+        aggregates: list[dict[str, Any]],
+        table_model: Any,
+        *,
+        on_conflict: bool,
+    ) -> int:
+        """Write rows in set-based chunks, optionally as an UPSERT.
 
-            stmt = insert(table_model).values(insert_data)
+        Canonicalisation is applied here, at the write surface, so the bytes
+        PostgreSQL serialises into the ``((dims)::text)`` index key are exactly
+        the bytes stored -- the property the conflict target depends on.
 
-            stmt = stmt.on_conflict_do_update(
-                index_elements=[
+        Args:
+            dashboard_id: Dashboard owning every row in ``aggregates``.
+            aggregates: Validated aggregate dicts (``graph_id``, ``dims``,
+                ``metrics``).
+            table_model: The ORM model class for the target table.
+            on_conflict: When True, append the UPSERT clause; when False, the
+                plain insert used by the OVERWRITE path.
+
+        Returns:
+            The number of rows written (one per input aggregate).
+        """
+        total = 0
+
+        for start in range(0, len(aggregates), self.ROWS_PER_STATEMENT):
+            chunk = aggregates[start : start + self.ROWS_PER_STATEMENT]
+
+            dashboard_ids = [dashboard_id] * len(chunk)
+            graph_ids = [agg["graph_id"] for agg in chunk]
+            dims = [_canonicalize_dims(agg["dims"]) for agg in chunk]
+            metrics = [agg["metrics"] for agg in chunk]
+
+            dashboard_ids_param = bindparam(
+                "dashboard_ids", type_=ARRAY(PG_UUID(as_uuid=True))
+            )
+            graph_ids_param = bindparam(
+                "graph_ids", type_=ARRAY(PG_UUID(as_uuid=True))
+            )
+            dims_param = bindparam("dims", type_=ARRAY(JSONB))
+            metrics_param = bindparam("metrics", type_=ARRAY(JSONB))
+
+            stmt = insert(table_model.__table__).from_select(
+                [
                     table_model.dashboard_id,
                     table_model.graph_id,
-                    text("((dims)::text)"),
+                    table_model.dims,
+                    table_model.metrics,
                 ],
-                set_={
-                    "metrics": stmt.excluded.metrics,
+                select(
+                    func.unnest(dashboard_ids_param).label("dashboard_id"),
+                    func.unnest(graph_ids_param).label("graph_id"),
+                    func.unnest(dims_param).label("dims"),
+                    func.unnest(metrics_param).label("metrics"),
+                ),
+            )
+
+            if on_conflict:
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=[
+                        table_model.dashboard_id,
+                        table_model.graph_id,
+                        text("((dims)::text)"),
+                    ],
+                    set_={
+                        "metrics": stmt.excluded.metrics,
+                    },
+                )
+
+            await self.db.execute(
+                stmt,
+                {
+                    "dashboard_ids": dashboard_ids,
+                    "graph_ids": graph_ids,
+                    "dims": dims,
+                    "metrics": metrics,
                 },
             )
 
-            await self.db.execute(stmt)
+            total += len(chunk)
 
-            total_processed += len(insert_data)
-
-        return total_processed
+        return total
 
     async def _validate_graphs_exist(
         self,
