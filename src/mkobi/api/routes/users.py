@@ -80,7 +80,7 @@ async def create_user_endpoint(
         logger.warning("Validation error creating user: %s", e)
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
+            detail="Invalid user data",
         ) from e
     except Exception as e:
         logger.error("Error creating user %s: %s", user_data.email, e)
@@ -266,7 +266,7 @@ async def update_user_endpoint(
         logger.warning("Validation error updating user: %s", e)
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
+            detail="Invalid user data",
         ) from e
     except AppException:
         raise
@@ -320,7 +320,7 @@ async def delete_me_endpoint(
         logger.warning("Error deleting account: %s", e)
         raise AppException(
             code=ErrorCode.PERMISSION_DENIED,
-            detail=str(e),
+            detail="Account cannot be deleted",
         ) from e
     except Exception as e:
         logger.error("Error deleting account id=%s: %s", current_user.id, e)
@@ -374,7 +374,7 @@ async def delete_user_endpoint(
         logger.warning("Error deleting user: %s", e)
         raise AppException(
             code=ErrorCode.PERMISSION_DENIED,
-            detail=str(e),
+            detail="User cannot be deleted",
         ) from e
     except AppException:
         raise

@@ -43,7 +43,7 @@ from mkobi.models.data import (
 )
 from mkobi.models.enums import ErrorCode, UploadMode
 from mkobi.services.data_service import DataService
-from mkobi.utils.exceptions import AppException
+from mkobi.utils.exceptions import AppException, get_error_title
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -72,14 +72,19 @@ def _handle_value_error(error: Exception) -> NoReturn:
     logger.warning("Validation error during upload", exc_info=True)
 
     # Code-first: an exception carrying a usable ErrorCode is classified by it.
+    # The caller gets the code's fixed title, never the exception's text, which
+    # can carry a path or other internal state. The text is already in the log
+    # line above via exc_info.
     code = getattr(error, "code", None)
     if isinstance(code, ErrorCode):
-        raise AppException(code=code, detail=str(error)) from error
+        raise AppException(code=code, detail=get_error_title(code)) from error
     if isinstance(code, str):
         try:
-            raise AppException(code=ErrorCode(code), detail=str(error)) from error
+            resolved = ErrorCode(code)
         except ValueError:
             pass
+        else:
+            raise AppException(code=resolved, detail=get_error_title(resolved)) from error
 
     # --- Substring fallback for code-less driver and library exceptions ---
     # Not the primary classifier: this table exists only for exceptions that
@@ -268,7 +273,7 @@ async def upload_file_endpoint(
         logger.warning("Permission denied for upload: %s", e)
         raise AppException(
             code=ErrorCode.PERMISSION_DENIED,
-            detail=str(e),
+            detail="Permission denied",
         ) from e
     except Exception as e:
         logger.error("Error during file upload", exc_info=True)

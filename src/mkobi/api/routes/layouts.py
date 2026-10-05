@@ -109,7 +109,7 @@ async def create_layout_endpoint(
         logger.warning("Validation error creating layout: %s", e)
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
+            detail="Invalid layout data",
         ) from e
     except IntegrityError:
         # A flush-time integrity error leaves the transaction aborted, so the
@@ -375,7 +375,7 @@ async def update_layout_endpoint(
         logger.warning("Validation error updating layout: %s", e)
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
+            detail="Invalid layout data",
         ) from e
     except IntegrityError:
         # A flush-time integrity error leaves the transaction aborted, so the

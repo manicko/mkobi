@@ -159,7 +159,7 @@ async def create_dashboard_endpoint(
         logger.warning("Validation error creating dashboard: %s", e)
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
+            detail="Invalid dashboard data",
         ) from e
     except Exception as e:
         logger.error(
@@ -407,7 +407,7 @@ async def update_dashboard_endpoint(
         logger.warning("Validation error updating dashboard: %s", e)
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
+            detail="Invalid dashboard data",
         ) from e
     except AppException:
         raise

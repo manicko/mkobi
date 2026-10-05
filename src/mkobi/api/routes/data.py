@@ -270,13 +270,13 @@ async def get_aggregated_data_endpoint(
         logger.warning("Error getting data: %s", e)
         raise AppException(
             code=ErrorCode.NOT_FOUND,
-            detail=str(e),
+            detail="Requested data not found",
         ) from e
     except DashboardPermissionError as e:
         logger.warning("Access denied: %s", e)
         raise AppException(
             code=ErrorCode.PERMISSION_DENIED,
-            detail=str(e),
+            detail="Access denied",
         ) from e
     except Exception as e:
         logger.error(

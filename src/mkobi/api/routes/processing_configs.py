@@ -187,9 +187,10 @@ async def upsert_config_endpoint(
         )
         return config
     except ValueError as e:
+        logger.warning("Invalid processing config update: %s", e)
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
+            detail="Invalid processing config",
         ) from e
     except AppException:
         raise
@@ -260,9 +261,10 @@ async def delete_config_endpoint(
 
         await processing_config_service.delete(dashboard_id, db=db)
     except ValueError as e:
+        logger.warning("Processing config not found on delete: %s", e)
         raise AppException(
             code=ErrorCode.PROCESSING_CONFIG_NOT_FOUND,
-            detail=str(e),
+            detail="Processing config not found",
         ) from e
     except AppException:
         raise

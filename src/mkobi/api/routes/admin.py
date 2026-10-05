@@ -101,9 +101,10 @@ async def update_user_role_admin_endpoint(
             )
         return updated
     except ValueError as e:
+        logger.warning("Invalid user role update: %s", e)
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
+            detail="Invalid user role update",
         ) from e
     except Exception as e:
         logger.error("Error updating user role: %s", e)
@@ -137,9 +138,10 @@ async def delete_user_admin_endpoint(
                 details={"user_id": str(user_id)},
             )
     except ValueError as e:
+        logger.warning("Error deleting user: %s", e)
         raise AppException(
             code=ErrorCode.ACCESS_DENIED,
-            detail=str(e),
+            detail="User cannot be deleted",
         ) from e
     except Exception as e:
         logger.error("Error deleting user: %s", e)
@@ -329,9 +331,10 @@ async def reset_user_password_admin_endpoint(
 
         return result
     except ValueError as exc:
+        logger.warning("Invalid password reset: %s", exc)
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(exc),
+            detail="Invalid password reset",
         ) from exc
     except AppException:
         raise

@@ -130,7 +130,7 @@ async def create_graph_endpoint(
         logger.warning("Validation error creating graph: %s", e)
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
+            detail="Invalid graph data",
         ) from e
     except IntegrityError:
         # A flush-time integrity error leaves the transaction aborted, so the
@@ -400,7 +400,7 @@ async def update_graph_endpoint(
         logger.warning("Validation error updating graph: %s", e)
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
+            detail="Invalid graph data",
         ) from e
     except AppException:
         raise

@@ -109,7 +109,7 @@ async def create_dashboard_graph_endpoint(
         logger.warning("Validation error creating graph: %s", e)
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
+            detail="Invalid graph data",
         ) from e
     except AppException:
         raise

@@ -353,7 +353,7 @@ async def register(
         )
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
+            detail="Invalid registration data",
         ) from e
     except Exception as e:
         logger.error(
@@ -682,7 +682,7 @@ async def change_password(
         )
         raise AppException(
             code=ErrorCode.AUTHENTICATION_FAILED,
-            detail=str(e),
+            detail="Password change failed",
         ) from e
     except Exception as e:
         logger.error(
@@ -788,7 +788,7 @@ async def register_request(
         )
         raise AppException(
             code=ErrorCode.VALIDATION_ERROR,
-            detail=str(e),
+            detail="Invalid registration request",
         ) from e
     except Exception as e:
         logger.error(
