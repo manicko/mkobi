@@ -1,12 +1,14 @@
-"""No-op migration - indexes now created in initial migration.
+"""Retained no-op - its predecessor creates every index its name refers to.
 
 Revision ID: 000000000001
 Revises: 000000000000
 Create Date: 2026-06-02 13:15:00.000000
 
-This migration is now a no-op since the FK indexes are created in the
-initial migration (000000000000). Kept for backward compatibility -
-existing databases may have already applied the indexes via this migration.
+This revision is a retained no-op. Its predecessor, the initial migration
+(000000000000), creates every index this revision's name refers to, so this
+revision neither adds nor removes anything on any database. It is kept in the
+chain only so that version tables which already recorded it remain valid; it
+does not create the indexes, and no database ever applied them through it.
 """
 
 from collections.abc import Sequence
