@@ -122,7 +122,7 @@ async def create_layout_endpoint(
         )
         raise AppException(
             code=ErrorCode.DUPLICATE_RESOURCE,
-            detail=f"A layout with the name '{layout.name}' already exists",
+            detail="A layout with this name already exists",
             details={"name": layout.name},
         ) from None
     except Exception as e:
@@ -388,7 +388,7 @@ async def update_layout_endpoint(
         )
         raise AppException(
             code=ErrorCode.DUPLICATE_RESOURCE,
-            detail=f"A layout with the name '{layout_update.name}' already exists",
+            detail="A layout with this name already exists",
             details={"name": layout_update.name},
         ) from None
     except AppException:

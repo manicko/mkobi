@@ -411,9 +411,14 @@ async def approve_registration_request_admin_endpoint(
             )
 
         if req.status != RegistrationStatus.PENDING:
+            logger.warning(
+                "Approve registration request rejected: not pending: id=%s status=%s",
+                request_id,
+                req.status,
+            )
             raise AppException(
                 code=ErrorCode.DUPLICATE_RESOURCE,
-                detail=f"Request already {req.status}",
+                detail="Registration request is not pending",
             )
 
         # The service owns the create -> flag -> status -> commit -> Redis write sequence.
@@ -423,9 +428,12 @@ async def approve_registration_request_admin_endpoint(
             db=db,
         )
         if result is None:
+            logger.warning(
+                "Approve registration request found no pending row: id=%s", request_id
+            )
             raise AppException(
                 code=ErrorCode.DUPLICATE_RESOURCE,
-                detail=f"Request already {req.status}",
+                detail="Registration request is not pending",
             )
 
         return result
@@ -465,9 +473,14 @@ async def reject_registration_request_admin_endpoint(
             )
 
         if req.status != RegistrationStatus.PENDING:
+            logger.warning(
+                "Reject registration request rejected: not pending: id=%s status=%s",
+                request_id,
+                req.status,
+            )
             raise AppException(
                 code=ErrorCode.DUPLICATE_RESOURCE,
-                detail=f"Request already {req.status}",
+                detail="Registration request is not pending",
             )
 
         # Update request status

@@ -35,10 +35,21 @@ function crossesIntoFeatureOrApp(specifier: string): boolean {
 
 function importSpecifiers(source: string): string[] {
   const specifiers: string[] = []
-  const pattern = /(?:import|export)\s[^'"]*from\s*['"]([^'"]+)['"]|import\s*['"]([^'"]+)['"]/g
+  // Three alternatives, all aware that a cross-layer edge can be reintroduced
+  // through any of them:
+  //   1. static `import ... from '...'` / `export ... from '...'` (incl.
+  //      `export * from` and `export { x } from` re-exports);
+  //   2. side-effect `import '...'`;
+  //   3. dynamic `import('...')`, with optional whitespace or a comment before
+  //      the specifier — the lazy-loading idiom `app/routes.tsx` already uses.
+  const pattern =
+    /(?:import|export)\s+[^'"]*?from\s*['"]([^'"]+)['"]|(?:^|[^\w$])import\s*['"]([^'"]+)['"]|(?:^|[^\w$])import\s*\(\s*\/\*[\s\S]*?\*\/\s*['"]([^'"]+)['"]|(?:^|[^\w$])import\s*\(\s*['"]([^'"]+)['"]/g
   let match: RegExpExecArray | null
   while ((match = pattern.exec(source)) !== null) {
-    specifiers.push(match[1] ?? match[2])
+    const specifier = match[1] ?? match[2] ?? match[3] ?? match[4]
+    if (specifier !== undefined) {
+      specifiers.push(specifier)
+    }
   }
   return specifiers
 }
