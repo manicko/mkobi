@@ -11,6 +11,7 @@ import {
   toLayoutTemplate,
   toOrientation,
   type ChartElement,
+  type ChartTraceType,
 } from './chartConversion'
 
 interface ChartRendererProps {
@@ -26,10 +27,29 @@ function isPlotlyShaped(data: Data[]): boolean {
   return 'x' in Object(first) && 'y' in Object(first)
 }
 
-function traceTypeFor(graphType: GraphDataWithConfig['type']): 'pie' | 'scatter' | 'bar' {
+function traceTypeFor(graphType: GraphDataWithConfig['type']): ChartTraceType {
   if (graphType === 'pie') return 'pie'
   if (graphType === 'line') return 'scatter'
   return 'bar'
+}
+
+/**
+ * Resolves an operator-configured column name against the served column names.
+ *
+ * Precedence: the served names are keys on served rows by construction, while
+ * the configured names are the operator's pre-alias guess — a guess that misses
+ * zeroes the measure. So a configured name that is also served wins (operator
+ * intent survives on a multi-measure graph), an absent/empty served list is no
+ * authority at all and the configured name stands, and anything else is
+ * unresolved.
+ */
+function resolveColumnName(
+  configured: string | undefined,
+  served: string[] | undefined,
+): string | undefined {
+  if (served === undefined || served.length === 0) return configured
+  if (configured !== undefined && served.includes(configured)) return configured
+  return undefined
 }
 
 function collectSeries(
@@ -68,9 +88,14 @@ function groupByColor(
 
 function convertToPlotlyData(graph: GraphDataWithConfig): Data[] {
   const config = graph.config ?? {}
-  const xCol = config.x ?? 'x'
-  const colorCol = config.color
-  const metricCol = config.metrics?.[0] ?? 'y'
+  // Served names win over the operator's pre-alias guess: the served list is a
+  // union of every emitted key, so a configured name that resolves is the
+  // operator's own pick, and an unresolved one falls back to the first served
+  // name rather than a column that is not on the rows.
+  const xCol = resolveColumnName(config.x, graph.dimensions) ?? graph.dimensions?.[0] ?? 'x'
+  const colorCol = resolveColumnName(config.color, graph.dimensions)
+  const metricCol =
+    resolveColumnName(config.metrics?.[0], graph.metrics) ?? graph.metrics?.[0] ?? 'y'
   const orientation = config.orientation ?? 'v'
   const traceType = traceTypeFor(graph.type)
 
@@ -149,7 +174,7 @@ export function ChartRenderer({ graph }: ChartRendererProps) {
   if (graph.type === 'line') {
     return (
       <LineChart
-        data={convertToPlotlyData(graph)[0]}
+        data={convertToPlotlyData(graph)}
         layout={convertChartLayoutToPlotly(graph.layout)}
       />
     )

@@ -483,3 +483,61 @@ Scope executed: `chartConversion.ts::makeTrace`'s per-type trace shape, the line
    survive as a pass-through wrapper; → **`R1`'s queue row correction**: `OrientationEnum` out of
    `SERVER_ONLY_FAMILIES` is still unowned — this block reads `config.orientation` as a `string` and
    does not touch the mirror, so the row still needs reassigning.
+
+## 2026-10-05 — R4 (`CHTB-4`), Implementor decisions
+
+Two commits, both local-validated before committing.
+
+1. **Commit 1 (`f8581e0`).** `GraphDataWithConfig` gains optional `metrics?: string[]` /
+   `dimensions?: string[]`, each with a docstring stating the served/post-alias meaning and naming
+   `config.metrics` / `config.x` as the *pre-alias* field they are NOT. Staged by `git add -p`:
+   `y` to the `GraphDataWithConfig` hunk, `n` to the peer's `FilterValuesResponse.total_values` hunk.
+   `git diff --cached` showed **only** the two new members; `git diff` still showed the peer's
+   `total_values` hunk afterwards. The primary recipe (`git apply --cached -R`) was attempted but the
+   snapshot file could not be produced reliably through the PowerShell/cmd pipeline in this
+   environment (`cmd /c "... > file"` yielded a 0-byte file), so the documented fallback was used.
+   The peer's edit is **uncommitted and unstaged** in the tree after both commits.
+
+2. **`chartConversion.ts`.** `ChartTraceType = 'pie' | 'scatter' | 'bar'` exported; three private
+   builders (`makePieTrace → Partial<PieData>`, `makeBarTrace → Partial<PlotData>`,
+   `makeLineTrace → Partial<PlotData>`) each declaring only their own accepted members;
+   `makeTrace` dispatches, signature and exported surface unchanged. `Data` import retained, `PieData`
+   / `PlotData` type-imports added. No `Record<string, unknown>`, no `as unknown as`, no
+   `eslint-disable` added.
+
+3. **`ChartRenderer.tsx`.** `traceTypeFor` returns `ChartTraceType` (body unchanged); private
+   `resolveColumnName(configured, served)` added; the three `const` defaults replaced by the D-4
+   chains (`measure → resolve(...) ?? served[0] ?? 'y'`, `axis → ... ?? 'x'`,
+   `colour → resolve(config.color, dimensions)` with `undefined` = no grouping). The line branch passes
+   the whole `Data[]`; `[0]` deleted. Bar branch, layout conversion, `isPlotlyShaped`, `collectSeries`,
+   `groupByColor` untouched — including `R6`'s `?? 0` collapse.
+
+4. **`LineChart.tsx`.** `LineChartProps.data: Data → Data[]`; `title` / `xAxisLabel` / `yAxisLabel`
+   and their `chartLayout` merge **deleted**; component now a pass-through of `data` and `layout`.
+
+5. **`ChartRenderer.test.tsx`.** Local `PlotProps.data` narrowed to `Data[]`. The 7 existing tests
+   were run **before** writing any new test and stayed green unchanged — first checkpoint, verified.
+   9 tests added. One iteration fix: test #7 does two `render` calls, so two `line` testids coexist —
+   switched to `getAllByTestId`; and the row fixtures were typed `Data[]` (one cast at the fixture
+   boundary, consistent with `makeGraph`) to satisfy `tsc` in the build.
+
+6. **Acceptance (observed).** `ChartRenderer.test.tsx` **16 passed / 0 failed**; `fe-lint` **0 errors**
+   (one `require-await` error in a new test was fixed by removing the stray `async`); `npm run build`
+   **exit 0**; `fe-test` **24 files / 207 passed / 0 failed**; backend `.\Makefile.ps1 test`
+   **1654 passed** — untouched. `git status` after both commits still shows the two `.kilo/plans/*.md`
+   deletions unstaged and `node_modules/.vite/` untracked.
+
+7. **Discrimination probe — verbatim outcome.** With `resolveColumnName` temporarily forced to
+   `return configured`, the run reported: tests
+   *"resolves the served metric for a pie so its values are not all zero"* (**test #2**) and
+   *"resolves the served metric for a bar so y is not all zero"* (**test #3**) went **red**; **test #5**
+   (*"does not let an empty served list override a configured name"*) stayed **green** under that
+   probe. This is expected, not a defect: test #5's fixture supplies an **empty** served list, which the
+   probe's `always return configured` rule happens to satisfy, so a change confined to the *resolved*
+   served branch cannot move it. Test #5 remains a valid precedence pin against a future
+   "served position 0 always wins" rule; it is not a discriminator of *this* change. Tests #1, #6, #7
+   discriminate the shape/widening change directly and went red under the corresponding reverts.
+   No test labelled "discriminating" remained green under its own probe.
+
+8. **No browser-render claim anywhere.** The evidence is the emitted trace and layout objects plus the
+   component props captured by the spies.

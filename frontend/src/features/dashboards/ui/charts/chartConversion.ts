@@ -9,9 +9,14 @@
  *
  * Everything here narrows with a real type guard; no assertion is used to
  * silence the compiler.
+ *
+ * A trace's shape is per chart type: @types/plotly.js declares `PieData` with
+ * `labels`/`values` (see `lib/pie.d.ts`) while `PlotData` carries `x`/`y` only,
+ * so each builder writes just the members its own type accepts.
  */
 
 import type { Data, Layout } from 'react-plotly.js'
+import type { PieData, PlotData } from 'plotly.js'
 import type { AxisType, Template } from 'plotly.js'
 
 /** A flat aggregated record as the server emits it. */
@@ -19,6 +24,9 @@ export type ChartRecord = Record<string, string | number>
 
 /** A rendered trace plus the type of its `x`/`y` payload. */
 export type ChartElement = string | number
+
+/** The trace types this module builds; each maps to a distinct payload shape. */
+export type ChartTraceType = 'pie' | 'scatter' | 'bar'
 
 /**
  * True when a value is a flat chart record (a plain object whose fields are
@@ -115,14 +123,70 @@ export function toLayoutTemplate(value: string | undefined): Template | undefine
 }
 
 /**
+ * Builds a Plotly pie trace.
+ *
+ * A pie trace carries `labels`/`values`, never `x`/`y`: `Partial<PlotData>`
+ * declares neither of the former, which is why this builder takes its own
+ * `Partial<PieData>`. Absent members are omitted, never emitted as explicit
+ * `undefined`.
+ */
+function makePieTrace(
+  labels: ChartElement[],
+  values: ChartElement[],
+  options: { name?: string } = {},
+): Partial<PieData> {
+  const trace: Partial<PieData> = { labels, values, type: 'pie' }
+  if (options.name !== undefined) trace.name = options.name
+  return trace
+}
+
+/**
+ * Builds a Plotly bar trace.
+ *
+ * A bar trace carries `x`/`y` plus `orientation`; `Partial<PlotData>` is the
+ * only shape that declares all three. Absent members are omitted, never
+ * emitted as explicit `undefined`.
+ */
+function makeBarTrace(
+  xVals: ChartElement[],
+  yVals: ChartElement[],
+  options: { name?: string; orientation?: 'h' | 'v' } = {},
+): Partial<PlotData> {
+  const trace: Partial<PlotData> = { x: xVals, y: yVals, type: 'bar' }
+  if (options.name !== undefined) trace.name = options.name
+  if (options.orientation !== undefined) trace.orientation = options.orientation
+  return trace
+}
+
+/**
+ * Builds a Plotly scatter (line) trace.
+ *
+ * A scatter trace carries `x`/`y` plus `mode`; the literal union Plotly
+ * declares for `mode` requires a `Partial<PlotData>` local. Absent members are
+ * omitted, never emitted as explicit `undefined`.
+ */
+function makeLineTrace(
+  xVals: ChartElement[],
+  yVals: ChartElement[],
+  options: { name?: string; mode?: 'lines' | 'markers' | 'lines+markers' } = {},
+): Partial<PlotData> {
+  const trace: Partial<PlotData> = { x: xVals, y: yVals, type: 'scatter' }
+  if (options.name !== undefined) trace.name = options.name
+  if (options.mode !== undefined) trace.mode = options.mode
+  return trace
+}
+
+/**
  * Builds the plotly `Data` trace for one series.
  *
- * `orientation` and `mode` are assigned through `Partial<Data>` accessors so the
- * literal unions Plotly declares are preserved; callers pass the already-narrow
- * values.
+ * Dispatches to the per-type builder so each trace is written through the
+ * `Partial` whose type actually declares its members: a pie trace is built as
+ * `Partial<PieData>` and a bar/scatter trace as `Partial<PlotData>`. The
+ * `options` bag is forwarded by variable, never as a fresh literal, so no
+ * excess-property check fires and no absent member is ever written.
  */
 export function makeTrace(
-  type: 'pie' | 'scatter' | 'bar',
+  type: ChartTraceType,
   xVals: ChartElement[],
   yVals: ChartElement[],
   options: {
@@ -131,9 +195,7 @@ export function makeTrace(
     mode?: 'lines' | 'markers' | 'lines+markers'
   } = {},
 ): Data {
-  const trace: Partial<Data> = { x: xVals, y: yVals, type }
-  if (options.name !== undefined) trace.name = options.name
-  if (options.orientation !== undefined) trace.orientation = options.orientation
-  if (options.mode !== undefined) trace.mode = options.mode
-  return trace
+  if (type === 'pie') return makePieTrace(xVals, yVals, options)
+  if (type === 'scatter') return makeLineTrace(xVals, yVals, options)
+  return makeBarTrace(xVals, yVals, options)
 }
