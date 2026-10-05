@@ -506,6 +506,37 @@ client cap. It is a starting recommendation, not a decision: the sizing choice
 belongs to the performance phase. The default remains `-1` (no recycle) so
 rollout changes nothing.
 
+### Store Connection Ceiling (`PRF-9`)
+
+The budget arithmetic itself is in [Connection-Pool Budget](#connection-pool-budget)
+above; this records the parts that make the ceiling a **risk** rather than a
+number, and states the sizing choice. The actual values were read from the tree
+rather than taken from a plan, and they **match** the plan's record:
+`pool_size=10`, `max_overflow=20`, `pool_timeout=30`, `pool_recycle=-1`,
+`application_name=mkobi-app`, all on `DatabaseSettings`; `pool_pre_ping` is the
+module-level `POOL_PRE_PING = True` constant (`db/session.py`), not a setting —
+its only correct value is its default. No value differs from the plan.
+
+**The store's `max_connections` is configured nowhere in the repository.** A
+repository-wide search for `max_connections` returns no compose file, no script
+and no config — only audit/plan prose in `.ai/`. The deployment therefore
+declares one side of the arithmetic (`4 × 30 = 120` plus the other consumers)
+against a store whose ceiling is left at PostgreSQL 18's shipped default of
+`100` (with `superuser_reserved_connections` `3` inside it). **That undeclared
+ceiling is the finding**: the pool ceiling is multiplied by the process count on
+one side and undeclared on the other, so the reachable `125` (and the `210`
+unconstrained ceiling) can exceed a store nobody has configured. Setting
+PostgreSQL's `max_connections` explicitly is a compose/database change owned by
+the deployment phase, not made here.
+
+**The sizing choice.** `docs/SPEC.md` assigns the pool-sizing decision to the
+performance phase. The choice, as the sections above already state, is to
+**keep the values and document the budget** (option (a) of `DP-11-C`), not to
+reduce them: the pool is left at `10 + 20 = 30` per application process and the
+`DATABASE__POOL_RECYCLE` default stays `-1` (rollout is a no-op). The ceiling is
+made visible in documentation and in `pg_stat_activity` / `engine.pool.status()`
+rather than changed.
+
 ### Worker Topology and Throughput Ceiling (`PRF-7`)
 
 The RQ successor to the retired in-process `asyncio.Queue` is priced below. This
