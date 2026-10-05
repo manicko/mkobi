@@ -506,6 +506,55 @@ client cap. It is a starting recommendation, not a decision: the sizing choice
 belongs to the performance phase. The default remains `-1` (no recycle) so
 rollout changes nothing.
 
+### Worker Topology and Throughput Ceiling (`PRF-7`)
+
+The RQ successor to the retired in-process `asyncio.Queue` is priced below. This
+**records** the topology; it does not change it (`DP-11-D` keeps one replica),
+and it **does not assert that the worker receives work** — the queue key is
+transient, and a run in which no job arrives is a valid observation, not a
+failure (`TOPO-002` / `TOPO-003` own that question and are not re-opened here).
+
+**Topology as configured.** One `rq-worker` replica (no `deploy.replicas` and no
+`scale:` key in either compose file), consuming `rq:queue:default`
+(`DEFAULT_QUEUE_NAME`). The worker is constructed as `rq.Worker([queue])` and
+started with a bare `worker.work()` (`rq_worker_wrapper.py`), so the following
+are **absent**, verified by searching `src/`, `docker/` and `pyproject.toml` for
+each symbol:
+
+| Bound | Symbol searched for | State |
+| --- | --- | --- |
+| `--burst` (drain and exit) | `--burst` | **absent** — the worker runs forever |
+| Job timeout | `job_timeout` | **absent** — no bound on a single job's duration |
+| Result TTL | `result_ttl` | **absent** — results use rq's library default |
+| Queue-depth alert | `queue_depth`, `queue-depth`, `queue depth` | **absent** — no metric source (see [Monitoring gaps](../10-deployment/deployment.md#monitoring-gaps)) |
+| Rate limits | — | **absent** — nothing bounds the submission rate |
+
+**Retry policy and backoff.** `rq_worker_wrapper.py` retries the **startup**
+connection only: `MAX_RETRIES = 3`, `BASE_DELAY_SECONDS = 2`, with exponential
+backoff `2 ** attempt` (so 1 s, then 2 s, then fail). This is a *connection*
+retry, not a *job* retry — there is no per-job retry policy.
+
+**Worker-liveness TTL.** `WORKER_LIVENESS_TTL_SECONDS = DEFAULT_WORKER_TTL + 60`
+= **420 + 60 = 480 s** (rq 2.9.1, `DEFAULT_WORKER_TTL = 420`). The healthcheck
+judges a registered worker's `last_heartbeat` against this, so a heartbeat older
+than the hash's own TTL proves the hash has expired.
+
+**Published ceiling, with its measurement conditions.** The ceiling is the
+**one replica** above, measured under the `rq-worker` container's applied limit
+of **512 MiB / 0.5 CPU**. There is **no measured throughput number**: the
+longest legitimate job duration is not measured here, and nothing in the
+repository bounds throughput — which is precisely the ceiling the ruling pairs
+with the queue-depth alert to make visible. The queue-depth alert **reads zero**
+because no component emits the metric; that gap is filed and is not built here.
+
+**Observed registry state (transient, with conditions).** At the time of
+measurement, against the **test** cluster's Redis (`mkobi-test-test-redis-1`,
+`redis:7.4-alpine`), the worker registry held **1** member
+(`rq:workers`) and the queue set held `rq:queue:default`. This is the test
+tier, not production, and the queue key is transient — the observation is
+recorded as a state with its conditions, not as a claim that the production
+worker is consuming work.
+
 ## Aggregate Rebuild Exclusion
 
 Two rebuilds of the same dashboard clear and rewrite the same `aggregated_data` rows, so they must
