@@ -108,6 +108,11 @@ pending → approved  (user account created with temp password)
 5. System creates user account with random temp password (`secrets.token_urlsafe(16)`)
 6. Request updated to `status = 'approved'`
 
+**Indexes:**
+- `registration_requests_pkey` — primary key on `id`
+- `registration_requests_email_key` — `UNIQUE` index on `email`
+- `idx_registration_requests_reviewed_by` — B-tree index on `reviewed_by`
+
 ---
 
 ### `dashboard_filters` — Dashboard-Filter Links
@@ -128,8 +133,11 @@ CREATE TABLE dashboard_filters (
 | `filter_id`   | `UUID` | `NOT NULL`, `REFERENCES filters(id) ON DELETE CASCADE`, `PRIMARY KEY` | Filter ID                      |
 
 **Indexes:**
-- `dashboard_filters_pkey` — Composite primary key `(dashboard_id, filter_id)`
-- `idx_dashboard_filters_dashboard_filter` — Composite index on `(dashboard_id, filter_id)`
+- `dashboard_filters_pkey` — Composite primary key `(dashboard_id, filter_id)`; its composite primary key builds this unique index
+
+There is no separate index on `dashboard_filters`. A non-unique index over the
+same two columns was dropped by revision `f47ac18b5b9e` because it duplicated
+the primary key's column set and only added write overhead.
 
 **Note:** This table is defined in `src/mkobi/db/models/filters.py` using SQLAlchemy's `Table` construct (not a mapped class).
 

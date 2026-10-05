@@ -36,7 +36,7 @@ All fixed values in the system are defined as `StrEnum` classes in `src/mkobi/mo
 | 4  | `FilterType`             | `select`, `multiselect`, `range`, `date`        | `filter_type`         | `filters`                |
 | 5  | `RegistrationStatus`     | `pending`, `approved`, `rejected`               | `registration_status` | `registration_requests`  |
 | 6  | `UploadMode`             | `overwrite`, `append`                           | —                     | API parameter            |
-| 7  | `ProcessingStatus`       | `started`, `uploaded`, `processing`, `success`, `failed`, `completed` | `processing_status` | `processing_logs` |
+| 7  | `ProcessingStatus`       | `started`, `uploaded`, `processing`, `completed`, `failed` | `processing_status` | `processing_logs` |
 | 8  | `EnvironmentEnum`        | `production`, `staging`, `development`, `test`  | —                     | Configuration            |
 | 9  | `MimeTypeEnum`           | `text/csv`, `application/gzip`, `application/x-gzip` | —              | Upload validation        |
 | 10 | `FileExtensionEnum`      | `csv`, `csv.gz`                                 | —                     | Upload validation        |
@@ -47,6 +47,9 @@ All fixed values in the system are defined as `StrEnum` classes in `src/mkobi/mo
 | 15 | `YoyModeEnum`            | `absolute`, `percent`                           | —                     | Graph config (JSONB)     |
 | 16 | `ButtonVariant`          | `primary`, `secondary`, `success`, `danger`, `warning`, `info`, `light`, `dark` | — | `Layout vocabulary only (not enforced)` |
 | 17 | `ComponentSize`          | `sm`, `md`, `lg`                                | —                     | `Layout vocabulary only (not enforced)` |
+| 18 | `LeaseAcquisitionResult` | `acquired`, `not_acquired`, `unreachable`       | —                     | Redis reconciler lease acquisition |
+| 19 | `ReconcilerLeaseState`   | `unknown`, `holder`, `not_holder`, `unprotected` | —                    | Redis reconciler lease reporting  |
+| 20 | `ErrorCode`              | `UPPER_SNAKE_CASE` API error codes              | —                     | RFC 7807 error responses          |
 
 ---
 
@@ -200,9 +203,8 @@ class ProcessingStatus(StrEnum):
     STARTED = "started"
     UPLOADED = "uploaded"
     PROCESSING = "processing"
-    SUCCESS = "success"
-    FAILED = "failed"
     COMPLETED = "completed"
+    FAILED = "failed"
 ```
 
 | Value        | Description                              |
@@ -210,9 +212,13 @@ class ProcessingStatus(StrEnum):
 | `started`    | Processing task created                  |
 | `uploaded`   | File uploaded to temporary storage       |
 | `processing` | Data being parsed and aggregated         |
-| `success`    | Processing completed successfully        |
-| `failed`     | Processing encountered an error          |
 | `completed`  | Final state after success (post-processing) |
+| `failed`     | Processing encountered an error          |
+
+> There is **no** `success` value. It was a legacy alias of `completed` and was
+> removed from the PostgreSQL ENUM by revision `4479eb53fd4e`; that revision's
+> reverse declares the same five values in the same order, so a downgrade does
+> not reintroduce it either. The code writes `completed`, never `success`.
 
 **PostgreSQL ENUM:** `processing_status`
 **Table:** `processing_logs.status`
@@ -383,7 +389,7 @@ class ComponentSize(StrEnum):
 
 ## PostgreSQL ENUM Types
 
-The following 5 StrEnum classes have corresponding PostgreSQL ENUM types:
+The following 6 StrEnum classes have corresponding PostgreSQL ENUM types:
 
 | PostgreSQL ENUM Type          | StrEnum Class        | Values                                          |
 | ----------------------------- | -------------------- | ----------------------------------------------- |
@@ -391,7 +397,7 @@ The following 5 StrEnum classes have corresponding PostgreSQL ENUM types:
 | `dashboard_permission_level`  | `DashboardPermission`| `view`, `edit`, `admin`                         |
 | `graph_type`                  | `GraphType`          | `bar`, `line`, `pie`, `table`                   |
 | `filter_type`                 | `FilterType`         | `select`, `multiselect`, `range`, `date`        |
-| `processing_status`           | `ProcessingStatus`   | `started`, `uploaded`, `processing`, `success`, `failed`, `completed` |
+| `processing_status`           | `ProcessingStatus`   | `started`, `uploaded`, `processing`, `completed`, `failed` |
 | `registration_status`         | `RegistrationStatus` | `pending`, `approved`, `rejected`               |
 
 **Note:** PostgreSQL ENUM types are created in the initial migration using `checkfirst=True` for idempotency:

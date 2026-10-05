@@ -126,7 +126,7 @@ Stores distinct filter values extracted from aggregated data during CSV processi
 
 ```sql
 CREATE TABLE dashboard_filter_values (
-    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id              BIGSERIAL PRIMARY KEY,
     dashboard_id    UUID NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE,
     filter_name     VARCHAR(255) NOT NULL,
     filter_value    VARCHAR(1024) NOT NULL
@@ -135,7 +135,7 @@ CREATE TABLE dashboard_filter_values (
 
 | Column        | Type         | Constraints                              | Description                    |
 | ------------- | ------------ | ---------------------------------------- | ------------------------------ |
-| `id`          | `BIGINT`     | `PRIMARY KEY`, `GENERATED ALWAYS AS IDENTITY` | Auto-incrementing identifier |
+| `id`          | `BIGSERIAL`  | `PRIMARY KEY`                            | Auto-incrementing identifier   |
 | `dashboard_id`| `UUID`       | `NOT NULL`, `REFERENCES dashboards(id) ON DELETE CASCADE` | Parent dashboard               |
 | `filter_name` | `VARCHAR(255)` | `NOT NULL`                             | Filter/dimension name          |
 | `filter_value`| `VARCHAR(1024)` | `NOT NULL`                             | Distinct value for the filter  |
@@ -174,16 +174,22 @@ CREATE TABLE processing_logs (
 | `started_at`  | `TIMESTAMPTZ`   | Nullable                                 | Processing start timestamp     |
 | `finished_at` | `TIMESTAMPTZ`   | Nullable                                 | Processing end timestamp       |
 
-**ENUM type:** `processing_status` = `('started', 'uploaded', 'processing', 'success', 'failed', 'completed')`
+**ENUM type:** `processing_status` = `('started', 'uploaded', 'processing', 'completed', 'failed')`
 
 **Status lifecycle:**
 ```
-started → uploaded → processing → success → completed
+started → uploaded → processing → completed
                             ↘ failed
 ```
 
+There is no `success` value — it was a legacy alias of `completed` and was removed
+by revision `4479eb53fd4e`.
+
 **Indexes:**
 - `idx_processing_logs_dashboard_id` — B-tree index on `dashboard_id`
+- `idx_processing_logs_status_finished_at` — B-tree index on `(status, finished_at)`
+- `idx_processing_logs_status_started_at` — B-tree index on `(status, started_at)`
+- `idx_processing_logs_started_at` — B-tree index on `started_at`, satisfying the repository's unconditional `ORDER BY started_at DESC`
 
 ---
 

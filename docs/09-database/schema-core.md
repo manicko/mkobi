@@ -150,6 +150,8 @@ CREATE TABLE dashboards (
 
 **Indexes:**
 - `idx_dashboards_name` — `UNIQUE` index on `name`
+- `idx_dashboards_layout_id` — B-tree index on `layout_id`
+- `idx_dashboards_created_by` — B-tree index on `created_by`
 
 **Cascading behavior:** Deleting a dashboard removes all associated graphs, aggregated data, access entries, filter links, and processing configs via `ON DELETE CASCADE`.
 
