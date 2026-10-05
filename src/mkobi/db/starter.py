@@ -33,6 +33,10 @@ from mkobi.config import (
     is_weak_admin_username,
 )
 from mkobi.core.security import hash_password
+from mkobi.db.test_database_lock import (
+    acquire_test_database_recreate_lock,
+    release_test_database_recreate_lock,
+)
 from mkobi.models.enums import EnvironmentEnum, ProcessingStatus, UserRole
 
 logger = logging.getLogger(__name__)
@@ -355,28 +359,39 @@ class DatabaseStarter:
                 # Get properly quoted database name from the connection's dialect
                 quoted_db_name = conn.dialect.identifier_preparer.quote(db_name)
 
-                # Terminate existing connections to the target database
-                await conn.execute(
-                    text(
-                        "SELECT pg_terminate_backend(pid) "
-                        "FROM pg_stat_activity "
-                        "WHERE datname = :db_name"
-                    ),
-                    {"db_name": db_name},
-                )
+                # Mutual exclusion for this database name, acquired after both
+                # guards above and before the destructive terminate/drop below.
+                # The guards prove the name is safe; this proves no other
+                # process is recreating the same name right now. It is keyed by
+                # the name, so differently named test databases do not serialise.
+                # Released in the finally below, and by connection close as a
+                # backstop.
+                await acquire_test_database_recreate_lock(conn, str(db_name))
+                try:
+                    # Terminate existing connections to the target database
+                    await conn.execute(
+                        text(
+                            "SELECT pg_terminate_backend(pid) "
+                            "FROM pg_stat_activity "
+                            "WHERE datname = :db_name"
+                        ),
+                        {"db_name": db_name},
+                    )
 
-                # Use DDL constructs with properly quoted identifier (defense-in-depth)
-                await conn.execute(
-                    DDL("DROP DATABASE IF EXISTS %(name)s", context={"name": quoted_db_name})
-                )
-                await conn.execute(
-                    DDL("CREATE DATABASE %(name)s", context={"name": quoted_db_name})
-                )
+                    # Use DDL constructs with properly quoted identifier (defense-in-depth)
+                    await conn.execute(
+                        DDL("DROP DATABASE IF EXISTS %(name)s", context={"name": quoted_db_name})
+                    )
+                    await conn.execute(
+                        DDL("CREATE DATABASE %(name)s", context={"name": quoted_db_name})
+                    )
 
-                # Grant mkobi_app CONNECT on the new test database
-                await conn.execute(
-                    DDL("GRANT CONNECT ON DATABASE %(name)s TO mkobi_app", context={"name": quoted_db_name})
-                )
+                    # Grant mkobi_app CONNECT on the new test database
+                    await conn.execute(
+                        DDL("GRANT CONNECT ON DATABASE %(name)s TO mkobi_app", context={"name": quoted_db_name})
+                    )
+                finally:
+                    await release_test_database_recreate_lock(conn, str(db_name))
 
             # Connect to the new DB to grant schema privileges. The engine is
             # created AUTOCOMMIT so the GRANTs would otherwise commit one by
