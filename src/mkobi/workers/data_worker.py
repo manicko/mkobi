@@ -138,6 +138,43 @@ def _map_processing_error_to_code(error: BaseException) -> str:
     return str(ErrorCode.PROCESSING_FAILED.value)
 
 
+# Fixed, class-level sentences for the durable ``processing_logs.message`` on a
+# failure. The raw exception text is never written here: it can carry a file
+# path, a host, or a query, which would become permanent, queryable data. The
+# machine-readable class goes in ``ProcessingLog.error_code``; the full text
+# stays in the operator log (``logger.exception`` at each failure site).
+_FAILURE_MESSAGE_BY_CODE: dict[ErrorCode, str] = {
+    ErrorCode.PROCESSING_FAILED: "Processing failed",
+    ErrorCode.PROCESSING_IN_PROGRESS: "Processing failed: another run holds the dashboard",
+    ErrorCode.VALIDATION_ERROR: "Processing failed: validation error",
+    ErrorCode.FILE_UPLOAD_ERROR: "Processing failed: upload file not found",
+    ErrorCode.FILE_PROCESSING_ERROR: "Processing failed: could not read the upload",
+    ErrorCode.FILE_TOO_LARGE: "Processing failed: file too large",
+    ErrorCode.NOT_FOUND: "Processing failed: processing log not found",
+}
+_DEFAULT_FAILURE_MESSAGE = "Processing failed"
+
+
+def _durable_failure_message(error: BaseException) -> str:
+    """Return the fixed durable message for a processing failure.
+
+    The message names the failure class and never reproduces the exception's
+    text. The machine-readable class is written separately to
+    ``ProcessingLog.error_code`` via :func:`_map_processing_error_to_code`.
+
+    Args:
+        error: The exception that occurred during processing.
+
+    Returns:
+        str: A fixed sentence for ``processing_logs.message``.
+    """
+    code = _map_processing_error_to_code(error)
+    try:
+        return _FAILURE_MESSAGE_BY_CODE[ErrorCode(code)]
+    except ValueError:
+        return _DEFAULT_FAILURE_MESSAGE
+
+
 def _compose_completion_message(
     completion_sentence: str,
     warnings_summary: str,
@@ -930,11 +967,14 @@ async def _process_csv_file_async(
                         exc_info=True,
                     )
 
-            # Update status to failed within the same transaction
+            # Update status to failed within the same transaction. The durable
+            # message is a fixed sentence: the exception text (which can carry a
+            # path, host or query) stays in the log line above and never reaches
+            # the queryable row. The class goes to ``error_code``.
             await _update_processing_log_status(
                 task_id=task_id,
                 status=ProcessingStatus.FAILED,
-                message=f"Processing failed: {error_msg}",
+                message=_durable_failure_message(e),
                 finished_at=datetime.now(UTC),
                 session=db_session,
                 error_code=error_code,
@@ -1031,7 +1071,7 @@ async def _process_csv_file_async(
                 await _update_processing_log_status(
                     task_id=task_id,
                     status=ProcessingStatus.FAILED,
-                    message=f"Processing failed: {error_msg}",
+                    message=_durable_failure_message(e),
                     finished_at=datetime.now(UTC),
                     error_code=error_code,
                 )

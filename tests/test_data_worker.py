@@ -25,6 +25,7 @@ from mkobi.services.file_cleanup import CleanupResult
 from mkobi.utils.exceptions import AppException, ErrorCode
 from mkobi.workers.data_worker import (
     DEFAULT_STALE_PROCESSING_TIMEOUT_MINUTES,
+    _durable_failure_message,
     _map_processing_error_to_code,
     _update_processing_log_status,
     cleanup_stale_processing_logs,
@@ -950,6 +951,103 @@ class TestProcessingErrorClassification:
         ]
         valid = {code.value for code in ErrorCode}
         assert set(emitted) <= valid, f"Unmapped codes emitted: {set(emitted) - valid}"
+
+
+class TestDurableFailureMessage:
+    """SECB-8: the durable message names the class and never the exception text.
+
+    The exception text can carry a file path, a host or a query, which would
+    become permanent, queryable data in ``processing_logs.message``. The class
+    goes to ``ProcessingLog.error_code``; the text stays in the log.
+    """
+
+    def test_message_is_a_fixed_sentence_without_exception_text(self):
+        """A raw exception's text does not reach the durable message."""
+        error = RuntimeError("boom at /app/data/tmp_uploads/secret.csv on host db:5432")
+
+        message = _durable_failure_message(error)
+
+        assert message == "Processing failed"
+        for fragment in ("/app/data", "secret.csv", "db:5432", "boom"):
+            assert fragment not in message
+
+    def test_message_is_fixed_per_failure_class(self):
+        """The message is chosen by class, not interpolated from the error."""
+        assert _durable_failure_message(FileNotFoundError("x")) == (
+            "Processing failed: upload file not found"
+        )
+        assert _durable_failure_message(ValueError("File too large: 999MB")) == (
+            "Processing failed: file too large"
+        )
+        assert _durable_failure_message(
+            AppException(code=ErrorCode.PROCESSING_IN_PROGRESS, detail="lock")
+        ) == "Processing failed: another run holds the dashboard"
+
+    @pytest.mark.asyncio
+    async def test_failure_update_writes_fixed_message_and_error_code(
+        self, async_db_session
+    ):
+        """The durable row carries the fixed message and the machine class.
+
+        The full exception text stays in the operator log, where ``logger``
+        records it, and never in the queryable row.
+        """
+        import logging
+
+        from mkobi.db.repositories.processing_log_repo import ProcessingLogRepository
+
+        log = await ProcessingLogRepository().create_log(
+            dashboard_id=None,
+            status=ProcessingStatus.PROCESSING,
+            message="Processing started",
+            db=async_db_session,
+        )
+
+        raw_error = ValueError("failed to read csv parse at /tmp/leaky/path.csv")
+        raw_text = str(raw_error)
+        error_code = _map_processing_error_to_code(raw_error)
+
+        # Capture the module logger directly: the suite's logging setup does not
+        # guarantee propagation into ``caplog``.
+        captured: list[str] = []
+
+        class _Recorder(logging.Handler):
+            def __init__(self) -> None:
+                super().__init__()
+
+            def emit(self, record: logging.LogRecord) -> None:
+                captured.append(record.getMessage())
+
+        worker_logger = logging.getLogger("mkobi.workers.data_worker")
+        handler = _Recorder()
+        original_level = worker_logger.level
+        original_disabled = worker_logger.disabled
+        worker_logger.addHandler(handler)
+        worker_logger.setLevel(logging.ERROR)
+        worker_logger.disabled = False
+        try:
+            worker_logger.error("Processing failed: %s", raw_text)
+            await _update_processing_log_status(
+                task_id=str(log.id),
+                status=ProcessingStatus.FAILED,
+                message=_durable_failure_message(raw_error),
+                session=async_db_session,
+                error_code=error_code,
+            )
+        finally:
+            worker_logger.removeHandler(handler)
+            worker_logger.setLevel(original_level)
+            worker_logger.disabled = original_disabled
+
+        refreshed = await ProcessingLogRepository().get_by_id(log.id, async_db_session)
+        assert refreshed is not None
+        assert refreshed.message == "Processing failed: could not read the upload"
+        assert refreshed.error_code == ErrorCode.FILE_PROCESSING_ERROR.value
+        # The durable message carries no exception text.
+        assert raw_text not in (refreshed.message or "")
+        assert "/tmp/leaky/path.csv" not in (refreshed.message or "")
+        # The log still carries the exception text.
+        assert any(raw_text in line for line in captured)
 
 
 # --- _validate_processing_config tests ---
@@ -1989,14 +2087,17 @@ class TestEmptySelectionGuard:
             assert exc_info.value.code == ErrorCode.PROCESSING_FAILED
             assert "Skipped Graph" in exc_info.value.detail
 
-            # Ruled status and message: FAILED, naming the skipped graph.
+            # Ruled status and message: FAILED with the fixed failure-class
+            # sentence. SECB-8 moved the exception text out of the durable row,
+            # so the skipped-graph naming survives on the exception detail
+            # (asserted above) and in the log, not in ``processing_logs.message``.
             refreshed_log = await ProcessingLogRepository().get_by_id(
                 log.id, async_db_session
             )
             assert refreshed_log is not None
             assert refreshed_log.status == ProcessingStatus.FAILED
-            assert "Skipped Graph" in (refreshed_log.message or "")
-            assert "no aggregates" in (refreshed_log.message or "")
+            assert refreshed_log.message == "Processing failed"
+            assert refreshed_log.error_code == ErrorCode.PROCESSING_FAILED.value
 
             # Previous aggregate rows are preserved, never silently cleared.
             from sqlalchemy import select
