@@ -4,105 +4,118 @@ import { TableChart } from './TableChart'
 import type { GraphDataWithConfig, ChartLayoutConfig } from '../../../../shared/types/api.types'
 import { BarmodeEnum } from '../../../../shared/types/enums'
 import type { Data, Layout } from 'react-plotly.js'
+import {
+  makeTrace,
+  readScalar,
+  toLayoutAxis,
+  toLayoutTemplate,
+  toOrientation,
+  type ChartElement,
+} from './chartConversion'
 
 interface ChartRendererProps {
   graph: GraphDataWithConfig
 }
 
-function convertToPlotlyData(
-  graph: GraphDataWithConfig,
-): Data[] {
-  const config = graph.config || {}
-  const xCol = config.x || 'x'
-  const colorCol = config.color
-  const metricCols = config.metrics || ['y']
-  const orientation = config.orientation || 'v'
+/**
+ * True when the server already sent Plotly-shaped traces (`x`/`y` present on
+ * the first record) rather than flat aggregated records.
+ */
+function isPlotlyShaped(data: Data[]): boolean {
+  const first: unknown = data[0]
+  return 'x' in Object(first) && 'y' in Object(first)
+}
 
-  // If data is already in Plotly format (has x/y fields), return as-is
-  if (graph.data.length > 0 && 'x' in graph.data[0] && 'y' in graph.data[0]) {
+function traceTypeFor(graphType: GraphDataWithConfig['type']): 'pie' | 'scatter' | 'bar' {
+  if (graphType === 'pie') return 'pie'
+  if (graphType === 'line') return 'scatter'
+  return 'bar'
+}
+
+function collectSeries(
+  records: Data[],
+  xCol: string,
+  metricCol: string,
+): { xVals: ChartElement[]; yVals: ChartElement[] } {
+  const xVals: ChartElement[] = []
+  const yVals: ChartElement[] = []
+  for (const record of records) {
+    xVals.push(readScalar(record, xCol) ?? '')
+    const metric = readScalar(record, metricCol)
+    yVals.push(typeof metric === 'number' ? metric : Number(metric ?? 0))
+  }
+  return { xVals, yVals }
+}
+
+function groupByColor(
+  records: Data[],
+  colorCol: string,
+  xCol: string,
+  metricCol: string,
+): Map<string, { x: ChartElement[]; y: ChartElement[] }> {
+  const groups = new Map<string, { x: ChartElement[]; y: ChartElement[] }>()
+  for (const record of records) {
+    const colorValue = readScalar(record, colorCol)
+    const color = colorValue === undefined || colorValue === null ? 'unknown' : String(colorValue)
+    const group = groups.get(color) ?? { x: [], y: [] }
+    group.x.push(readScalar(record, xCol) ?? '')
+    const metric = readScalar(record, metricCol)
+    group.y.push(typeof metric === 'number' ? metric : Number(metric ?? 0))
+    groups.set(color, group)
+  }
+  return groups
+}
+
+function convertToPlotlyData(graph: GraphDataWithConfig): Data[] {
+  const config = graph.config ?? {}
+  const xCol = config.x ?? 'x'
+  const colorCol = config.color
+  const metricCol = config.metrics?.[0] ?? 'y'
+  const orientation = config.orientation ?? 'v'
+  const traceType = traceTypeFor(graph.type)
+
+  if (graph.data.length === 0) return []
+
+  // Already Plotly-shaped: the server sent traces, not flat records.
+  if (isPlotlyShaped(graph.data) && !colorCol) {
     return graph.data
   }
 
-  // Convert flat dicts to Plotly Data format
-  const metricCol = metricCols[0]
-
-  const makeTrace = (xVals: (string | number)[], yVals: (string | number)[], name?: string): Data => {
-    const trace: Record<string, unknown> = {
-      x: xVals,
-      y: yVals,
-      type: graph.type === 'pie' ? 'pie' :
-            graph.type === 'line' ? 'scatter' : 'bar',
-    }
-    if (name) trace.name = name
-    if (graph.type === 'bar') {
-      trace.orientation = orientation
-    }
-    if (graph.type === 'line') {
-      trace.mode = 'lines'
-    }
-    return trace
-  }
-
   if (colorCol) {
-    // Group by color column for grouped bar chart
-    const groups: Record<string, { x: (string | number)[]; y: (string | number)[] }> = {}
-    for (const row of graph.data as unknown as Record<string, unknown>[]) {
-      const colorVal = row[colorCol]
-      const color = colorVal !== undefined && colorVal !== null
-        ? (typeof colorVal === 'string' || typeof colorVal === 'number' ? String(colorVal) : 'unknown')
-        : 'unknown'
-      const xVal = row[xCol]
-      const x = xVal !== undefined && xVal !== null
-        ? (typeof xVal === 'string' || typeof xVal === 'number' ? xVal : '')
-        : ''
-      const y = Number(row[metricCol] ?? 0)
-      if (!groups[color]) {
-        groups[color] = { x: [], y: [] }
-      }
-      groups[color].x.push(x)
-      groups[color].y.push(y)
-    }
-    return Object.entries(groups).map(([name, trace]) => makeTrace(trace.x, trace.y, name))
+    const groups = groupByColor(graph.data, colorCol, xCol, metricCol)
+    return [...groups.entries()].map(([name, series]) =>
+      makeTrace(traceType, series.x, series.y, { name }),
+    )
   }
 
-  // Single series
-  const xVals: (string | number)[] = []
-  const yVals: (string | number)[] = []
-  for (const row of graph.data as unknown as Record<string, unknown>[]) {
-    xVals.push(row[xCol] as string | number)
-    yVals.push(Number(row[metricCol] ?? 0))
-  }
-  return [makeTrace(xVals, yVals)]
+  const { xVals, yVals } = collectSeries(graph.data, xCol, metricCol)
+  return [
+    makeTrace(traceType, xVals, yVals, {
+      orientation: graph.type === 'bar' ? toOrientation(orientation) : undefined,
+      mode: graph.type === 'line' ? 'lines' : undefined,
+    }),
+  ]
 }
 
 /**
  * Converts ChartLayoutConfig to Plotly's Layout format.
  */
-function convertChartLayoutToPlotly(layout: ChartLayoutConfig | undefined): Partial<Layout> | undefined {
+function convertChartLayoutToPlotly(
+  layout: ChartLayoutConfig | undefined,
+): Partial<Layout> | undefined {
   if (!layout) return undefined
 
   const plotLayout: Partial<Layout> = {}
 
   if (layout.title !== undefined) {
-    plotLayout.title = { text: layout.title } as Partial<Layout>['title']
+    plotLayout.title = { text: layout.title }
   }
-
   if (layout.xaxis) {
-    plotLayout.xaxis = {
-      title: layout.xaxis.title ? { text: layout.xaxis.title } : undefined,
-      type: layout.xaxis.type as 'category' | 'linear' | 'log' | 'date' | undefined,
-      range: layout.xaxis.range,
-    } as Partial<Layout>['xaxis']
+    plotLayout.xaxis = toLayoutAxis(layout.xaxis)
   }
-
   if (layout.yaxis) {
-    plotLayout.yaxis = {
-      title: layout.yaxis.title ? { text: layout.yaxis.title } : undefined,
-      type: layout.yaxis.type as 'category' | 'linear' | 'log' | 'date' | undefined,
-      range: layout.yaxis.range,
-    } as Partial<Layout>['yaxis']
+    plotLayout.yaxis = toLayoutAxis(layout.yaxis)
   }
-
   if (layout.showlegend !== undefined) {
     plotLayout.showlegend = layout.showlegend
   }
@@ -113,7 +126,7 @@ function convertChartLayoutToPlotly(layout: ChartLayoutConfig | undefined): Part
     plotLayout.width = layout.width
   }
   if (layout.template !== undefined) {
-    plotLayout.template = layout.template as Partial<Layout>['template']
+    plotLayout.template = toLayoutTemplate(layout.template)
   }
 
   return plotLayout
@@ -125,7 +138,6 @@ export function ChartRenderer({ graph }: ChartRendererProps) {
     return <TableChart data={{ rows: graph.data }} />
   }
 
-  // Handle empty data state
   if (graph.data.length === 0) {
     return (
       <div className="flex items-center justify-center h-64 text-gray-500">
@@ -134,21 +146,22 @@ export function ChartRenderer({ graph }: ChartRendererProps) {
     )
   }
 
-  // Line charts use LineChart component with scatter type
   if (graph.type === 'line') {
-    return <LineChart data={convertToPlotlyData(graph)[0]} layout={convertChartLayoutToPlotly(graph.layout)} />
+    return (
+      <LineChart
+        data={convertToPlotlyData(graph)[0]}
+        layout={convertChartLayoutToPlotly(graph.layout)}
+      />
+    )
   }
 
-  // Bar and pie charts use PlotlyChart
   const plotlyData = convertToPlotlyData(graph)
 
-  // Bar charts get default layout (barmode, xaxis type)
   if (graph.type === 'bar') {
-    const convertedLayout = convertChartLayoutToPlotly(graph.layout)
     const barLayout: Partial<Layout> = {
-      ...convertedLayout,
-      barmode: graph.config?.barmode || BarmodeEnum.GROUP,
-      xaxis: { type: 'category' as const },
+      ...convertChartLayoutToPlotly(graph.layout),
+      barmode: graph.config?.barmode ?? BarmodeEnum.GROUP,
+      xaxis: { type: 'category' },
     }
     return <PlotlyChart data={plotlyData} layout={barLayout} />
   }
