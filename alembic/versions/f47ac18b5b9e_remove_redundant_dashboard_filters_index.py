@@ -1,23 +1,32 @@
-"""Remove redundant index on dashboard_filters table.
-
-The PRIMARY KEY constraint on (dashboard_id, filter_id) already creates
-a unique index (dashboard_filters_pkey) that serves all queries. The
-non-unique idx_dashboard_filters_dashboard_id index was created externally
-(e.g., manually or via a non-versioned migration) and is redundant — it
-covers the same column set as the PK and only adds unnecessary write overhead.
-
-This migration uses DROP INDEX IF EXISTS to safely handle databases where
-the index may or may not exist.
+"""Drop an index on dashboard_filters that no revision in this chain creates.
 
 Revision ID: f47ac18b5b9e
 Revises: b749bc53b1ee
 Create Date: 2026-06-10 22:00:00.000000
 
+The object this revision names, ``idx_dashboard_filters_dashboard_id``, is
+created by no revision in this chain. The initial migration (000000000000) is
+the authority for the ``dashboard_filters`` index inventory, and it creates only
+the primary key index, ``dashboard_filters_pkey``. So the drop below is a no-op
+on every database built from this chain, and its ``DROP INDEX IF EXISTS`` guard
+is what makes that safe. The guard also covers the databases this index was
+actually created in - externally, outside Alembic - which is where it existed at
+all.
+
+That object duplicates the primary key's column set. ``dashboard_filters`` has a
+composite primary key on ``(dashboard_id, filter_id)``, and the primary key
+constraint already builds a unique index over exactly those columns. The named
+index was a plain, non-unique index over the same two columns, so it could only
+add write overhead.
+
+The reverse (``downgrade()``) therefore does not recreate that duplicate. A
+reverse that rebuilt a second index over the primary key's own columns would
+reintroduce a defect rather than undo one, so this revision's reverse is an
+explicit no-op: after any round trip of this revision, ``dashboard_filters_pkey``
+remains the only index on ``dashboard_filters``.
 """
 
 from collections.abc import Sequence
-
-from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "f47ac18b5b9e"
@@ -37,17 +46,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Recreate the redundant index for rollback compatibility.
+    """No-op.
 
-    Recreates idx_dashboard_filters_dashboard_id which was originally
-    created externally (not via Alembic). The index is redundant with
-    the PRIMARY KEY on (dashboard_id, filter_id) and is only recreated
-    to support downgrade paths on databases where it previously existed.
-
-    Note: This index is safe to leave in place if downgrade is executed
-    on a database that never had it — it will simply be an unused index.
+    The index this revision drops duplicates the primary key's column set, so
+    recreating it would reintroduce the defect this revision exists to remove.
+    ``dashboard_filters_pkey`` stays the only index on ``dashboard_filters``.
     """
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_dashboard_filters_dashboard_id "
-        "ON dashboard_filters (dashboard_id, filter_id)"
-    )
+    pass
