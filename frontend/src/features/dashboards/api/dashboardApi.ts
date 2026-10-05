@@ -85,6 +85,14 @@ export function useAggregatedData(
   })
 }
 
+// The filter-values key names the *dashboard* and the *filter*, exactly as
+// `useFilterValues` registers it. Exported so the invalidation below and the
+// hook share one factory: two hand-written key literals that drift is the
+// defect this factory exists to prevent.
+export function filterValuesQueryKey(dashboardId: string, filterName: string) {
+  return ['filterValues', dashboardId, filterName] as const
+}
+
 export function useInvalidateDashboard() {
   const queryClient = useQueryClient()
   return {
@@ -92,14 +100,28 @@ export function useInvalidateDashboard() {
       queryClient.invalidateQueries({ queryKey: ['dashboards', id] }),
     invalidateAggregatedData: (dashboardId: string) =>
       queryClient.invalidateQueries({ queryKey: ['aggregatedData', dashboardId] }),
+    // One upload replaces the file the dashboards were built from, so both the
+    // aggregated data and the filter-option lists go stale together. The option
+    // lists are cached with `staleTime: Infinity` (D-16-7 option (b)); without
+    // this invalidation they would keep describing the previous file for the
+    // lifetime of the process.
+    invalidateFilterValues: (dashboardId: string) =>
+      queryClient.invalidateQueries({ queryKey: ['filterValues', dashboardId] }),
   }
 }
 
 export function useFilterValues(dashboardId: string, filterName: string) {
   const accessToken = useAuthToken()
   return useQuery({
-    queryKey: ['filterValues', dashboardId, filterName],
+    queryKey: filterValuesQueryKey(dashboardId, filterName),
     queryFn: () => dashboardApi.getFilterValues(dashboardId, filterName),
     enabled: !!dashboardId && !!filterName && !!accessToken,
+    // D-16-7 option (b): the option list is a function of the uploaded file, so
+    // it changes only on upload and there is no other producer of change. Pin
+    // it for the process lifetime and invalidate the key explicitly on upload;
+    // a bounded stale window would still show stale options for its duration.
+    // Placed on this query alone -- a global Infinity would silently disable
+    // background refetching for every query in the application.
+    staleTime: Infinity,
   })
 }

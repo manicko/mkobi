@@ -67,6 +67,21 @@ function shouldPreserveFilters(state: unknown): boolean {
  * `number[]` is the retired slider's output, and a range is not evaluable, so
  * that entry is dropped. A `string[]` is ambiguous -- it is indistinguishable
  * on the wire from a legitimate two-value multiselect -- and is kept; the
+ * server's by-name backstop is what resolves it. A list is admitted only when
+ * **every element is a string**: a `boolean[]`, a nested array or an object
+ * array serialises into the `filters` payload and is then refused by `list[str]`
+ * with a 422, which renders as a dashboard-scope alert -- the defect class this
+ * predicate exists to keep out. The scalar cases are unchanged.
+ */
+/**
+ * Narrows an unknown restored value to a usable `FilterState` entry.
+ *
+ * `loadPersistedFilters` runs as a `useState` initializer, before
+ * `useDashboard` resolves, so it cannot consult the declared filter types. It
+ * can still decide the one case that is unambiguous from the value alone: a
+ * `number[]` is the retired slider's output, and a range is not evaluable, so
+ * that entry is dropped. A `string[]` is ambiguous -- it is indistinguishable
+ * on the wire from a legitimate two-value multiselect -- and is kept; the
  * server's by-name backstop is what resolves it.
  */
 function isRestorableFilterValue(value: unknown): boolean {
@@ -133,7 +148,7 @@ export function DashboardView() {
     error: dataError,
     dataUpdatedAt,
   } = useAggregatedData(id || '', filters)
-  const { invalidateAggregatedData } = useInvalidateDashboard()
+  const { invalidateAggregatedData, invalidateFilterValues } = useInvalidateDashboard()
 
   // Save filters to sessionStorage whenever they change
   useEffect(() => {
@@ -332,7 +347,11 @@ export function DashboardView() {
           onUploadComplete={() => {
             setUploadModalOpen(false)
             if (id) {
+              // One upload replaces the file both caches describe. Invalidate
+              // the aggregated data and the filter-option lists through the
+              // single hook, so the two can never diverge.
               void invalidateAggregatedData(id)
+              void invalidateFilterValues(id)
             }
           }}
         />

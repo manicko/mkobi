@@ -150,6 +150,8 @@ export interface FilterConfig {
 export interface FilterValuesResponse {
   filter_name: string
   values: string[]
+  /** The true, untruncated distinct-value count supplied by the server. */
+  total_values: number
 }
 
 export interface RegistrationRequest {
