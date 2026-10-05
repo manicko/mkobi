@@ -2,6 +2,14 @@
 
 Stores distinct filter values extracted from aggregated data
 to populate filter UI checkboxes.
+
+Index provenance
+----------------
+The two indexes in ``__table_args__`` are declared here so the model matches
+the chain: both are created by revision ``000000000002``, which is the
+authority for this table's index inventory. Declaring them keeps
+``alembic check`` (``.\\Makefile.ps1 migration-check``) clean -- an index that
+exists in the database but is declared by no model is reported as drift.
 """
 
 from __future__ import annotations
