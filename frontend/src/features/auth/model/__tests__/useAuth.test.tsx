@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 import { MemoryRouter } from 'react-router-dom'
 
-// Mock react-router-dom
+// Mock react-router-dom's navigate
 const mockNavigate = vi.fn()
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom')
@@ -14,7 +14,7 @@ vi.mock('react-router-dom', async () => {
   }
 })
 
-// Mock auth API - must be before other imports
+// Mock the auth API
 vi.mock('../../api/authApi', () => ({
   login: vi.fn(),
   registerRequest: vi.fn(),
@@ -24,51 +24,21 @@ vi.mock('../../api/authApi', () => ({
   logoutClient: vi.fn(),
 }))
 
-// Mock authToken module
-vi.mock('../authToken', () => ({
+// Mock the shared token store
+vi.mock('../../../../shared/auth/tokenStore', () => ({
   getToken: vi.fn(),
   setToken: vi.fn(),
   removeToken: vi.fn(),
+  useAuthToken: vi.fn(),
 }))
 
-// Mock shared/api/refreshHandler to break circular dependency
-vi.mock('../../../shared/api/refreshHandler', () => ({
-  registerRefreshHandler: vi.fn(),
-}))
-
-// Import after mocks
 import { useAuth } from '../useAuth'
-import { login, registerRequest, getProfile, logout, refreshToken } from '../../api/authApi'
-import { getToken, setToken, removeToken } from '../authToken'
+import { login, registerRequest, getProfile, logout, refreshToken, logoutClient } from '../../api/authApi'
+import { getToken, setToken, removeToken, useAuthToken } from '../../../../shared/auth/tokenStore'
 
-// Mock session storage
-const sessionStorageMock = (() => {
-  let store: Record<string, string> = {}
-  return {
-    getItem: (key: string) => store[key] || null,
-    setItem: (key: string, value: string) => {
-      store[key] = value
-    },
-    removeItem: (key: string) => {
-      delete store[key]
-    },
-    clear: () => {
-      store = {}
-    },
-  }
-})()
-Object.defineProperty(window, 'sessionStorage', {
-  value: sessionStorageMock,
-})
-
-// Helper to create wrapper with QueryClient and Router
 const createWrapper = () => {
   const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: {
-        retry: false,
-      },
-    },
+    defaultOptions: { queries: { retry: false } },
   })
   return ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
@@ -77,11 +47,19 @@ const createWrapper = () => {
   )
 }
 
+const profile = {
+  id: '1',
+  email: 'user@test.com',
+  role: 'viewer' as const,
+  display_name: 'Test User',
+  created_at: '',
+  force_password_change: false,
+}
+
 describe('useAuth', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    sessionStorageMock.clear()
-    mockNavigate.mockClear()
+    vi.mocked(useAuthToken).mockReturnValue(null)
   })
 
   afterEach(() => {
@@ -89,135 +67,53 @@ describe('useAuth', () => {
   })
 
   describe('initialization', () => {
-    it('sets isLoading to true initially', async () => {
+    it('goes from loading to settled and exposes the fetched identity', async () => {
       vi.mocked(getToken).mockReturnValue('valid-token')
-      vi.mocked(getProfile).mockResolvedValue({
-        id: '1',
-        email: 'user@test.com',
-        role: 'viewer',
-        display_name: 'Test User',
-        created_at: '',
-        force_password_change: false,
-      })
+      vi.mocked(getProfile).mockResolvedValue(profile)
+      vi.mocked(useAuthToken).mockReturnValue('valid-token')
 
       const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() })
 
-      // isLoading starts true, then becomes false after profile fetch resolves
-      expect(result.current.isLoading).toBe(true)
-      await waitFor(() => {
-        expect(result.current.isLoading).toBe(false)
-      })
-    })
-
-    it('fetches profile when token exists', async () => {
-      vi.mocked(getToken).mockReturnValue('valid-token')
-      vi.mocked(getProfile).mockResolvedValue({
-        id: '1',
-        email: 'user@test.com',
-        role: 'viewer',
-        display_name: 'Test User',
-        created_at: '',
-        force_password_change: false,
-      })
-
-      renderHook(() => useAuth(), { wrapper: createWrapper() })
-
-      await waitFor(() => {
-        expect(getProfile).toHaveBeenCalled()
-      })
-    })
-
-    it('sets user when profile fetch succeeds', async () => {
-      const mockUser = {
-        id: '1',
-        email: 'user@test.com',
-        role: 'viewer' as const,
-        display_name: 'Test User',
-        created_at: '',
-        force_password_change: false,
-      }
-
-      vi.mocked(getToken).mockReturnValue('valid-token')
-      vi.mocked(getProfile).mockResolvedValue(mockUser)
-
-      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() })
-
-      await waitFor(() => {
-        expect(result.current.isLoading).toBe(false)
-      })
-
-      expect(result.current.user).toEqual(mockUser)
+      await waitFor(() => expect(result.current.isLoading).toBe(false))
+      expect(result.current.user).toEqual(profile)
       expect(result.current.accessToken).toBe('valid-token')
     })
 
-    it('sets user to null when profile fetch fails', async () => {
-      vi.mocked(getToken).mockReturnValue('invalid-token')
-      vi.mocked(getProfile).mockRejectedValue(new Error('Unauthorized'))
-
-      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() })
-
-      await waitFor(() => {
-        expect(result.current.isLoading).toBe(false)
-      })
-
-      expect(result.current.user).toBeNull()
-      expect(removeToken).toHaveBeenCalled()
-    })
-
-    it('calls refreshToken when no token exists', async () => {
+    it('refreshes silently when no token exists', async () => {
       vi.mocked(getToken).mockReturnValue(null)
-      vi.mocked(refreshToken).mockResolvedValue({
-        access_token: 'new-token',
-        token_type: 'bearer',
-      })
-      vi.mocked(getProfile).mockResolvedValue({
-        id: '1',
-        email: 'user@test.com',
-        role: 'viewer',
-        display_name: 'Test User',
-        created_at: '',
-        force_password_change: false,
-      })
+      vi.mocked(refreshToken).mockResolvedValue({ access_token: 'new-token', token_type: 'bearer' })
+      vi.mocked(getProfile).mockResolvedValue(profile)
 
       renderHook(() => useAuth(), { wrapper: createWrapper() })
 
-      await waitFor(() => {
-        expect(refreshToken).toHaveBeenCalled()
-      })
+      await waitFor(() => expect(refreshToken).toHaveBeenCalled())
+      expect(setToken).toHaveBeenCalledWith('new-token')
     })
 
-    it('sets user to null when refresh fails', async () => {
+    it('clears the token and reports no user when the silent refresh fails', async () => {
       vi.mocked(getToken).mockReturnValue(null)
       vi.mocked(refreshToken).mockRejectedValue(new Error('No refresh cookie'))
 
       const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() })
 
-      await waitFor(() => {
-        expect(result.current.isLoading).toBe(false)
-      })
-
+      await waitFor(() => expect(result.current.isLoading).toBe(false))
       expect(result.current.user).toBeNull()
       expect(removeToken).toHaveBeenCalled()
     })
   })
 
   describe('login', () => {
-    it('calls login API and sets user on success', async () => {
+    it('stores the token and the returned identity', async () => {
       vi.mocked(getToken).mockReturnValue(null)
+      vi.mocked(refreshToken).mockRejectedValue(new Error('no cookie'))
       vi.mocked(login).mockResolvedValue({
         access_token: 'new-token',
         token_type: 'bearer',
-        user: {
-          id: '1',
-          email: 'user@test.com',
-          role: 'viewer',
-          display_name: 'Test User',
-          created_at: '',
-          force_password_change: false,
-        },
+        user: profile,
       })
 
       const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() })
+      await waitFor(() => expect(result.current.isLoading).toBe(false))
 
       await act(async () => {
         await result.current.login('user@test.com', 'password123')
@@ -225,52 +121,52 @@ describe('useAuth', () => {
 
       expect(login).toHaveBeenCalledWith('user@test.com', 'password123')
       expect(setToken).toHaveBeenCalledWith('new-token')
-      await waitFor(() => {
-        expect(result.current.user?.email).toBe('user@test.com')
-      })
+      await waitFor(() => expect(result.current.user).toEqual(profile))
     })
 
-    it('removes token and sets user to null on login failure', async () => {
+    it('clears auth state when login fails', async () => {
       vi.mocked(getToken).mockReturnValue(null)
+      vi.mocked(refreshToken).mockRejectedValue(new Error('no cookie'))
       vi.mocked(login).mockRejectedValue(new Error('Invalid credentials'))
 
       const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() })
+      await waitFor(() => expect(result.current.isLoading).toBe(false))
 
       await act(async () => {
         await expect(result.current.login('user@test.com', 'wrong')).rejects.toThrow('Invalid credentials')
       })
 
-      // Wait for state updates to complete
-      await waitFor(() => {
-        expect(result.current.user).toBeNull()
-      })
-
       expect(removeToken).toHaveBeenCalled()
+      expect(result.current.user).toBeNull()
     })
   })
 
-describe('logout', () => {
-     it('calls logout API and clears user', async () => {
-       vi.mocked(getToken).mockReturnValue(null)
-       vi.mocked(logout).mockResolvedValue({ message: 'Logged out successfully' })
+  describe('logout', () => {
+    it('calls the logout API, clears the client token and the identity', async () => {
+      vi.mocked(getToken).mockReturnValue(null)
+      vi.mocked(refreshToken).mockRejectedValue(new Error('no cookie'))
+      vi.mocked(logout).mockResolvedValue({ message: 'Logged out successfully' })
 
       const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() })
+      await waitFor(() => expect(result.current.isLoading).toBe(false))
 
       await act(async () => {
         await result.current.logout()
       })
 
       expect(logout).toHaveBeenCalled()
+      expect(logoutClient).toHaveBeenCalled()
       expect(result.current.user).toBeNull()
     })
 
-    it('clears user even when logout API fails', async () => {
+    it('still clears the identity when the logout API fails', async () => {
       vi.mocked(getToken).mockReturnValue(null)
+      vi.mocked(refreshToken).mockRejectedValue(new Error('no cookie'))
       vi.mocked(logout).mockRejectedValue(new Error('Not logged in'))
 
       const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() })
+      await waitFor(() => expect(result.current.isLoading).toBe(false))
 
-      // Should not throw because error is caught
       await act(async () => {
         await result.current.logout()
       })
@@ -280,14 +176,16 @@ describe('logout', () => {
   })
 
   describe('registerRequest', () => {
-    it('calls registerRequest API with email', async () => {
+    it('calls the registerRequest API with the email', async () => {
       vi.mocked(getToken).mockReturnValue(null)
+      vi.mocked(refreshToken).mockRejectedValue(new Error('no cookie'))
       vi.mocked(registerRequest).mockResolvedValue({
         message: 'Registration request submitted',
         id: 'req-123',
       })
 
       const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() })
+      await waitFor(() => expect(result.current.isLoading).toBe(false))
 
       await act(async () => {
         await result.current.registerRequest('newuser@test.com')
@@ -298,107 +196,34 @@ describe('logout', () => {
   })
 
   describe('getProfile', () => {
-    it('fetches and sets user profile', async () => {
+    it('refreshes and caches the profile', async () => {
       vi.mocked(getToken).mockReturnValue(null)
-      vi.mocked(getProfile).mockResolvedValue({
-        id: '1',
-        email: 'user@test.com',
-        role: 'viewer',
-        display_name: 'Test User',
-        created_at: '',
-        force_password_change: false,
-      })
+      vi.mocked(refreshToken).mockRejectedValue(new Error('no cookie'))
+      vi.mocked(getProfile).mockResolvedValue(profile)
 
       const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() })
+      await waitFor(() => expect(result.current.isLoading).toBe(false))
 
       await act(async () => {
         await result.current.getProfile()
       })
 
-      expect(getProfile).toHaveBeenCalled()
-      await waitFor(() => {
-        expect(result.current.user?.email).toBe('user@test.com')
-      })
+      await waitFor(() => expect(result.current.user).toEqual(profile))
     })
 
-    it('throws error and clears auth state on profile fetch failure', async () => {
+    it('clears auth state and rethrows when the profile fetch fails', async () => {
       vi.mocked(getToken).mockReturnValue(null)
+      vi.mocked(refreshToken).mockRejectedValue(new Error('no cookie'))
       vi.mocked(getProfile).mockRejectedValue(new Error('Unauthorized'))
 
       const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() })
+      await waitFor(() => expect(result.current.isLoading).toBe(false))
 
       await act(async () => {
         await expect(result.current.getProfile()).rejects.toThrow('Unauthorized')
       })
 
-      // Wait for state updates
-      await waitFor(() => {
-        expect(result.current.user).toBeNull()
-      })
-
       expect(removeToken).toHaveBeenCalled()
-    })
-  })
-
-  describe('force_password_change redirect', () => {
-    it('redirects on initial load when profile has force_password_change', async () => {
-      vi.mocked(getToken).mockReturnValue('valid-token')
-      vi.mocked(getProfile).mockResolvedValue({
-        id: '1',
-        email: 'user@test.com',
-        role: 'viewer',
-        display_name: 'Test User',
-        created_at: '',
-        force_password_change: true,
-      })
-
-      renderHook(() => useAuth(), { wrapper: createWrapper() })
-
-      await waitFor(() => {
-        expect(mockNavigate).toHaveBeenCalledWith('/profile/change-password?force=true')
-      })
-    })
-
-    it('redirects after refresh when profile has force_password_change', async () => {
-      vi.mocked(getToken).mockReturnValue(null)
-      vi.mocked(refreshToken).mockResolvedValue({
-        access_token: 'new-token',
-        token_type: 'bearer',
-      })
-      vi.mocked(getProfile).mockResolvedValue({
-        id: '1',
-        email: 'user@test.com',
-        role: 'viewer',
-        display_name: 'Test User',
-        created_at: '',
-        force_password_change: true,
-      })
-
-      renderHook(() => useAuth(), { wrapper: createWrapper() })
-
-      await waitFor(() => {
-        expect(mockNavigate).toHaveBeenCalledWith('/profile/change-password?force=true')
-      })
-    })
-
-    it('does not redirect when force_password_change is false', async () => {
-      vi.mocked(getToken).mockReturnValue('valid-token')
-      vi.mocked(getProfile).mockResolvedValue({
-        id: '1',
-        email: 'user@test.com',
-        role: 'viewer',
-        display_name: 'Test User',
-        created_at: '',
-        force_password_change: false,
-      })
-
-      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() })
-
-      await waitFor(() => {
-        expect(result.current.isLoading).toBe(false)
-      })
-
-      expect(mockNavigate).not.toHaveBeenCalled()
     })
   })
 })

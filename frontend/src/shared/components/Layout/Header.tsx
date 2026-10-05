@@ -1,7 +1,8 @@
 import { AppBar, Box, Button, IconButton, Toolbar, Typography, Menu, MenuItem, Divider } from '@mui/material'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useState } from 'react'
-import { useAuth } from '../../../features/auth/model/useAuth'
+import { useAuthIdentity } from '../../auth/identity'
+import { logout } from '../../auth/actions'
 import AccountCircle from '@mui/icons-material/AccountCircle'
 import LogoutIcon from '@mui/icons-material/Logout'
 import Settings from '@mui/icons-material/Settings'
@@ -18,7 +19,7 @@ const NAV_ITEMS: NavItem[] = [
 ]
 
 export function Header() {
-  const { user, logout } = useAuth()
+  const { user } = useAuthIdentity()
   const navigate = useNavigate()
   const location = useLocation()
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null)

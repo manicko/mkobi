@@ -6,7 +6,7 @@ import {
   isTokenExpired,
   getTokenWithExpirationCheck,
   parseJWTPayload,
-} from '../authToken'
+} from '../tokenStore'
 
 // In test environment (DEV), USE_MEMORY_STORAGE is false, so sessionStorage is used.
 // We clear it before/after each test to ensure isolation.

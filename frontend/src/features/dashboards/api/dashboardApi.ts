@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import axiosInstance from '../../../shared/api/axiosInstance'
-import { useAuthToken } from '../../../features/auth/model/authToken'
+import { useAuthToken } from '../../../shared/auth/tokenStore'
 import type {
   DashboardSummary,
   DashboardDetail,

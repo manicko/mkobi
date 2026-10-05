@@ -1,6 +1,6 @@
 import axios, { AxiosError } from 'axios'
 import { toast } from 'react-hot-toast'
-import { getTokenWithExpirationCheck, removeToken, setToken } from '../../features/auth/model/authToken'
+import { getTokenWithExpirationCheck, removeToken, setToken } from '../auth/tokenStore'
 import { getRefreshHandler } from './refreshHandler'
 import { extractApiError } from './errorHandler'
 import { getErrorMessage } from './errorMessages'

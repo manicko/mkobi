@@ -23,7 +23,7 @@ vi.mock('../../../shared/api/axiosInstance', () => ({
   },
 }))
 
-vi.mock('../../auth/model/authToken', () => ({
+vi.mock('../../../shared/auth/tokenStore', () => ({
   useAuthToken: () => 'test-token',
 }))
 

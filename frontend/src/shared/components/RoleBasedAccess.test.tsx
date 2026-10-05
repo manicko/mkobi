@@ -2,12 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { RoleBasedAccess } from './RoleBasedAccess'
 
-// Mock useAuth hook - use named export from features/auth
-vi.mock('../../features/auth', () => ({
-  useAuth: vi.fn(),
+// Identity is read through the shared accessor; the component no longer imports
+// the auth feature.
+vi.mock('../auth/identity', () => ({
+  useAuthIdentity: vi.fn(),
 }))
 
-import { useAuth } from '../../features/auth'
+import { useAuthIdentity } from '../auth/identity'
 
 const createMockUser = (role: string) => ({
   user: {
@@ -18,12 +19,7 @@ const createMockUser = (role: string) => ({
     created_at: '',
     force_password_change: false,
   },
-  accessToken: 'valid-token',
   isLoading: false,
-  login: vi.fn(),
-  logout: vi.fn(),
-  registerRequest: vi.fn(),
-  getProfile: vi.fn(),
 })
 
 describe('RoleBasedAccess', () => {
@@ -32,7 +28,7 @@ describe('RoleBasedAccess', () => {
   })
 
   it('renders children when user has required role', () => {
-    vi.mocked(useAuth).mockReturnValue(createMockUser('admin'))
+    vi.mocked(useAuthIdentity).mockReturnValue(createMockUser('admin'))
 
     render(
       <RoleBasedAccess roles={['admin', 'editor']}>
@@ -44,7 +40,7 @@ describe('RoleBasedAccess', () => {
   })
 
   it('renders children when user has single required role', () => {
-    vi.mocked(useAuth).mockReturnValue(createMockUser('editor'))
+    vi.mocked(useAuthIdentity).mockReturnValue(createMockUser('editor'))
 
     render(
       <RoleBasedAccess roles={['admin', 'editor']}>
@@ -56,7 +52,7 @@ describe('RoleBasedAccess', () => {
   })
 
   it('renders fallback when user does not have required role', () => {
-    vi.mocked(useAuth).mockReturnValue(createMockUser('viewer'))
+    vi.mocked(useAuthIdentity).mockReturnValue(createMockUser('viewer'))
 
     render(
       <RoleBasedAccess roles={['admin', 'editor']} fallback={<div>Access Denied</div>}>
@@ -69,7 +65,7 @@ describe('RoleBasedAccess', () => {
   })
 
   it('renders AccessDenied as default fallback when user does not have required role', () => {
-    vi.mocked(useAuth).mockReturnValue(createMockUser('viewer'))
+    vi.mocked(useAuthIdentity).mockReturnValue(createMockUser('viewer'))
 
     render(
       <RoleBasedAccess roles={['admin']}>
@@ -83,15 +79,7 @@ describe('RoleBasedAccess', () => {
   })
 
   it('renders fallback when user is null', () => {
-    vi.mocked(useAuth).mockReturnValue({
-      user: null,
-      accessToken: null,
-      isLoading: false,
-      login: vi.fn(),
-      logout: vi.fn(),
-      registerRequest: vi.fn(),
-      getProfile: vi.fn(),
-    })
+    vi.mocked(useAuthIdentity).mockReturnValue({ user: null, isLoading: false })
 
     render(
       <RoleBasedAccess roles={['admin']} fallback={<div>Login Required</div>}>
@@ -104,7 +92,7 @@ describe('RoleBasedAccess', () => {
   })
 
   it('accepts single role string', () => {
-    vi.mocked(useAuth).mockReturnValue(createMockUser('admin'))
+    vi.mocked(useAuthIdentity).mockReturnValue(createMockUser('admin'))
 
     render(
       <RoleBasedAccess roles={['admin']}>
@@ -116,7 +104,7 @@ describe('RoleBasedAccess', () => {
   })
 
   it('matches any role in the roles array', () => {
-    vi.mocked(useAuth).mockReturnValue(createMockUser('editor'))
+    vi.mocked(useAuthIdentity).mockReturnValue(createMockUser('editor'))
 
     render(
       <RoleBasedAccess roles={['admin', 'editor', 'viewer']}>
@@ -128,7 +116,7 @@ describe('RoleBasedAccess', () => {
   })
 
   it('renders different content for different roles', () => {
-    vi.mocked(useAuth).mockReturnValue(createMockUser('admin'))
+    vi.mocked(useAuthIdentity).mockReturnValue(createMockUser('admin'))
 
     render(
       <RoleBasedAccess roles={['admin']} fallback={<div>Not Admin</div>}>

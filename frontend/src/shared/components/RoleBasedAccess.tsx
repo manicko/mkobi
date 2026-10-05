@@ -1,4 +1,4 @@
-import { useAuth } from '../../features/auth'
+import { useAuthIdentity } from '../auth/identity'
 import { AccessDenied } from './AccessDenied'
 
 interface RoleBasedAccessProps {
@@ -8,7 +8,7 @@ interface RoleBasedAccessProps {
 }
 
 export function RoleBasedAccess({ roles, children, fallback = <AccessDenied /> }: RoleBasedAccessProps) {
-  const { user } = useAuth()
+  const { user } = useAuthIdentity()
 
   if (!user || !roles.includes(user.role)) {
     return <>{fallback}</>

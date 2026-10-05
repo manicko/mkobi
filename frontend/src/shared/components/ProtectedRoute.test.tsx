@@ -12,9 +12,14 @@ vi.mock('react-router-dom', async () => {
   }
 })
 
-// Mock useAuth hook - use named export from features/auth
-vi.mock('../../features/auth', () => ({
-  useAuth: vi.fn(),
+// Identity and token are read through the shared accessors; the component no
+// longer imports the auth feature.
+vi.mock('../auth/identity', () => ({
+  useAuthIdentity: vi.fn(),
+}))
+
+vi.mock('../auth/tokenStore', () => ({
+  useAuthToken: vi.fn(),
 }))
 
 // Mock MUI components
@@ -23,7 +28,8 @@ vi.mock('@mui/material', () => ({
   CircularProgress: () => <div data-testid="circular-progress">Loading...</div>,
 }))
 
-import { useAuth } from '../../features/auth'
+import { useAuthIdentity } from '../auth/identity'
+import { useAuthToken } from '../auth/tokenStore'
 
 describe('ProtectedRoute', () => {
   beforeEach(() => {
@@ -31,15 +37,8 @@ describe('ProtectedRoute', () => {
   })
 
   it('renders children when authenticated', () => {
-    vi.mocked(useAuth).mockReturnValue({
-      accessToken: 'valid-token',
-      isLoading: false,
-      user: null,
-      login: vi.fn(),
-      logout: vi.fn(),
-      registerRequest: vi.fn(),
-      getProfile: vi.fn(),
-    })
+    vi.mocked(useAuthIdentity).mockReturnValue({ user: null, isLoading: false })
+    vi.mocked(useAuthToken).mockReturnValue('valid-token')
 
     render(
       <MemoryRouter>
@@ -53,15 +52,8 @@ describe('ProtectedRoute', () => {
   })
 
   it('shows loading spinner when isLoading is true', () => {
-    vi.mocked(useAuth).mockReturnValue({
-      accessToken: null,
-      isLoading: true,
-      user: null,
-      login: vi.fn(),
-      logout: vi.fn(),
-      registerRequest: vi.fn(),
-      getProfile: vi.fn(),
-    })
+    vi.mocked(useAuthIdentity).mockReturnValue({ user: null, isLoading: true })
+    vi.mocked(useAuthToken).mockReturnValue(null)
 
     render(
       <MemoryRouter>
@@ -76,15 +68,8 @@ describe('ProtectedRoute', () => {
   })
 
   it('redirects to login when not authenticated and not loading', () => {
-    vi.mocked(useAuth).mockReturnValue({
-      accessToken: null,
-      isLoading: false,
-      user: null,
-      login: vi.fn(),
-      logout: vi.fn(),
-      registerRequest: vi.fn(),
-      getProfile: vi.fn(),
-    })
+    vi.mocked(useAuthIdentity).mockReturnValue({ user: null, isLoading: false })
+    vi.mocked(useAuthToken).mockReturnValue(null)
 
     render(
       <MemoryRouter initialEntries={['/protected']}>
@@ -100,15 +85,8 @@ describe('ProtectedRoute', () => {
   })
 
   it('preserves location state when redirecting', () => {
-    vi.mocked(useAuth).mockReturnValue({
-      accessToken: null,
-      isLoading: false,
-      user: null,
-      login: vi.fn(),
-      logout: vi.fn(),
-      registerRequest: vi.fn(),
-      getProfile: vi.fn(),
-    })
+    vi.mocked(useAuthIdentity).mockReturnValue({ user: null, isLoading: false })
+    vi.mocked(useAuthToken).mockReturnValue(null)
 
     render(
       <MemoryRouter initialEntries={['/protected']}>
