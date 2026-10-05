@@ -339,14 +339,26 @@ services:
         reservations:
           memory: 256M
 
-  # NOTE: nginx requires a prior frontend build (npm run build in /frontend)
-  # Frontend dist files are mounted from ../frontend/dist
-  # This service is production-only (profiles: [production])
-  # Optional: Nginx reverse proxy for production
+  # The production edge. Ruling B6 (OPS-003 / VAL-10-006): the client bundle
+  # ships INSIDE this image, built from the ``frontend-nginx`` stage in
+  # docker/Dockerfile, which copies the SPA out of the same ``frontend-builder``
+  # stage the app image uses. The host ``../frontend/dist`` bind mount is gone:
+  # that directory is git-ignored twice and unversioned, so a host directory was
+  # the production carrier and the edge served whatever happened to be on disk.
+  # This service is production-only (profiles: [production]).
+  #
+  # The base image is still pinned by digest (resolved from the registry on
+  # 2026-10-05 with ``docker buildx imagetools inspect nginx:1.27-alpine
+  # --format '{{.Manifest.Digest}}'``) and is the ``FROM`` of the
+  # ``frontend-nginx`` stage; ``image:`` names the locally-built tag so a
+  # rollback selects a real artefact (mkobi/nginx:<tag>) that packages both the
+  # server and the bundle.
   nginx:
-    # Pinned by digest (resolved from the registry on 2026-10-05 with
-    # ``docker buildx imagetools inspect nginx:1.27-alpine --format '{{.Manifest.Digest}}'``).
-    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    image: mkobi/nginx:${IMAGE_TAG:-local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: frontend-nginx
     depends_on:
       app:
         condition: service_healthy
@@ -365,7 +377,6 @@ services:
     volumes:
       - ../docker/nginx/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
       - ../docker/nginx/entrypoint-render.sh:/etc/nginx/entrypoint-render.sh:ro
-      - ../frontend/dist:/usr/share/nginx/html:ro
     restart: unless-stopped
     # Security: read-only root filesystem with explicit writable tmpfs paths
     # nginx writes to these directories at runtime: cache and PID files.

@@ -1352,8 +1352,11 @@ class TestLocallyBuiltImageIdentity:
     tiers. This is the tripwire that fails if someone removes the key.
     """
 
-    # The services that build locally (the db/redis/nginx services pull a public
+    # The services that build locally (the db/redis services pull a public
     # image and are therefore out of scope for the locally-built identity).
+    # nginx now also builds locally (B6: the client bundle ships inside the
+    # image), but its identity is asserted by the nginx build wiring below
+    # rather than by the ``mkobi/``-prefix rule here.
     _LOCALLY_BUILT = ("migrate", "app", "rq-worker")
 
     @staticmethod

@@ -192,6 +192,28 @@ ENV ENV=test \
 CMD ["pytest", "tests/", "-v"]
 
 # -----------------------------------------------------------------------------
+# Stage: frontend-nginx - The production edge, carrying the built SPA bundle
+# -----------------------------------------------------------------------------
+# Ruling B6 (OPS-003 / VAL-10-006): the bundle ships INSIDE the image. The
+# nginx service no longer bind-mounts a host ``frontend/dist`` — that directory
+# is git-ignored twice and unversioned, so what the edge served was whatever
+# happened to be on the host. The artefacts are copied from the same
+# ``frontend-builder`` stage the app image uses, so the edge and the app serve
+# the identical build produced from this Dockerfile's pinned inputs.
+#
+# The base is the edge's own image, pinned by the same digest the compose file
+# carries, so a rollback selects a real tag (mkobi/nginx:<tag>) that packages
+# both the server and the bundle it serves.
+FROM nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 AS frontend-nginx
+
+# The bundle is served from the image's own document root, which is the only
+# carrier in production. The build fails loudly if the frontend never produced
+# an index.html, so an empty bundle cannot ship as a green image.
+COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
+RUN test -f /usr/share/nginx/html/index.html || \
+    (echo "frontend-builder produced no index.html; refusing to ship an empty bundle" >&2 && exit 1)
+
+# -----------------------------------------------------------------------------
 # Stage: prod - Production (DEFAULT target - faster rebuilds)
 # -----------------------------------------------------------------------------
 FROM prod-base AS prod
