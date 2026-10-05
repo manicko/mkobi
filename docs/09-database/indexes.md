@@ -101,10 +101,13 @@ builds one predicate per submitted filter key, over the `dims` column:
 | `list[str]` (empty) | no predicate at all — imposes no constraint | n/a |
 | (count query) | the same predicate set over a `COUNT(*)` | **No** |
 
-**Which operators are reachable, corrected.** Only **`->>`** and
-**`jsonb_exists_any`** are unreachable on this index shape — neither is a GIN-indexable
-operator for a bare column, and neither is what the code emits. That is the precise
-claim; it is **not** true that `@>` is unreachable:
+**Which operators are reachable, corrected.** Only the **extraction** operators —
+**`->>`**, **`->`**, **`#>`** and **`#>>`** — are unreachable on this index shape; none
+is a GIN-indexable operator for a bare column, and none is what the code emits. What
+makes them unreachable is that they **return `text` or `jsonb`**, not a key-containment
+result, so the default `jsonb_ops` opclass does not index them. That is the precise
+claim; it is **not** true that `@>` is unreachable, and **not** true that
+`jsonb_exists_any` is unreachable:
 
 - **`@>` (containment) does reach it.** A predicate such as `dims @> '{"year":"2024"}'`
   produces a **Bitmap Index Scan** on this index whenever the planner is not permitted
@@ -113,10 +116,18 @@ claim; it is **not** true that `@>` is unreachable:
   that was measured-false and is corrected here.
 - **`@@` (jsonb path match) does reach it** too, for the same reason: it is one of the
   operators the default `jsonb_ops` opclass indexes.
+- **`jsonb_exists_any` (the `?|` operator, "do any of the strings in this `text[]`
+  exist as top-level keys or array elements") does reach it.** The default `jsonb_ops`
+  GIN opclass indexes exactly six operators — `@>`, `@?`, `@@`, `?`, **`?|`** and `?&` —
+  and `?|` is one of them, so a predicate such as `dims ?| ARRAY['year','region']`
+  produces a **Bitmap Index Scan** on this index. A previous revision of this document
+  listed `jsonb_exists_any` among the unreachable operators; that was false and is
+  corrected here.
 
 `pg_stat_user_indexes` reports `idx_scan = 0` for this index, which is consistent with
 the predicates above: **nothing the application emits today is GIN-indexable on this
-index.** The index is unreachable from the emitted predicate forms, not from `@>`.
+index.** The index is unreachable from the emitted predicate forms, not from `@>`,
+`@@` or `?|`.
 
 **Note:** GIN is not the optimal index type for the queries this schema runs. The speed
 comparison that used to be quoted here does not reproduce. GIN index size tracks the

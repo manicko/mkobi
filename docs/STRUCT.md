@@ -18629,7 +18629,6 @@ C:\PY_DEV\MKOBI
 |   |       create-dashboard.md
 |   |       docker.md
 |   |       extend-filters.md
-|   |       extend-graphs-filters.md
 |   |       extend-graphs.md
 |   |       task-queue-migration.md
 |   |       
