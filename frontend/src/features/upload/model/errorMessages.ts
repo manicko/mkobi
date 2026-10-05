@@ -1,4 +1,5 @@
 import { ErrorCode } from '../../../shared/types/enums'
+import { registerFeatureErrorMessages } from '../../../shared/api/errorSurfaces'
 
 /**
  * Upload feature error message map with English strings.
@@ -12,3 +13,5 @@ export const uploadErrorMessages: Partial<Record<ErrorCode, string>> = {
   [ErrorCode.PROCESSING_FAILED]: 'Failed to process file. Please contact the administrator.',
   [ErrorCode.PROCESSING_IN_PROGRESS]: 'File is already being processed. Please wait for completion.',
 }
+
+registerFeatureErrorMessages('upload', uploadErrorMessages)

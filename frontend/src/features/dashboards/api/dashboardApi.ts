@@ -15,8 +15,12 @@ export const dashboardApi = {
     return response.data
   },
 
+  // The dashboard main view renders a persistent inline error, so the shared
+  // interceptor must not also raise a toast for these requests (`skipErrorToast`).
   getDashboard: async (id: string): Promise<DashboardDetail> => {
-    const response = await axiosInstance.get<DashboardDetail>(`/dashboards/${id}`)
+    const response = await axiosInstance.get<DashboardDetail>(`/dashboards/${id}`, {
+      skipErrorToast: true,
+    })
     return response.data
   },
 
@@ -25,6 +29,7 @@ export const dashboardApi = {
   ): Promise<AggregatedDataResponse> => {
     const response = await axiosInstance.get<AggregatedDataResponse>('/data/aggregated', {
       params,
+      skipErrorToast: true,
     })
     return response.data
   },

@@ -1,4 +1,5 @@
 import { ErrorCode } from '../../../shared/types/enums'
+import { registerFeatureErrorMessages } from '../../../shared/api/errorSurfaces'
 
 /**
  * Dashboards feature error message map with English strings.
@@ -10,3 +11,7 @@ export const dashboardErrorMessages: Partial<Record<ErrorCode, string>> = {
   [ErrorCode.ACCESS_DENIED]: 'Access to dashboard denied',
   [ErrorCode.VALIDATION_ERROR]: 'Dashboard data validation error',
 }
+
+// Feature→code registry consumed by the shared response interceptor, so an
+// error code maps to a sentence without every feature inventing a string.
+registerFeatureErrorMessages('dashboards', dashboardErrorMessages)

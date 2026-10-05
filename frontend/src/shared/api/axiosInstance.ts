@@ -4,6 +4,8 @@ import { getTokenWithExpirationCheck, removeToken, setToken } from '../../featur
 import { getRefreshHandler } from './refreshHandler'
 import { extractApiError } from './errorHandler'
 import { getErrorMessage } from './errorMessages'
+import { getFeatureErrorMessage, SESSION_EXPIRED_MESSAGE } from './errorSurfaces'
+import './axiosRequestConfig'
 
 export const axiosInstance = axios.create({
   baseURL: '/api/v1',
@@ -80,7 +82,7 @@ axiosInstance.interceptors.response.use(
       // If config is missing, reject immediately
       if (!originalConfig) {
         removeToken()
-        toast.error('Session expired. Please login again.')
+        toast.error(SESSION_EXPIRED_MESSAGE)
         window.location.href = '/login'
         return Promise.reject(error)
       }
@@ -115,7 +117,7 @@ axiosInstance.interceptors.response.use(
         const errorToReject = err instanceof Error ? err : new Error(String(err))
         processQueue({ error: errorToReject })
         removeToken()
-        toast.error('Session expired. Please login again.')
+        toast.error(SESSION_EXPIRED_MESSAGE)
         window.location.href = '/login'
         return Promise.reject(errorToReject)
       } finally {
@@ -123,14 +125,19 @@ axiosInstance.interceptors.response.use(
       }
     }
 
-    // Handle 403 and other non-401/429 errors with localized toast
+    // Handle 403 and other non-401/429 errors with a localized toast.
+    // One surface per context: a caller that renders its own persistent inline
+    // message opts out with `skipErrorToast`, so the failure is not shown twice.
     if (status && status !== 401 && status !== 429) {
       // Skip toast for login endpoint - let inline form error handle it
       if (error.config?.url?.includes('/auth/login')) {
         return Promise.reject(error)
       }
+      if (error.config?.skipErrorToast) {
+        return Promise.reject(error)
+      }
       const { code, message } = extractApiError(error)
-      const localizedMessage = getErrorMessage(code)
+      const localizedMessage = getFeatureErrorMessage(code) ?? getErrorMessage(code)
       const finalMessage = message ? `${localizedMessage}: ${message}` : localizedMessage
       toast.error(finalMessage)
     }

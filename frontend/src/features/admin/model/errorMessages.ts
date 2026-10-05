@@ -1,4 +1,5 @@
 import { ErrorCode } from '../../../shared/types/enums'
+import { registerFeatureErrorMessages } from '../../../shared/api/errorSurfaces'
 
 /**
  * Admin feature error message map with English strings.
@@ -11,3 +12,5 @@ export const adminErrorMessages: Partial<Record<ErrorCode, string>> = {
   [ErrorCode.VALIDATION_ERROR]: 'Administrative data validation error',
   [ErrorCode.INVALID_TRANSITION]: 'Invalid status transition for processing log',
 }
+
+registerFeatureErrorMessages('admin', adminErrorMessages)

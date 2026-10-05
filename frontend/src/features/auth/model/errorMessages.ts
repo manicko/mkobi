@@ -1,4 +1,5 @@
 import { ErrorCode } from '../../../shared/types/enums'
+import { registerFeatureErrorMessages } from '../../../shared/api/errorSurfaces'
 
 /**
  * Auth feature error message map with English strings.
@@ -14,3 +15,5 @@ export const authErrorMessages: Partial<Record<ErrorCode, string>> = {
   [ErrorCode.INVALID_PASSWORD]: 'Invalid password',
   [ErrorCode.RATE_LIMIT_EXCEEDED]: 'Too many login attempts. Please try again later.',
 }
+
+registerFeatureErrorMessages('auth', authErrorMessages)

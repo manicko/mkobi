@@ -3,6 +3,16 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Suspense } from 'react'
 
+const toastError = vi.fn()
+vi.mock('react-hot-toast', () => ({
+  toast: {
+    error: (...args: unknown[]): void => {
+      toastError(...args)
+    },
+    success: vi.fn(),
+  },
+}))
+
 // Mock react-router-dom
 vi.mock('react-router-dom', () => ({
    useParams: () => ({ id: 'test-dashboard-id' }),
@@ -82,25 +92,32 @@ let mockAggregatedData: {
   truncated: false,
 }
 
+// Error state driven by individual tests. When set, the mocked hooks report a
+// failure so the view's persistent inline surface can be asserted.
+let mockDashboardError: Error | null = null
+let mockAggregatedError: Error | null = null
+
 // Mock dashboard API
 vi.mock('../api/dashboardApi', () => ({
   useDashboard: () => ({
-    data: {
-      id: 'test-dashboard-id',
-      name: 'Test Dashboard',
-      description: 'A test dashboard for unit tests',
-      config: {
-        graph_types: ['bar', 'line'],
-      },
-      permission: 'edit',
-    },
+    data: mockDashboardError
+      ? undefined
+      : {
+          id: 'test-dashboard-id',
+          name: 'Test Dashboard',
+          description: 'A test dashboard for unit tests',
+          config: {
+            graph_types: ['bar', 'line'],
+          },
+          permission: 'edit',
+        },
     isLoading: false,
-    error: null,
+    error: mockDashboardError,
   }),
   useAggregatedData: () => ({
-    data: mockAggregatedData,
+    data: mockAggregatedError ? undefined : mockAggregatedData,
     isLoading: false,
-    error: null,
+    error: mockAggregatedError,
   }),
   useInvalidateDashboard: () => ({
     invalidateDashboard: vi.fn(),
@@ -165,6 +182,8 @@ describe('DashboardView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockAggregatedData = defaultGraphs()
+    mockDashboardError = null
+    mockAggregatedError = null
   })
 
   it('renders dashboard title', async () => {
@@ -309,5 +328,39 @@ describe('DashboardView', () => {
       expect(screen.getByText('Sales by Category')).toBeInTheDocument()
     })
     expect(screen.queryByText(/^Showing /)).not.toBeInTheDocument()
+  })
+
+  it('shows the inline message for a main-view failure and raises no toast', async () => {
+    mockDashboardError = new Error('boom')
+
+    const Wrapper = createWrapper()
+    render(
+      <Wrapper>
+        <DashboardView />
+      </Wrapper>
+    )
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Failed to load dashboard. Please try again.'),
+      ).toBeInTheDocument()
+    })
+    expect(toastError).not.toHaveBeenCalled()
+  })
+
+  it('shows the inline message for a chart-data failure and raises no toast', async () => {
+    mockAggregatedError = new Error('boom')
+
+    const Wrapper = createWrapper()
+    render(
+      <Wrapper>
+        <DashboardView />
+      </Wrapper>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to load chart data.')).toBeInTheDocument()
+    })
+    expect(toastError).not.toHaveBeenCalled()
   })
 })

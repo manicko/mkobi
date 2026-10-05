@@ -15,6 +15,10 @@ import { ChartRenderer } from './charts/ChartRenderer'
 import { SkeletonChart } from './charts/SkeletonChart'
 import type { GraphDataWithConfig, FilterDetail } from '../../../shared/types/api.types'
 import type { FilterType } from '../../../shared/types/enums'
+import {
+  CHART_DATA_LOAD_FAILED_MESSAGE,
+  DASHBOARD_LOAD_FAILED_MESSAGE,
+} from '../../../shared/api/errorSurfaces'
 
 const UploadModal = lazy(() =>
   import('../../upload/ui/UploadModal').then((module) => ({ default: module.UploadModal })),
@@ -125,7 +129,7 @@ const { id } = useParams()
   if (dashboardError || !dashboard) {
     return (
       <Alert severity="error" sx={{ m: 2 }}>
-        Failed to load dashboard. Please try again.
+        {DASHBOARD_LOAD_FAILED_MESSAGE}
       </Alert>
     )
   }
@@ -180,7 +184,7 @@ const { id } = useParams()
 
           {dataError && (
             <Alert severity="error" sx={{ mb: 2 }}>
-              Failed to load chart data.
+              {CHART_DATA_LOAD_FAILED_MESSAGE}
             </Alert>
           )}
 
