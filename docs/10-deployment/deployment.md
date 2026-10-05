@@ -553,6 +553,48 @@ against the resolved upload directory) is phase 06's `FAB-5`; this section owns
 the **budget** figure and its derivation, per the ceiling-versus-budget
 separation (`C11-7`).
 
+### Capacity Register
+
+One place that carries the deployment's capacity figures and where each is
+sourced. Every entry names its source; ceilings are **referenced** from Backend
+Architecture rather than restated, so the register cannot drift from them.
+
+| Figure | Value | Source |
+| --- | --- | --- |
+| Connection budget | `4 × 30 = 120` reachable `125`; `210` unconstrained ceiling | **By reference** — [Connection-Pool Budget](../06-backend/architecture.md#connection-pool-budget) (owns the engine census). The store's `max_connections` is configured nowhere; record in [Store Connection Ceiling](../06-backend/architecture.md#store-connection-ceiling-prf-9) |
+| Loader ceiling (memory) | `.csv.gz` peak ~192–195 MB at 400,000 × 6; worker ceiling 512 MiB | [Loader Memory Ceiling](../06-backend/architecture.md#loader-memory-ceiling-and-csvgz-expansion-prf-8) (`PRF-8`) |
+| Worker ceiling | one replica, 512 MiB / 0.5 CPU; no job timeout / result TTL / burst; throughput unbounded | [Worker Topology](../06-backend/architecture.md#worker-topology-and-throughput-ceiling-prf-7) (`PRF-7`) |
+| Artefact-and-log budget | **50 GB**, enforced before accept; retention temp files **24 h**, processing logs **90 days** | [Artefact and log volume budget](#artefact-and-log-volume-budget) above (`PRF-11` derivation beside it) |
+| Database durability | RPO **24 h** / RTO **4 h**, daily backups; rehearsed restore is the gate | [Backup and Restore](#backup-and-restore) above |
+
+**Per-tier memory and CPU limits** (`deploy.resources`, from
+`docker/docker-compose.yml`):
+
+| Service | Memory limit | CPU limit | Memory reservation |
+| --- | --- | --- | --- |
+| `db` | 1 GiB | 1.0 | 512 MiB |
+| `app` | 1 GiB | 1.0 | 512 MiB |
+| `rq-worker` | 512 MiB | 0.5 | 256 MiB |
+| `redis` | 256 MiB | 0.5 | 128 MiB |
+| `nginx` | 128 MiB | — | 64 MiB |
+
+`migrate` declares no `deploy.resources` limits (it is a one-shot job). The
+`db` service's 1 GiB / 1.0 CPU limit is stated here because it is the service
+holding the largest index and is named by no other document.
+
+**Instrumentation gap (filed, not built).** There is an objective — observing
+queue depth, pool utilisation and per-tier memory headroom — that **nothing
+measures**: a search for prometheus, OpenTelemetry, Sentry, StatsD, Datadog,
+py-spy, cProfile or memory_profiler across `pyproject.toml` and `src/mkobi/**`
+returns no match. The deployment therefore has **no exported metrics series**;
+every figure above is a measured-at-a-point value or a configured limit, not a
+live signal. **What would close it:** an exporter that publishes, at minimum, the
+RQ queue depth (`rq:queue:default`) and worker registration count as a scraped
+series — which is also what would make the queue-depth alert (currently reading
+zero, see [Monitoring gaps](#monitoring-gaps)) real. Building that
+instrumentation is the operations layer's work and is **not done here**: the gap
+is filed so the flat-zero alert is never mistaken for an idle queue.
+
 ### Health Checks
 
 - **db**: `pg_isready` — verifies PostgreSQL is accepting connections
