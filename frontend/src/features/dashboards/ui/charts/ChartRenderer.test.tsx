@@ -113,7 +113,44 @@ describe('ChartRenderer', () => {
     expect(lastPlotlyProps().data).toEqual([trace])
   })
 
-  it('honours the declared axis vocabulary without asserting the type', async () => {
+  it('merges the converted axis into a bar chart instead of replacing it', async () => {
+    render(
+      <ChartRenderer
+        graph={makeGraph({
+          data: [{ category: 'A', revenue: 1 }],
+          config: { x: 'category', metrics: ['revenue'] },
+          layout: { xaxis: { title: 'Category', range: [0, 10] } },
+        })}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByTestId('plotly')).toBeInTheDocument())
+    expect(lastPlotlyProps().layout).toEqual({
+      xaxis: { type: 'category', title: { text: 'Category' }, range: [0, 10] },
+      barmode: 'group',
+    })
+  })
+
+  it('lets a converted axis type win and omits absent members', async () => {
+    render(
+      <ChartRenderer
+        graph={makeGraph({
+          data: [{ category: 'A', revenue: 1 }],
+          config: { x: 'category', metrics: ['revenue'] },
+          layout: { xaxis: { type: 'linear' } },
+        })}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByTestId('plotly')).toBeInTheDocument())
+    const axis = lastPlotlyProps().layout?.xaxis
+    expect(axis?.type).toBe('linear')
+    // The omission is pinned by the key set: keeping `title: undefined` /
+    // `range: undefined` would leave those keys present and fail here.
+    expect(Object.keys(axis ?? {})).toEqual(['type'])
+  })
+
+  it('hands LineChart exactly the converted layout with no re-stated defaults', async () => {
     render(
       <ChartRenderer
         graph={makeGraph({
@@ -130,9 +167,17 @@ describe('ChartRenderer', () => {
 
     await waitFor(() => expect(screen.getByTestId('line')).toBeInTheDocument())
     const layout = lastLineProps().layout
-    expect(layout?.title).toEqual({ text: 'Trend' })
-    expect(layout?.xaxis?.type).toBe('category')
-    expect(layout?.xaxis?.range).toEqual([0, 10])
+    // The declared title wins the spread; a re-stated `title: { text: '' }`
+    // written before the spread would be caught by this whole-object compare.
+    expect(layout).toEqual({
+      title: { text: 'Trend' },
+      xaxis: { title: { text: 'Period' }, type: 'category', range: [0, 10] },
+    })
+    // LineChart supplies its own defaults; re-declaring them here is the
+    // mistake VAL-16-006 warns about, so their absence is the tripwire.
+    expect(layout).not.toHaveProperty('xAxisLabel')
+    expect(layout).not.toHaveProperty('yAxisLabel')
+    expect(layout?.title).not.toHaveProperty('xAxisLabel')
   })
 
   it('drops an unknown axis type rather than forcing it through', async () => {

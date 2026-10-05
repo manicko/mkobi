@@ -82,15 +82,22 @@ export function toAxisType(value: string | undefined): AxisType | undefined {
  *
  * `range` is `number[]` on the wire and `any[]` in Plotly's own types, so it is
  * assigned directly. `type` goes through {@link toAxisType}.
+ *
+ * Absent members are **omitted**, never emitted as explicit `undefined`. On the
+ * wire this is a no-op (undefined members never serialise); it matters because
+ * the renderer writes defaults *before* spreading this object, so an emitted
+ * `type: undefined` would clobber the `'category'` default instead of leaving
+ * it in place.
  */
 export function toLayoutAxis(
   axis: { title?: string; range?: number[]; type?: string },
 ): Partial<Layout['xaxis']> {
-  return {
-    title: axis.title === undefined ? undefined : { text: axis.title },
-    type: toAxisType(axis.type),
-    range: axis.range,
-  }
+  const converted: Partial<Layout['xaxis']> = {}
+  if (axis.title !== undefined) converted.title = { text: axis.title }
+  const axisType = toAxisType(axis.type)
+  if (axisType !== undefined) converted.type = axisType
+  if (axis.range !== undefined) converted.range = axis.range
+  return converted
 }
 
 /**

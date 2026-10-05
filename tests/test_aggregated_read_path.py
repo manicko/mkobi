@@ -93,6 +93,109 @@ async def _setup_dashboard_with_aggregates(
     return dashboard.id, graph.id
 
 
+async def _setup_dashboard_with_two_layout_graphs(
+    async_db_session, owner_id: UUID
+) -> tuple[UUID, UUID, UUID]:
+    """Create a dashboard with two bar graphs and rows for each.
+
+    Graph A stores a full layout under ``config["layout"]``; graph B stores
+    config-level ``xaxis`` / ``yaxis`` and **no** ``layout`` key. The pair pins
+    the served layout against the stored column and pins that config-level axis
+    keys are not lifted into it.
+
+    Returns ``(dashboard_id, graph_a_id, graph_b_id)``.
+    """
+    ds = DashboardService(DashboardRepository(), AccessRepository())
+    dashboard = await ds.create_dashboard(
+        name=f"served-layout-{uuid4().hex[:8]}",
+        config={"graph_types": ["bar"]},
+        owner_id=owner_id,
+        db=async_db_session,
+    )
+
+    graph_service = GraphService(GraphRepository())
+    graph_a = await graph_service.create(
+        GraphCreate(
+            name="Layout Graph A",
+            type="bar",
+            dashboard_id=dashboard.id,
+            config={
+                "layout": {
+                    "title": "Stored Layout",
+                    "xaxis": {
+                        "title": "Category",
+                        "type": "category",
+                        "range": [0, 10],
+                    },
+                    "yaxis": {"title": "Revenue", "type": "linear"},
+                    "showlegend": True,
+                    "height": 480,
+                    "width": 640,
+                    "template": "plotly_white",
+                },
+            },
+            dimensions=["category"],
+            metrics=["revenue"],
+        ),
+        db=async_db_session,
+    )
+    graph_b = await graph_service.create(
+        GraphCreate(
+            name="Config Axis Graph B",
+            type="bar",
+            dashboard_id=dashboard.id,
+            config={
+                "xaxis": {"title": "Config X", "type": "category"},
+                "yaxis": {"title": "Config Y", "type": "linear"},
+            },
+            dimensions=["category"],
+            metrics=["revenue"],
+        ),
+        db=async_db_session,
+    )
+
+    await AccessRepository().grant_access(
+        db=async_db_session,
+        user_id=owner_id,
+        dashboard_id=dashboard.id,
+        permission=DashboardPermission.VIEW,
+    )
+    await async_db_session.commit()
+
+    storage = StorageManager(db=async_db_session)
+    aggregates = [
+        {
+            "graph_id": graph.id,
+            "dims": {"category": f"cat-{i}"},
+            "metrics": {"revenue": 100 + i},
+        }
+        for graph in (graph_a, graph_b)
+        for i in range(2)
+    ]
+    await storage.save_aggregates(
+        dashboard_id=dashboard.id,
+        aggregates=aggregates,
+        clear_old=True,
+    )
+    await async_db_session.commit()
+
+    return dashboard.id, graph_a.id, graph_b.id
+
+
+# Graph A's stored layout, written out by hand rather than derived from
+# ``ChartLayoutConfig.__annotations__`` or a source constant. The literal is the
+# pin: a derivation would drift silently with the source it guards.
+SERVED_LAYOUT_A: dict[str, object] = {
+    "title": "Stored Layout",
+    "xaxis": {"title": "Category", "type": "category", "range": [0, 10]},
+    "yaxis": {"title": "Revenue", "type": "linear"},
+    "showlegend": True,
+    "height": 480,
+    "width": 640,
+    "template": "plotly_white",
+}
+
+
 class _StatementCounter:
     """Engine-level ``before_cursor_execute`` listener counting statements."""
 
@@ -241,9 +344,10 @@ class TestAggregateResponseShape:
         """The single-graph response keeps its structural shape and payload.
 
         Structural comparison against the expected keys, not an incidental
-        ordering snapshot. ``layout`` stays ``None``: the audit found
-        ``GraphDataResponse.layout`` is never populated, and this phase does not
-        start populating it.
+        ordering snapshot. This fixture's graph stores ``config={"title":
+        "Revenue"}`` with no ``layout`` key, so ``layout`` stays ``None`` even
+        though the field is now populated from the stored config on every
+        response.
         """
         dashboard_id, graph_id = await _setup_dashboard_with_aggregates(
             async_db_session, test_user["id"], rows=2
@@ -286,6 +390,83 @@ class TestAggregateResponseShape:
         for point in data_points:
             assert set(point.keys()) == {"category", "revenue"}
 
+
+
+class TestServedGraphLayout:
+    """CHT-006: the served ``layout`` is the graph's stored ``config["layout"]``.
+
+    Both construction sites in ``get_aggregated_data_endpoint`` pass it, so a
+    stored layout reaches the client. Decision 1 of residual block ``R2`` serves
+    that column **verbatim**: config-level ``xaxis`` / ``yaxis`` / ``title`` /
+    ``showlegend`` are not lifted into it, and that non-lifting is pinned here
+    so a later block that does lift fails loudly.
+    """
+
+    async def test_single_graph_branch_serves_the_stored_layout_verbatim(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """The single-graph branch serves graph A's stored layout as stored."""
+        dashboard_id, graph_a_id, _graph_b_id = (
+            await _setup_dashboard_with_two_layout_graphs(
+                async_db_session, test_user["id"]
+            )
+        )
+
+        response = await authenticated_client.get(
+            "/data/aggregated",
+            params={"dashboard_id": str(dashboard_id), "graph_id": str(graph_a_id)},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        graph = response.json()["graphs"][0]
+
+        assert graph["layout"] == SERVED_LAYOUT_A
+        # Additive change: the stored config is still served untouched.
+        assert graph["config"] == {"layout": SERVED_LAYOUT_A}
+
+    async def test_all_graphs_branch_serves_the_stored_layout_verbatim(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """The all-graphs branch serves A's layout and B's ``None``."""
+        dashboard_id, graph_a_id, graph_b_id = (
+            await _setup_dashboard_with_two_layout_graphs(
+                async_db_session, test_user["id"]
+            )
+        )
+
+        response = await authenticated_client.get(
+            "/data/aggregated",
+            params={"dashboard_id": str(dashboard_id)},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        entries = {entry["graph_id"]: entry for entry in response.json()["graphs"]}
+
+        assert entries[str(graph_a_id)]["layout"] == SERVED_LAYOUT_A
+        assert entries[str(graph_b_id)]["layout"] is None
+
+    async def test_config_level_axis_keys_are_not_lifted_into_layout(
+        self, authenticated_client: AsyncClient, async_db_session, test_user: dict
+    ) -> None:
+        """Graph B's ``config["xaxis"]`` is served in ``config`` but not lifted."""
+        dashboard_id, _graph_a_id, graph_b_id = (
+            await _setup_dashboard_with_two_layout_graphs(
+                async_db_session, test_user["id"]
+            )
+        )
+
+        response = await authenticated_client.get(
+            "/data/aggregated",
+            params={"dashboard_id": str(dashboard_id), "graph_id": str(graph_b_id)},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        graph = response.json()["graphs"][0]
+
+        # The fixture really carries the config-level axis ...
+        assert graph["config"]["xaxis"] == {
+            "title": "Config X",
+            "type": "category",
+        }
+        # ... and Decision 1 means it is deliberately not lifted into layout.
+        assert graph["layout"] is None
 
 
 class TestAggregateGraphScoping:

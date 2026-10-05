@@ -35,6 +35,7 @@ from mkobi.models.data import (
     GraphDataResponse,
 )
 from mkobi.models.enums import DashboardPermission, ErrorCode
+from mkobi.models.types import ChartLayoutConfig
 from mkobi.services.data_service import DataService
 from mkobi.utils.exceptions import AppException
 
@@ -53,6 +54,22 @@ def _flatten_points(
         if preview:
             data_points.extend(cast(list[dict[str, int | float | str]], preview))
     return data_points
+
+
+def _chart_layout(config: dict[str, object]) -> ChartLayoutConfig | None:
+    """Return the graph's stored ``config["layout"]``, or ``None``.
+
+    The stored value is served as stored: only the container shape is checked
+    here, and member types are left to Pydantic. ``GraphDataResponse`` validates
+    the members, and the identical stored value is already validated by
+    ``GraphRead`` on the graph read path, so this check cannot newly reject a
+    value the product accepts elsewhere. The one ``cast`` is therefore a
+    documented narrowing of the container, not a blind pass-through.
+    """
+    layout = config.get("layout")
+    if isinstance(layout, dict):
+        return cast(ChartLayoutConfig, layout)
+    return None
 
 
 @router.get(
@@ -210,6 +227,7 @@ async def get_aggregated_data_endpoint(
                         total_rows=total_rows,
                         rows_truncated=rows_truncated,
                         config=single_graph.config,
+                        layout=_chart_layout(single_graph.config),
                     )
                 ],
                 total_rows=dashboard_total,
@@ -256,6 +274,7 @@ async def get_aggregated_data_endpoint(
                     total_rows=total_rows,
                     rows_truncated=rows_truncated,
                     config=graph_item.config,
+                    layout=_chart_layout(graph_item.config),
                 )
             )
 

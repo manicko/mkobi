@@ -92,18 +92,22 @@ EXPECTED_GRAPH_CONFIG_KEYS: frozenset[str] = frozenset(
     }
 )
 
-# The seven keys that are declared, validated at the request boundary, stored and
+# The six keys that are declared, validated at the request boundary, stored and
 # returned on read, but read by nothing in ``src/`` or ``frontend/src/`` today.
 # They are RESERVED by adjudication D-16-1: deliberately not deleted and
 # deliberately not silently ignored. Stating the split as a literal makes the
 # classification a testable fact rather than a comment.
+#
+# ``layout`` left this set in residual block ``R2``: it is now read by
+# ``api/routes/data.py::get_aggregated_data_endpoint`` into
+# ``GraphDataResponse.layout``. ``xaxis`` / ``yaxis`` stay reserved, deliberately
+# unwired, because the renderer reads the response's ``layout`` field only.
 RESERVED_GRAPH_CONFIG_KEYS: frozenset[str] = frozenset(
     {
         "yoy",
         "secondary_y",
         "xaxis",
         "yaxis",
-        "layout",
         "sort_x",
         "sort_color",
     }
@@ -918,6 +922,7 @@ class TestGraphConfigRoundTrip:
                 "barmode",
                 "title",
                 "showlegend",
+                "layout",
             }
         )
         assert frozenset(GraphConfigModel.model_fields) == frozenset(

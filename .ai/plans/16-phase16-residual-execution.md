@@ -209,3 +209,66 @@ behaviour is unchanged.
 6. **Client mirror parity remains filed for `R8`**, not done:
    `frontend/src/shared/types/api.types.ts::GraphDataWithConfig.config` needs the same reserved
    wording. That file carries another agent's uncommitted edit and is **not staged** by this block.
+
+### 2026-10-05 — R2 (`CHTB-3`), Planner decisions
+
+Scope executed: populate `models/data.py::GraphDataResponse.layout` at both construction sites,
+merge the bar branch's axis object, **one commit, never revertible by half** (`VAL-16-003`).
+
+1. **The served `layout` is `graph.config["layout"]` as stored. `config.xaxis` / `config.yaxis` are
+   NOT lifted into it.** Reasons, in order of weight:
+   * Lifting means inventing a precedence rule among five sibling config keys (`title`, `showlegend`,
+     `xaxis`, `yaxis`, `layout`) that carries the same meaning. Nothing in the repository exercises
+     such a rule and no ruling covers it; writing one is the speculative redesign this phase forbids.
+   * It would create a **second naming path for the same value** — `config.xaxis` *and*
+     `config.layout.xaxis` — and `D-16-1` deliberately kept these keys RESERVED, i.e. kept and
+     unwired. Wiring one of them re-opens an adjudicated decision from inside a different block.
+   * `P12`'s consequence decides it: nothing in this repository can write `config.xaxis` (there is no
+     graph write path at all), so lifting wires a path with no producer — a constant with extra steps.
+     `models/types.py::GraphConfigDict`'s docstring is the honest place for that, and this block
+     updates it because R2 is what makes its `layout` clause true or false.
+   * **Trade-off accepted, stated not hidden:** a graph whose stored config carries `xaxis`/`yaxis`
+     but no `layout` still has them ignored after R2. That is pinned by a test on purpose, so a later
+     block that *does* lift fails loudly instead of silently changing what a chart draws.
+
+2. **The derivation lives in a module-level private helper in `src/mkobi/api/routes/data.py`, beside
+   `_flatten_points` — not in a service, not in a repository.** Reasons:
+   * It is a projection of a column that is **already loaded** on the `Graph` ORM entity both
+     construction sites already read (`config=` is passed from it). No SQL, no query, no business rule.
+   * `API → Service → Repository` governs data access and business logic. A `DataService` method here
+     would have to accept the `Graph` **ORM entity** as input — pushing an ORM object down a layer and
+     adding a hop for no access — and the repository is plainly wrong (it owns `aggregated_data` reads).
+   * The **precedent is in this very file**: `_flatten_points` is exactly this kind of
+     response-shaping transform and already lives in the route module. Following the established
+     pattern beats inventing a layer.
+   * "Written twice or factored once" resolves to a **helper**, not a service: one small function, two
+     call sites. If a later block's layout ever depends on server-computed state (`R5`'s filter-driven
+     `range`, `R6`'s empty-state marker), the derivation **moves** to the service — filed as a
+     coordination note for those blocks, not built here.
+
+3. **Two traps found while deriving this, both of which change the required work:**
+   * **The ruled literal `{type: 'category', ...convertedLayout?.xaxis}` does not work as written.**
+     `chartConversion.ts::toLayoutAxis` emits `type` **unconditionally** (`type: toAxisType(...)`),
+     so a stored axis with no `type` yields `{type: undefined}` and the spread **overwrites the
+     `'category'` default with `undefined`** — the exact thing `D-16-3` rules must survive. The fix is
+     at the root: `toLayoutAxis` omits absent members instead of emitting explicit-`undefined` ones.
+     On the wire this is a no-op (undefined members never serialise); it only decides whether a
+     default written before a spread survives. **No cast, no `any`;** if the compiler refuses the
+     inline literal, bind the merged axis to a typed `const` first.
+   * **`tests/test_graphs.py::RESERVED_GRAPH_CONFIG_KEYS` pins the classification as a literal**, and
+     its comment states the seven keys are "read by nothing in `src/` or `frontend/src/` today". R2
+     makes that false for `layout`, so the literal loses `layout` and the expected contract set in
+     `test_declared_vocabulary_is_the_published_graph_config_contract` gains it (nine keys). That
+     pin was installed by `R1` precisely so a classification change fails loudly — using it is the
+     design working, not a regression. `GraphConfigDict`'s docstring moves in the same commit.
+
+4. **No client mirror change is needed at all.** `api.types.ts::GraphDataWithConfig` already declares
+   `layout?: ChartLayoutConfig`, and `ChartLayoutConfig` already declares the seven members. R1's
+   "client mirror parity" filing is about the *reserved wording* on `config`, not this block. The file
+   stays untouched and unstaged. `AxisConfig.label` is named RESERVED in the backend docstring with
+   its reason; its `api.types.ts` mirror is filed for `R8`.
+
+5. **Filed for `R8`, not done here:** `api/routes/data.py::get_aggregated_data_endpoint`'s own
+   `Response format:` sketch still omits `layout` (and `config` and the count fields — it is an
+   abbreviated line, not a false one, and completing it is a documentation pass); the `docs/` halves of
+   `CHT-006`; `api.types.ts::AxisConfig.label`'s mirror. No `docs/` file is edited by this block.

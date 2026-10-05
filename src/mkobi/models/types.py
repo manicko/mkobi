@@ -108,10 +108,15 @@ class ProcessingConfigData(TypedDict):
 
 
 class AxisConfig(TypedDict, total=False):
-    """Chart axis configuration."""
+    """Chart axis configuration.
+
+    ``label`` is RESERVED: the client's converter reads ``title`` only
+    (``chartConversion.ts::toLayoutAxis`` builds ``{title, type, range}``), so a
+    stored ``label`` survives the wire and is dropped by the converter.
+    """
 
     title: str
-    label: str
+    label: str  # RESERVED: converter reads title only
     range: list[float] | None
     type: str | None  # "linear", "log", "date", etc.
 
@@ -160,15 +165,24 @@ class GraphConfigDict(TypedDict, total=False):
     the renderer's ``config.metrics?.[0] ?? 'y'`` fallback falls back to.
     ``title`` and ``showlegend`` are the config-level twins of
     ``ChartLayoutConfig.title`` / ``ChartLayoutConfig.showlegend``, which the
-    renderer reads off the response's ``layout`` field; populating that field is
-    residual block ``R2``.
+    renderer reads off the response's ``layout`` field; they are **not** lifted
+    into that field either.
 
     RESERVED (adjudication ``D-16-1``): ``yoy``, ``secondary_y``, ``xaxis``,
-    ``yaxis``, ``layout``, ``sort_x``, ``sort_color``. These keys are declared,
-    validated at the request boundary, stored and returned on read, but read by
-    nothing in ``src/`` or ``frontend/src/`` today. By that ruling they are
-    deliberately neither deleted nor silently ignored. ``xaxis`` and ``layout``
-    are owned by residual block ``R2``; the rest have no consumer yet.
+    ``yaxis``, ``sort_x``, ``sort_color``. These keys are declared, validated at
+    the request boundary, stored and returned on read, but read by nothing in
+    ``src/`` or ``frontend/src/`` today. By that ruling they are deliberately
+    neither deleted nor silently ignored.
+
+    ``layout`` has left the RESERVED set. Its consumer is
+    ``api/routes/data.py::get_aggregated_data_endpoint`` ->
+    ``models/data.py::GraphDataResponse.layout``, read by the client in
+    ``ChartRenderer.tsx::convertChartLayoutToPlotly``.
+
+    ``xaxis`` / ``yaxis`` stay reserved, deliberately unwired (Decision 1 of
+    residual block ``R2``): the renderer reads the response's ``layout`` field
+    only, nothing in this repository writes a config-level axis, and lifting
+    would create a second naming path for the same value with no producer.
 
     ``GraphConfigModel`` (below) mirrors this vocabulary; when one gains a key
     the other must too.
@@ -186,10 +200,11 @@ class GraphConfigDict(TypedDict, total=False):
     # Legend visibility at the config level (the layout twin lives on
     # ``ChartLayoutConfig.showlegend``).
     showlegend: bool | None
-    xaxis: AxisConfig | None  # RESERVED: owned by R2
-    yaxis: AxisConfig | None  # RESERVED: no consumer yet
+    xaxis: AxisConfig | None  # RESERVED: deliberately unwired (Decision 1, R2)
+    yaxis: AxisConfig | None  # RESERVED: deliberately unwired (Decision 1, R2)
     title: str | None
-    layout: ChartLayoutConfig | None  # RESERVED: owned by R2
+    # Read into GraphDataResponse.layout by api/routes/data.py.
+    layout: ChartLayoutConfig | None
     yoy: YoYConfig | None  # RESERVED: no consumer yet
     secondary_y: list[str] | None  # RESERVED: no consumer yet
     # Sorting configuration

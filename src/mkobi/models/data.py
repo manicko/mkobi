@@ -565,7 +565,17 @@ class AggregatedFiltersRequest(BaseModel):
 class GraphDataResponse(BaseModel):
     """Model for individual graph data response.
 
-    Contains the graph metadata (id, type, name) and Plotly.js data.
+    Contains the graph metadata (id, type, name) and ``data``: a list of flat
+    row dicts, each merging the row's dimension keys and metric keys. It is not
+    a list of Plotly.js traces -- the client builds traces from these records.
+
+    ``layout`` is the graph's stored ``config["layout"]``, served as stored and
+    validated as ``ChartLayoutConfig``. It is ``None`` when the graph stored no
+    layout. It is **not** a merge of ``config.title`` / ``config.showlegend`` /
+    ``config.xaxis`` / ``config.yaxis``: those config-level twins stay RESERVED
+    and unwired (recorded on ``models/types.py::GraphConfigDict``). The
+    ``json_schema_extra`` example's ``layout`` is exactly such a stored
+    ``config["layout"]``.
 
     ``total_rows`` is the graph's **true, untruncated** row count, reported
     from a ``COUNT(*)`` query rather than the length of the (possibly bounded)

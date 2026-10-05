@@ -158,10 +158,11 @@ export function ChartRenderer({ graph }: ChartRendererProps) {
   const plotlyData = convertToPlotlyData(graph)
 
   if (graph.type === 'bar') {
+    const convertedLayout = convertChartLayoutToPlotly(graph.layout)
     const barLayout: Partial<Layout> = {
-      ...convertChartLayoutToPlotly(graph.layout),
+      ...convertedLayout,
       barmode: graph.config?.barmode ?? BarmodeEnum.GROUP,
-      xaxis: { type: 'category' },
+      xaxis: { type: 'category', ...convertedLayout?.xaxis },
     }
     return <PlotlyChart data={plotlyData} layout={barLayout} />
   }
